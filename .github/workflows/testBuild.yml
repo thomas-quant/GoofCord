@@ -11,18 +11,10 @@ jobs:
     strategy:
       matrix:
         include:
-          - name: linux
-            runner: ubuntu-latest
-            targets: "tar.xz AppImage deb rpm"
-            arch: "--x64 --arm64 --armv7l"
           - name: win
             runner: windows-latest
             targets: "zip"
-            arch: "--x64 --ia32 --arm64"
-          - name: mac
-            runner: macos-latest
-            targets: "dmg"
-            arch: "--x64 --arm64"
+            arch: "--x64"
 
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
