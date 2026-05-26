@@ -59,7 +59,9 @@ export function registerScreenshareHandler() {
 		const { callback, window, frame } = req;
 
 		if (!id) {
-			callback({});
+			// Cancel the request. callback({}) throws "Video was requested, but no video stream
+			// was provided" in the main process; callback(undefined) rejects getDisplayMedia cleanly.
+			callback(undefined);
 			if (!window.isDestroyed()) window.close();
 			return;
 		}
@@ -118,7 +120,10 @@ export function registerScreenshareHandler() {
 		capturerWindow.once("closed", () => {
 			if (activeRequests.has(wcId)) {
 				activeRequests.delete(wcId);
-				callback({});
+				// Window closed without a selection: cancel. callback({}) would throw an uncaught
+				// exception in this synchronous handler; passing no streams cancels cleanly.
+				// Electron's types require a Streams object, but undefined is the only non-throwing cancel.
+				(callback as (streams?: unknown) => void)(undefined);
 			}
 		});
 
