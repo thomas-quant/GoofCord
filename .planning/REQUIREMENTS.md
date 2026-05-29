@@ -51,19 +51,21 @@ Which phases cover which requirements. Populated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| STREAM-01 | TBD | Pending |
-| STREAM-02 | TBD | Pending |
-| STREAM-03 | TBD | Pending |
-| STREAM-04 | TBD | Pending |
-| AUDIO-01 | TBD | Pending |
-| AUDIO-02 | TBD | Pending |
-| UPST-01 | TBD | Pending |
+| STREAM-01 | Phase 1 | Pending |
+| STREAM-02 | Phase 1 | Pending |
+| STREAM-03 | Phase 1 | Pending |
+| STREAM-04 | Phase 1 | Pending |
+| AUDIO-01 | Phase 2 | Pending |
+| AUDIO-02 | Phase 2 | Pending |
+| UPST-01 | Phase 1 | Pending |
+
+**Note:** UPST-01 (surgical, upstream-PR-able, no new dependencies) is a cross-cutting quality constraint. It is owned by Phase 1 for traceability but is re-verified as a success criterion in Phase 2 as well.
 
 **Coverage:**
 - v1 requirements: 7 total
-- Mapped to phases: 0 (roadmap pending)
-- Unmapped: 7 ⚠️ (resolved by roadmapper)
+- Mapped to phases: 7 ✓
+- Unmapped: 0 ✓
 
 ---
 *Requirements defined: 2026-05-29*
-*Last updated: 2026-05-29 after initial definition*
+*Last updated: 2026-05-29 after roadmap creation (traceability populated)*
