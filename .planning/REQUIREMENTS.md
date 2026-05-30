@@ -1,6 +1,6 @@
 # Requirements: GoofCord — Windows Streaming Fixes
 
-**Defined:** 2026-05-29
+**Defined:** 2026-05-29 · **Current milestone:** v1.1 — Windows Screenshare Echo Fix (added 2026-05-30)
 **Core Value:** On Windows, a user can start a screenshare, cancel the source picker, and start again — and the stream works — without the app getting stuck or requiring a restart.
 
 ## v1 Requirements
@@ -23,6 +23,21 @@ Requirements for this milestone. Each maps to a roadmap phase. All are verified 
 
 - [x] **UPST-01**: All fixes are surgical, minimal-divergence changes with no new dependencies — structured so they can be submitted as clean PRs to the upstream GoofCord repo
 
+## v1.1 Requirements — Windows Screenshare Echo Fix
+
+Native clean-room implementation of the echo fix (upstream #46), building on the Phase 2 recon (`02-FINDINGS.md`). Verified manually on a real Windows build, **viewer-side** (second account/device) with audio actively playing. Native-only scope — the user-side workaround is explicitly NOT a deliverable.
+
+### Echo Fix (ECHO) — Bug B implementation
+
+- [ ] **ECHO-01**: On Windows, when a user screenshares with audio, remote viewers hear the shared system/application audio but do NOT hear the Discord call echoed back to them (#46)
+- [ ] **ECHO-02**: The echo fix works on current Windows — Windows 10 version 2004 (build 19041) and later, and Windows 11 — using the in-OS WASAPI per-process-tree EXCLUDE loopback (confirmed functional on the maintainer's build 19045 by official Discord's echo-free behaviour there; the documented "20348" minimum is over-stated — see `02-FINDINGS.md §2.3 UPDATE`)
+- [ ] **ECHO-03**: Existing screenshare/audio behaviour is preserved with no regression on Linux (patchcord), macOS, and on any Windows build where the per-process API is unavailable (graceful fallback to today's `"loopback"` behaviour — no crash, no worse than current)
+- [ ] **ECHO-04**: The native capability is implemented clean-room from the public Microsoft ApplicationLoopback sample (MIT-licensed; copyright notice retained); no Discord code or proprietary symbol layout is used
+
+### Upstream Quality (UPST) — v1.1
+
+- [ ] **UPST-02**: The echo fix is upstream-PR-ready — native code ships via the existing prebuilt-`.node` pattern (venbind-style: a separate addon repo publishing per-platform prebuilds, copied by `copyNativeModules()`), the GoofCord-side diff is surgical, and any diagnostic instrumentation is stripped before the PR
+
 ## v2 Requirements
 
 Deferred to a future milestone. Acknowledged but not in this roadmap.
@@ -38,12 +53,12 @@ Explicitly excluded. Documented to prevent scope creep.
 | Feature | Reason |
 |---------|--------|
 | `useSystemPicker` / native Windows source picker | macOS-only in Electron 41; does not apply to Windows and adds upstream divergence (research: STACK/PITFALLS) |
-| Per-application audio capture on Windows | `"loopback"` captures the whole system mix only; per-app capture is not supported by the mechanism |
+| Per-application *INCLUDE* capture (sharing only one chosen app's audio) on Windows | Anti-feature for a bug-fix fork. NOTE: v1.1 DOES implement *EXCLUDE*-tree capture (capture everything except GoofCord's own tree — the echo fix). What stays out of scope is selectively sharing a single app's audio (INCLUDE-mode UI). |
 | Re-registering / nulling the display-media handler as a "reset" | Anti-feature — handler is registered once; re-registration is the wrong fix and is unreproducible as a cause (research: ARCHITECTURE/PITFALLS) |
 | Linux / macOS streaming behaviour changes | Fork is Windows-focused; must not regress these but won't chase them |
 | New streaming features or picker UI redesign | This is a bug-fix fork, not a feature fork |
 | Broad multi-bug Windows streaming campaign | Keep this milestone tight; revisit as a new milestone (see WSTRM-01) |
-| New dependencies (semver libs, audio libs, etc.) | Fixes must stay minimal and upstream-able |
+| Gratuitous new dependencies (semver libs, audio libs, etc.) | Fixes must stay minimal and upstream-able. EXCEPTION (v1.1): the native WASAPI echo-capture `.node` addon is one deliberate, upstream-justified native dependency, shipped via the existing prebuilt-`.node` pattern (like `venbind`/`patchcord`) — it is the mechanism, not a gratuitous add. This refines UPST-01's "no new dependencies". |
 
 ## Traceability
 
@@ -67,11 +82,10 @@ Which phases cover which requirements. Populated during roadmap creation.
 **Note:** WSTRM-01 is a v2 requirement (see "v2 Requirements" above) — intentionally **not** in v1 scope and mapped to no v1 phase. It is listed here only so the body and traceability table stay in sync; it is deferred to a future milestone, not delivered.
 
 **Coverage:**
-- v1 requirements: 7 total
-- Mapped to phases: 7 ✓
-- Unmapped: 0 ✓
-- v2 / deferred (not in v1 scope): WSTRM-01
+- v1.0 requirements: 7 total — mapped to phases 1-2, all complete ✓
+- v1.1 requirements: 5 total (ECHO-01..04, UPST-02) — **mapping pending the v1.1 roadmap** (phases 3+)
+- v2 / deferred (not in scope): WSTRM-01
 
 ---
 *Requirements defined: 2026-05-29*
-*Last updated: 2026-05-29 after roadmap creation (traceability populated)*
+*Last updated: 2026-05-30 — added v1.1 (Windows Screenshare Echo Fix) requirements; v1.1 traceability pending roadmap*
