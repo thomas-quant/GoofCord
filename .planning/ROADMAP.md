@@ -14,7 +14,7 @@ This is a tight, Windows-focused bug-fix milestone for a brownfield Electron/Ven
 Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Fix Bug A — Cancel then Restart Works** - Diagnose on an instrumented Windows build, then make the second start-stream click after a cancel re-open the picker and stream normally (completed 2026-05-30)
-- [ ] **Phase 2: Fix Bug B — Windows Loopback Audio Captured** - Recon-only: identify and document how Discord captures per-process audio on Windows (the echo fix); no GoofCord code this phase
+- [x] **Phase 2: Fix Bug B — Windows Loopback Audio Captured** - Recon-only: identify and document how Discord captures per-process audio on Windows (the echo fix); no GoofCord code this phase (completed 2026-05-30)
 
 ## Phase Details
 
@@ -63,7 +63,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 02-02-PLAN.md — Human checkpoint + findings synthesis: the developer executes the runbook on their physical Windows box and records raw observations (`02-RECON-OBSERVATIONS.md`), then `02-FINDINGS.md` is finalized — mechanism verdict + evidence, replication parameters (excluded process tree, build + fallback), and the clean-room go/no-go feeding the deferred D-06 implementation decision. Not autonomous (requires the developer's Windows box). (D-04, D-05, D-08, D-09)
+- [x] 02-02-PLAN.md — Human checkpoint + findings synthesis: the developer executes the runbook on their physical Windows box and records raw observations (`02-RECON-OBSERVATIONS.md`), then `02-FINDINGS.md` is finalized — mechanism verdict + evidence, replication parameters (excluded process tree, build + fallback), and the clean-room go/no-go feeding the deferred D-06 implementation decision. Not autonomous (requires the developer's Windows box). (D-04, D-05, D-08, D-09)
 
 ## Progress
 
@@ -73,4 +73,4 @@ Phases execute in numeric order: 1 → 2
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Fix Bug A — Cancel then Restart Works | 2/2 | Complete    | 2026-05-30 |
-| 2. Fix Bug B — Windows Loopback Audio Captured | 1/2 | In Progress|  |
+| 2. Fix Bug B — Windows Loopback Audio Captured | 2/2 | Complete   | 2026-05-30 |
