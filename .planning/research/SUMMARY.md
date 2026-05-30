@@ -1,17 +1,17 @@
 # Project Research Summary
 
-**Project:** GoofCord — Windows Streaming Fixes
-**Domain:** Electron desktop screenshare + Windows system-audio loopback (brownfield bug-fix fork)
-**Researched:** 2026-05-29
-**Confidence:** HIGH (Electron API contract + in-repo code paths); MEDIUM (Discord renderer state-machine internals; exact Electron 41.x failure mode)
+**Project:** GoofCord — Windows Screenshare Echo Fix (v1.1, upstream #46)
+**Domain:** Windows WASAPI process-loopback (exclude-tree) audio capture; native Electron addon integration; screenshare audio delivery pipeline
+**Researched:** 2026-05-30
+**Confidence:** HIGH
 
 ## Executive Summary
 
-GoofCord is a brownfield Electron 41.3.0 Discord client (Vencord wrapper) with two active Windows screenshare bugs. Bug A is the primary target: after the user cancels the source picker, clicking "start stream" a second time does nothing — no picker window appears. Bug B is closely related but separable: Windows system/app audio (`audio: "loopback"`) may not be captured when the user opts in. All four research agents converged strongly on the same diagnosis and fix directions. No new dependencies are needed; fixes must be surgical and upstream-PR-able.
+This milestone fixes the system-audio echo bug in GoofCord's Windows screenshare (#46): when a user shares system audio, viewers hear the call voices echoed back because Chromium's `"loopback"` mode captures the whole default-endpoint mix, including GoofCord's own call playback. The fix mechanism is already reconned and settled — the public WASAPI Application Loopback API (`PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE`, minimum Windows build 20348) is the correct and clean-room-viable approach, matching what Discord itself uses. The research in this round answers how to implement and ship that fix, and frames the D-06 delivery-path decision.
 
-The root cause of Bug A is almost certainly a latched Discord renderer "go-live pending" state flag that is never cleared on cancellation, preventing Discord from ever re-issuing `getDisplayMedia` on the second click. The existing `710cfde` fix correctly maps cancellation to `NotAllowedError`, but if Discord's internal stream-start reducer does not treat `NotAllowedError` as a benign cancel (vs. `AbortError` for user-abort), the button stays inert. A secondary contributor is GoofCord's own per-request teardown: two cleanup paths (the IPC select handler and the window `closed` event) must be consolidated into a single `finishRequest()` that guarantees `callback` is called exactly once and `activeRequests` is fully cleared. The handler registration itself (`setDisplayMediaRequestHandler` called once at startup) is correct and must not be changed.
+The recommended delivery shape is workaround-first, native-second (hybrid). The minimum shippable fix — a documented separate-output-device workaround (VB-Cable / SteelSeries Sonar / VoiceMeeter) — is near-zero code, works on all Windows builds, and is fully upstream-able today. The native WASAPI exclude-tree addon (the only approach that is invisible to the user on the common case) should be scoped as a consciously-gated P2 addition, built as a Rust + napi-rs N-API `.node` addon following the venbind template exactly. A delivery-path spike — proving that captured PCM reaches a real stream viewer-side — must gate the native investment, because the genuine architectural risk is not the capture itself but bridging native-captured audio into the renderer MediaStream. The zero-code workaround lands regardless of the spike outcome.
 
-The key mitigation strategy is instrument-before-fix: a single Windows CI build with three log points (patched `getDisplayMedia` entry, main handler entry, every `callback(...)` site) deterministically routes to the right hypothesis in one round-trip. Windows CI artifacts are scarce — all probes should be added in one pass. Bug B investigation should begin only after Bug A is closed, using a separate diagnosis protocol: verify the loopback audio track actually arrives in `stream.getAudioTracks()` on Windows and confirm the Linux Patchcord track-removal branch does not fire on Windows (which would silently drop the loopback track). Always verify Bug B from the viewer side, not locally, because `disable_local_echo=true` mutes the streamer's own speakers by design.
+The dominant milestone risk is verification, not implementation. The maintainer's dev box is Windows 10 build 19045, which is below the 20348 API floor, meaning the native path is locally unverifiable. Every "it works" or "it doesn't work" signal from that machine is meaningless for the native fix. Verification requires: a Windows 11 CI-built artifact, installed on a build-≥20348 machine, with a second-device viewer present and non-call audio actively playing (WASAPI loopback yields no samples on silence). This loop must be designed into the phase plan from the start, not treated as an afterthought.
 
 ---
 
@@ -19,118 +19,164 @@ The key mitigation strategy is instrument-before-fix: a single Windows CI build 
 
 ### Recommended Stack
 
-The existing stack is correct and no new dependencies are warranted. The fix lives entirely within two source files: `src/windows/screenshare/screenshare.ts` (main process) and `src/windows/main/renderer/postVencord/screensharePatch.ts` (renderer patch). The `session.setDisplayMediaRequestHandler` / `desktopCapturer.getSources` API is the only supported Electron path for a custom picker, and `audio: "loopback"` is the only supported Windows system-audio mechanism. The `useSystemPicker` option is macOS 15+ only in Electron 41 — it must not be used for this Windows fix.
+The integration template is venbind, not patchcord. venbind is a Rust + napi-rs N-API `.node` addon distributed as prebuilt per-platform binaries inside its npm package; GoofCord never compiles it — `copyNativeModules()` in `build/build.ts` simply copies the matching prebuild to `assets/native/`. The WASAPI addon should follow this model identically: built in its own repo's CI on `windows-latest` (no cross-compile needed), shipped prebuilt, consumed prebuilt. GoofCord's build adds nothing except a new `modules[]` entry in `copyNativeModules()` and an `optionalDependencies` line. patchcord (a subprocess binary over stdio) is the wrong shape — on Linux the OS handles the audio routing; on Windows the native module must run the WASAPI capture loop in-process.
 
-**Core technologies (existing — no change):**
-- `session.setDisplayMediaRequestHandler` + `desktopCapturer.getSources`: the only Electron-supported path for a custom picker → stream; handler registered once, `callback` must fire exactly once per request.
-- `audio: "loopback"` (Windows only, Electron ≥ 31.0.1): the documented driver-free Windows loopback mechanism; always requires a valid video source.
-- Renderer `getDisplayMedia` monkeypatch in `screensharePatch.ts`: intercepts `getDisplayMedia`, normalises error shapes, applies stream settings; `NotAllowedError` re-throw lives here.
-- Windows x64 CI artifact (`.github/workflows/testBuild.yml`): the only reliable verification vehicle; manual test required — no automated screenshare repro exists.
+For the native addon itself: Rust (stable, MSRV 1.82.0) + `napi` 3.x + `@napi-rs/cli` 3.6.2 + the `windows` crate (0.62.2, feature-gated to `Win32_Media_Audio / Win32_System_Com / Win32_Foundation`). The windows crate is simpler to build than venbind (no bindgen/libclang — it is metadata-generated). The workaround path needs no new stack at all: one entry in `src/settingsSchema.ts` plus a localization string.
 
-**Ruled-out alternatives:**
-- `useSystemPicker: true` — macOS-only, no-op on Windows in Electron 41; do not add.
-- Re-registering `setDisplayMediaRequestHandler` between requests — documented cause of second-request failures; GoofCord correctly registers once and must keep it that way.
-- Per-app audio isolation on Windows — not available via `"loopback"` (system mix only); Linux/Patchcord concern, out of scope.
+**Core technologies:**
+- **Rust + napi-rs** (addon repo only): implementation language + N-API bridge — matches both existing addons; one prebuilt `.node` per platform/arch loads in Electron 41 without `electron-rebuild` (N-API ABI stability)
+- **`windows` crate 0.62.2**: safe Rust bindings to the public WASAPI process-loopback API — Microsoft-published, no clean-room risk, exact symbols from `02-FINDINGS.md §3.1`
+- **Existing GoofCord pipeline** (`nativeModulePlugin`, `copyNativeModules`, `createRequire` + try/catch, `app.getAppMetrics()`): all reused verbatim; GoofCord adds zero new build tooling
+
+**What NOT to use:**
+- patchcord's subprocess model (wrong shape for in-process PCM capture on Windows)
+- static linking of `ActivateAudioInterfaceAsync` (breaks load on < 20348; must use `LoadLibrary`/`GetProcAddress` dynamic resolution, mirroring Discord)
+- node-gyp/cmake-js inside GoofCord's Bun build (violates "no new build tooling" constraint)
+- per-Electron-version prebuilds (unnecessary — N-API is ABI-stable)
 
 ### Expected Features
 
-This is a bug-fix milestone, not a feature build. "Features" are defined as the correct, expected behaviours that are currently broken.
+**Must have (table stakes) — required to close #46:**
+- Viewer no longer hears the call echoed when sharing system audio — this is the bug itself
+- Desktop/game/app audio still reaches the viewer — a fix that kills all audio is a regression
+- Streamer enables audio share exactly as today — no new ritual for the common case
+- Graceful behavior on builds < 20348 — must not crash or silently echo; mirrors Discord's `"audioses is too old…"` fallback; required the moment any native code ships
+- No regression on Linux / macOS / Phase-1 cancel→restart fix
 
-**Must have (table stakes — the definition of "fixed"):**
-- Immediate picker restart after cancel: second "start stream" click re-opens the picker and starts a normal stream without an app restart.
-- Single `callback` invocation per request: Electron's contract — double-invocation corrupts request state; zero-invocation hangs future requests.
-- Full per-request teardown on cancel: `activeRequests` entry deleted, `initialPromise` cleared, picker `BrowserWindow` destroyed, Discord renderer stream-start flag reset.
-- `NotAllowedError` (or `AbortError` if needed) on cancel → Discord re-arms its button: the `710cfde` fix is kept; the exception name may need adjustment depending on which name Discord's reducer treats as benign cancel.
-- Windows system audio on opt-in: renderer `audio:true` AND handler `audio:"loopback"` — both required, neither works alone.
+**Should have (differentiators):**
+- Native fix that is invisible (no user config) on supported builds ≥ 20348 — the only approach satisfying all four "Definition of Fixed" behaviors; parity with Discord and OBS
+- A surfaced one-line sub-floor hint (log line to userData file, not a new settings screen) pointing at the workaround — cheap, actionable
+- Hybrid coverage: native ≥ 20348 + documented workaround below — no user population left uncovered
 
-**Boundary (must not regress, must not extend):**
-- Resolution/framerate/content-hint controls, source refresh, Linux Patchcord audio path, macOS behaviour — already working; touch nothing.
+**Defer (v2+) or do not build:**
+- Per-app INCLUDE-capture or capture picker UI — a separate feature, maintainer-flagged out of scope
+- Audio quality / bitrate / format options — the process-loopback device forces a fixed format (`GetMixFormat` → `E_NOTIMPL`); anti-feature
+- Settings toggle to enable/disable the fix — implies the buggy mode is a supported choice; anti-feature
+- Bundling or auto-installing a virtual-audio driver — heavy, admin-required, not upstreamable; anti-feature
+- The #185 missing-audio and #204 Linux no-sound bugs — separate issues, separate phases
 
-**Defer:**
-- Per-app audio isolation on Windows, live preview, quality UI improvements, architecture rewrite — explicitly out of scope per PROJECT.md.
+**Minimum shippable:** The documented separate-output-device workaround alone closes #46 with zero scope risk (surgical, all-builds, upstream-able, matching upstream's current stance). The native addon is the better fix but is consciously P2.
 
 ### Architecture Approach
 
-The screenshare flow is a four-component pipeline: Discord renderer (holds `getDisplayMedia` promise + "go-live" Flux state) → `screensharePatch.ts` (intercepts `getDisplayMedia`, normalises errors) → `screenshare.ts` main-process handler (maps request to picker BrowserWindow + Electron `callback`) → picker preload/renderer (source-selection UI). `registerScreenshareHandler()` is called once from `createMainWindow()` and sets `setDisplayMediaRequestHandler` once; it is not per-request. The fix scope is entirely within the main handler and the renderer patch — registration and picker UI are correct.
+The echo enters at a single line: `src/windows/screenshare/screenshare.ts:98` where `result.audio = "loopback"` captures the whole endpoint mix. The fix modifies this one branch into a 3-way gate (native exclude-tree ≥ 20348 → workaround/loopback fallback < 20348 → existing loopback on non-Windows). The patchcord analog is the load-bearing precedent for integration shape: patchcord solves the same problem on Linux by routing audio through an OS-level virtual capture device that `getUserMedia` reads as a normal microphone, never passing raw PCM into JS. The Windows API does not provide an equivalent OS-level virtual device, so the bridge from native-captured PCM to a renderer MediaStream is the genuine architectural risk — either a virtual-driver (heavy, not upstreamable) or a PCM-to-`MediaStreamTrackGenerator`/Web-Audio bridge (IPC throughput risk, more moving parts). This delivery-path question must be resolved in a spike before building the full native module.
 
-**Major components and their fix roles:**
-1. **Discord renderer** — owns the "starting stream" Flux flag; calls `getDisplayMedia`; Bug A is primarily here (flag not cleared on cancel).
-2. **`screensharePatch.ts`** (renderer patch) — must reject with the exact error name Discord treats as a benign cancel; must not leave a hanging promise.
-3. **`screenshare.ts`** (main process) — owns `activeRequests: Map<wcId, {callback, window, frame, initialPromise}>`; must call `callback` exactly once per request across select, cancel, and `closed` event paths; consolidate into `finishRequest()`.
-4. **Picker preload/renderer** — transient UI; no cross-request state except saved settings; correct as-is.
+**Major components:**
+1. `src/windows/screenshare/screenshare.ts` (MODIFIED) — the gated Windows audio dispatch; gains the 3-way decision
+2. `src/modules/native/wasapiLoopback.ts` (NEW) — main-process wrapper; mirrors `patchcord.ts` shape (`init`, `hasWasapiLoopback`, `start`/`stop`, build-gate detection via `LoadLibrary`/`GetProcAddress`, process-tree PID resolution via `app.getAppMetrics()`)
+3. `assets/native/wasapi-loopback-win32-{x64,arm64}.node` (NEW) — prebuilt N-API addon; clean-room from Microsoft `ApplicationLoopback` sample (MIT); hardcoded fixed format (no `GetMixFormat`)
+4. `src/windows/main/renderer/postVencord/screensharePatch.ts` (MODIFIED, conditionally) — only if delivery is via a virtual-device label (generalize `getVirtmic()`) or a reconstructed MediaStream track
+5. `build/build.ts` `copyNativeModules()` (MODIFIED) — add third module entry; mirror venbind exactly
+
+**Process-tree exclusion target:** GoofCord/Electron root PID (`process.pid`), not the window PID. The Audio Service utility process is a Chromium-sandboxed child; `EXCLUDE_TARGET_PROCESS_TREE` covers it when the root is excluded. `app.getAppMetrics()` (already used by `patchcord.ts:80`) resolves this at runtime. The parent/child relationship on Electron 41.3.0 is an open implementation detail that must be confirmed via logged `getAppMetrics()` output on a ≥ 20348 CI artifact.
+
+**Non-regression boundaries (must not touch):**
+- Linux patchcord branch in `screenshare.ts:91-96` — sibling dispatch, not a shared abstraction
+- Existing Windows `"loopback"` fallback — must remain the universal fallback for < 20348, macOS, and load failures
+- Phase-1 cancel→restart fix — unrelated code path, must stay intact
 
 ### Critical Pitfalls
 
-All four research agents converged on the same five pitfalls, ranked by likelihood of being the direct cause:
+1. **"No echo on my box" false pass (V1 — milestone-killer):** The 19045 dev box silently takes the fallback branch (native path never runs); Electron hardcodes `disable_local_echo` so the streamer never hears echo anyway. "Tested locally, no echo" is structurally incapable of confirming the fix. Prevention: add a build-number + branch-taken log line to `screenshare-debug.log` (userData file, no DevTools) at activation; treat the dev box as fallback-tester only; require a Win11 machine for every native-path verification claim.
 
-1. **Discord renderer stream-start flag never cleared on cancel (Bug A — primary).** `callback({})` rejects `getDisplayMedia`, but if the error shape is not the one Discord's reducer treats as "user cancelled, re-arm button" (likely `NotAllowedError` vs. `AbortError`), the "go-live pending" flag stays latched and the next click is a no-op. Fix: verify which error name Discord's reducer resets on via the instrumented build; switch the synthetic exception name if needed.
+2. **Wrong verification setup — streamer-side or silent desktop (V2, V3):** The bug manifests viewer-side; the streamer cannot hear echo (Electron mutes local playback). Verifying from the streaming machine produces a guaranteed false pass regardless of code state. Additionally, WASAPI loopback delivers no samples when nothing is playing — silence cannot distinguish a working exclude from a broken capture. Prevention: all echo-fix verification is viewer-side (second Discord account, separate device); keep non-call audio actively playing during the test; confirm both (a) viewer hears desktop audio and (b) viewer does not hear echoed call voices.
 
-2. **Two cleanup paths that can double-call or skip `callback` (Bug A — contributor).** The select-cancel IPC handler and the `closed` window event both attempt to call `callback({})`. The current `activeRequests.has()` guard prevents double-callback in the normal case, but the `!req` early-return in `selectScreenshareSource` can leave the Electron request hanging (zero callbacks) if the entry was already deleted by a racing `closed` event. Consolidate into `finishRequest(wcId, result)` using the map-delete as the idempotency token.
+3. **`.node` not packaged / silently falls back (V4, M3):** The native-module pipeline has three independent stages (prebuild in `node_modules`, `copyNativeModules()` entry, `nativeModulePlugin` glob name match); a miss in any one degrades silently to the fallback with no error. Prevention: mirror venbind naming exactly (`<name>-win32-x64.node`); add a CI packaging assertion after build; add a startup null-check log.
 
-3. **Misdiagnosing Bug A as "Electron setDisplayMediaRequestHandler can't be used twice" (diagnostic trap).** Electron issue #39566 title pattern-matches the symptom but the reporter could not reproduce it in a Fiddle — it was their own app state. GoofCord registers the handler once (correct). Do not re-register it or null it between requests. Prove the handler fires on the second attempt with a log before making any other change.
+4. **Excluding the wrong process — single PID instead of tree (V6):** Passing the main window PID still captures the call because the Audio Service runs in a separate sandboxed child process. Only `EXCLUDE_TARGET_PROCESS_TREE` on the root PID covers it. Prevention: pass `process.pid` (Electron main process) as the exclude root; confirm Audio Service is in its subtree via logged `app.getAppMetrics()` output on a ≥ 20348 run; do not use the window/renderer PID.
 
-4. **`useSystemPicker` assumed to fix Windows cancel (non-fix trap).** `useSystemPicker: true` is macOS 15+ only in Electron 41. It does nothing on Windows. Do not add it.
+5. **`GetMixFormat`/`IsFormatSupported` return `E_NOTIMPL` (T1):** The process-loopback "magic device" (`VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK`) does not support format negotiation. A copy-pasted generic WASAPI capture loop bails immediately at the HRESULT check, looking like a build-gate or packaging failure. Prevention: hardcode a fixed `WAVEFORMATEX` (CD-quality 2ch/16-bit/44100 Hz per Microsoft Q&A 1125409); follow the `ApplicationLoopback` sample's initialization path, not a generic WASAPI tutorial; never call `GetMixFormat` on this device.
 
-5. **Loopback audio track silently dropped by Patchcord block on Windows (Bug B — primary candidate).** `screensharePatch.ts` stops and removes all audio tracks to swap in a virtual mic. On Windows there is no `GoofCord-Virtual-Mic`, so `getVirtmic()` should return null and the block should not fire — but this must be verified at runtime. If a stale device label matches, the loopback track is removed and the stream is silent. Fix: gate the track-removal loop on `process.platform !== "win32"`. Additionally, confirm the renderer's `getDisplayMedia` call includes `audio: true` when the user opts in (handler `audio:"loopback"` alone is insufficient without the renderer also requesting audio).
+6. **Static-linking the loopback API breaks load on < 20348 (T2):** Statically importing `ActivateAudioInterfaceAsync` binds the symbol at load time, causing the `.node` to fail to `require()` on the dev box (19045) rather than loading and reporting "unsupported." Prevention: dynamically load via `LoadLibrary`/`GetProcAddress` (mirrors Discord's own approach); gate activation on both `process.platform === "win32"` and detected build ≥ 20348; confirm the `.node` loads and reports "unsupported" on the 19045 box.
+
+7. **Clean-room contamination from Discord's DLL (C1):** The recon read `discord_voice.node` to determine which API; using Discord's internal symbol layout as an implementation recipe contaminates the clean-room boundary and poisons the upstream PR. Prevention: implement solely from the public Microsoft `ApplicationLoopback` sample (MIT — retain Microsoft's copyright notice); cite only public MS documentation; no Discord symbol names in source or PR description.
 
 ---
 
 ## Implications for Roadmap
 
-This milestone has exactly two bugs, strongly separated by investigation dependency. Bug A must be diagnosed before Bug B is touched, because the Windows CI round-trip budget is limited and Bug B diagnosis requires a clean, working screenshare to validate against.
+Based on combined research, the recommended phase structure is four phases with a clear dependency order driven by the unverifiable-locally constraint and the delivery-path uncertainty.
 
-### Phase 1: Diagnose Bug A — Instrument and Route the Hypothesis
+### Phase 1: Workaround + Scaffolding (minimum shippable, all builds)
 
-**Rationale:** "Second click does nothing" has three candidate explanations (H1: renderer never issues second `getDisplayMedia`; H2: Electron dispatch wedge; H3: callback double/zero-fire race). All are distinguishable by log output in one CI build. Spending a CI round-trip on a fix before knowing which hypothesis is true is wasteful.
+**Rationale:** The workaround (documented separate-output-device routing) is the only fix that works on all builds, is near-zero code, and is upstream-able immediately. Shipping it first closes #46 in the minimal, surgical sense that upstream already endorses — and it is the mandatory < 20348 fallback that must exist regardless of the native decision. The scaffolding (build-gate detection, 3-way dispatch structure in `screenshare.ts`, stub `wasapiLoopback.ts` with build-number logging to `screenshare-debug.log`) can land in the same phase without any native code and verifies that the fallback path still works on the dev box.
 
-**Delivers:** A definitive answer to: does the patched `getDisplayMedia` fire on the second click? Does the main handler fire? Is `callback` called exactly once during the first cancel?
+**Delivers:** Documented workaround (docs + optional settings hint); gated dispatch in `screenshare.ts` that falls through to existing `"loopback"` in all cases (no behavior change yet); build-gate detection logging to `screenshare-debug.log`; CI packaging assertion for the (stubbed) native module slot.
 
-**Implements:** Three log points — (A) first line of patched `getDisplayMedia` in `screensharePatch.ts`; (B) first line inside the `setDisplayMediaRequestHandler` callback in `screenshare.ts`; (C) every `callback(...)` call site, the `!req` early-return, and the `closed` handler.
+**Addresses:** Table-stakes features — graceful behavior < 20348, no regression on Linux/macOS, workaround documentation.
 
-**Avoids:** Pitfall 2 (chasing the "can't be used twice" misdiagnosis) and wasting a CI artifact on the wrong fix.
+**Avoids:** Pitfalls V1 (scaffolds the branch-taken log), V4 (establishes the packaging assertion), T2 (establishes dynamic-load pattern from the start), T4 (establishes the additive 3-way dispatch before native code exists).
 
-**Research flag:** Standard Electron logging — no additional research needed.
+**Research flag:** Standard patterns — no research phase needed. All integration points are fully documented; workaround is zero-code.
 
-### Phase 2: Fix Bug A — Cancel/Restart Lifecycle
+### Phase 2: Delivery-Path Spike (de-risk gate for native investment)
 
-**Rationale:** With the hypothesis confirmed, apply the smallest surgical fix. Two sub-tasks are required regardless of which hypothesis is confirmed: (a) consolidate cleanup into `finishRequest()` for an exactly-once `callback` guarantee; (b) ensure Discord's renderer stream-start flag is reset on cancel (verify or switch the error name; or directly dispatch the Discord abort-go-live Flux action if needed).
+**Rationale:** The genuine architectural risk is not the WASAPI capture (settled) but getting captured PCM into the renderer MediaStream. patchcord's virtual-device approach (Option A) is the clean shape but requires bridging — either a virtual audio driver (heavy, not upstreamable) or a PCM-to-`MediaStreamTrackGenerator`/Web Audio path (IPC throughput risk). Neither is as cheap as Linux's PipeWire virtual sink. Spending engineering effort on the full native module before knowing which delivery path works is the highest-leverage mistake to avoid. This phase is a minimal end-to-end prototype: capture a few seconds of exclude-tree audio on a build-≥20348 CI artifact and get it audible viewer-side in a real stream.
 
-**Delivers:** Second "start stream" click after cancel reliably re-opens the picker and starts a normal stream. Passes the acceptance test: cancel → re-click → picker appears → select source → stream starts.
+**Delivers:** Go/no-go decision on the native path; if go, a proven delivery path (Option A virtual-device or Option B PCM bridge); identification of which renderer-side code changes are actually needed.
 
-**Uses:** `screenshare.ts` (`finishRequest()` refactor) + `screensharePatch.ts` (error name verification/adjustment).
+**Uses:** Rust + napi-rs + windows crate (addon repo only); existing `copyNativeModules()` + `nativeModulePlugin` + `native-module:` import pipeline; `app.getAppMetrics()` for PID resolution; `screenshare-debug.log` for delivery-path diagnostics.
 
-**Avoids:** Pitfall 1 (latched Discord state), Pitfall 3 (double/zero callback race), Pitfall 4 (`useSystemPicker` non-fix).
+**Avoids:** Pitfall V5 (batches all unknowns into the minimal number of CI round-trips); architectural dead-end of committing to a PCM bridge whose IPC throughput is later found inadequate.
 
-**Constraint:** Surgical diff — no handler re-registration, no new dependencies, PR-ready.
+**Research flag:** Needs spike. `MediaStreamTrackGenerator` availability in Electron 41.3.0's specific Chromium build must be confirmed before choosing Option B. Option A virtual-device feasibility without a kernel driver must be prototyped, not assumed.
 
-**Research flag:** If H1 is confirmed (renderer never re-issues `getDisplayMedia`), the fix may require identifying Discord's go-live Flux store flag. This is Discord-internal and lightly documented. Flag as a possible sub-step only if the instrumented build proves H1 and the error-name switch alone does not resolve it.
+### Phase 3: Native Addon (full implementation, ≥ 20348)
 
-### Phase 3: Fix Bug B — Windows Loopback Audio
+**Rationale:** Only after the delivery-path spike confirms a viable end-to-end route should the full native module be built. This phase implements the clean-room WASAPI exclude-tree capture (from the Microsoft `ApplicationLoopback` sample, MIT), wires the chosen delivery path, resolves the process-tree PID correctly, and completes the integration (IPC codegen, `STREAM_CLOSE` teardown, `stopWasapiLoopback`, bridge.ts, electron-builder packaging).
 
-**Rationale:** Investigated separately after Bug A is closed, to avoid conflating two independent failure modes. Bug B has its own diagnosis protocol (check track arrival, check Patchcord block, verify from viewer side) that does not depend on Bug A being open.
+**Delivers:** The `wasapi-loopback-win32-x64.node` addon (clean-room); `src/modules/native/wasapiLoopback.ts` (full implementation); renderer-side delivery path; complete teardown wiring; Electron-ABI smoke test in CI.
 
-**Delivers:** When the user opts into audio sharing on Windows, remote viewers hear system audio. `stream.getAudioTracks().length > 0` on Windows after a loopback grant.
+**Implements:** `wasapiLoopback.ts` (mirrors patchcord.ts shape); updated `screensharePatch.ts` (delivery-path dependent); `copyNativeModules()` third entry; IPC codegen regeneration.
 
-**Uses:** `screensharePatch.ts` (gate Patchcord track-removal on `platform !== "win32"`), `screenshare.ts` (confirm `audio: "loopback"` is set when `audioConfig.mode !== "none"`), renderer `getDisplayMedia` call (confirm `audio: true` in options when user opts in).
+**Key implementation constraints:**
+- Fixed `WAVEFORMATEX` hardcoded (no `GetMixFormat` — T1)
+- Dynamic `LoadLibrary`/`GetProcAddress` load (not static link — T2)
+- N-API / napi-rs build (ABI-stable, one binary per platform/arch — T3)
+- Exclude root = `process.pid`, tree confirmed via logged `app.getAppMetrics()` output (V6)
+- MS `ApplicationLoopback` sample only; Microsoft copyright notice retained (C1)
+- Async activation — wait on completion handler; idempotent `stop` with dispose-timeout (T5)
 
-**Avoids:** Pitfall 5 (loopback track dropped by Patchcord), Pitfall 6 (local echo muting mistaken for capture failure — test from viewer, not locally), Pitfall 7 (Electron regression over-attribution — do track logging before any version archaeology).
+**Research flag:** Standard patterns for the capture side (settled from recon). Delivery path resolved in Phase 2. No additional research phase needed.
 
-**Research flag:** No additional research needed. Fix directions are clear. The only unknown is whether `audio: "loopback"` on Electron 41.3.0 Windows produces a real track — confirmed by logging `stream.getAudioTracks()` in the Bug B diagnosis build.
+### Phase 4: Verification + Upstream PR Prep
+
+**Rationale:** Because local verification cannot exercise the native path, a structured verification loop is a first-class phase deliverable — not optional cleanup. It must use the Windows 11 CI artifact on a ≥ 20348 machine, a second-device viewer, and actively-playing non-call audio.
+
+**Delivers:** Verified fix (both viewer-hears-desktop-audio and viewer-does-not-hear-echo confirmed); fallback-path verification on dev box (19045 graceful-degradation); non-regression confirmation (Linux patchcord, macOS, pre-Win11 Windows); instrumentation stripped; upstream-PR-shaped diff (surgical, no Discord symbols cited, MS copyright retained, workaround documented as < 20348 fallback).
+
+**Verification checklist (all must pass):**
+- `screenshare-debug.log` on Win11 shows `native exclude-tree activated` + build ≥ 20348 (not fallback) — V1
+- Excluded root PID's subtree contains Audio Service PID from `app.getAppMetrics()` — V6
+- Second-device viewer hears desktop audio AND no call echo, with non-call audio actively playing — V2, V3
+- `.node` present in packaged artifact (CI assertion); resolved non-null at runtime — V4, M3
+- `.node` `require()`s on 19045 and reports "unsupported" — T2
+- In-Electron smoke call passes (not just bare Node) — T3
+- Linux patchcord and macOS still work — T4
+
+**Avoids:** M2 (instrumentation stripped before PR), W1 (workaround documented as fallback, not promoted as the fix).
+
+**Research flag:** Standard — verification protocol is fully specified across PITFALLS.md and ARCHITECTURE.md. No research phase needed.
+
+---
 
 ### Phase Ordering Rationale
 
-- Bug A before Bug B: Bug A blocks normal screenshare; without a working re-click, Bug B cannot be meaningfully isolated and validated.
-- Diagnose before fix (Phase 1 before Phase 2): Windows CI artifacts require manual testing. A single instrumented build is the same cost as a fix build; diagnosing first eliminates the risk of shipping the wrong fix and burning a second round-trip.
-- Both bugs before any out-of-scope work: The milestone is explicitly scoped to these two bugs only.
+- Phase 1 ships value immediately regardless of the native decision; it also establishes the structural integration seams (3-way dispatch, logging, packaging assertion) that make every subsequent CI round-trip informative rather than a round-trip to debug packaging.
+- Phase 2 gates the expensive native investment on a known-viable delivery path. The spike is cheap to fail fast; the full module is not.
+- Phase 3 can only land after Phase 2 resolves the delivery-path question. It is the only phase that requires a ≥ 20348 machine to develop against.
+- Phase 4 is necessarily last but is a required deliverable — the milestone cannot be honestly closed without it.
+- The workaround from Phase 1 serves double duty: it is the standalone P1 deliverable AND the < 20348 fallback that Phase 3's native code degrades to.
 
 ### Research Flags
 
-Phases needing deeper research during planning:
-- **Phase 2 (Bug A fix)** — if the instrumented build confirms H1 (Discord renderer never re-issues `getDisplayMedia`), and switching the error name from `NotAllowedError` to `AbortError` does not resolve the latch, a targeted exploration of Discord's go-live Flux state machine will be needed to identify and dispatch the correct abort action.
+**Needs deeper research / spike before committing:**
+- **Phase 2 (delivery-path spike):** `MediaStreamTrackGenerator` availability in Electron 41.3.0's Chromium must be confirmed against the specific Chromium build bundled in Electron 41.3.0 before choosing Option B. Option A (virtual device without a kernel driver) feasibility must also be prototyped.
 
-Phases with standard patterns (research not needed):
-- **Phase 1 (instrumentation)**: Adding log statements to known call sites is a trivial operation.
-- **Phase 3 (Bug B)**: The Patchcord platform gate is a one-line fix. The `audio: true` renderer alignment is a verified API contract. Both have high-confidence fix directions from research.
+**Standard patterns (skip research-phase):**
+- **Phase 1 (workaround + scaffolding):** all integration points fully documented; additive 3-way dispatch; packaging assertion mirrors existing venbind CI patterns.
+- **Phase 3 (native addon):** WASAPI capture settled from recon; napi-rs build + distribution follows venbind 1:1; async lifecycle follows the MS sample. Only the delivery path (resolved in Phase 2) was unknown.
+- **Phase 4 (verification + PR):** verification protocol fully specified; PR prep follows Phase-1 D-04/UPST-01 precedent.
 
 ---
 
@@ -138,53 +184,46 @@ Phases with standard patterns (research not needed):
 
 | Area | Confidence | Notes |
 |------|------------|-------|
-| Stack | HIGH | API contract verified against Electron `main`/41 docs. All API shapes confirmed. `useSystemPicker` macOS-only confirmed via implementing PRs. |
-| Features | HIGH | Cancel/restart contract from MDN, Electron #47980, Vesktop comparator. Windows loopback requirements from Electron docs + electron-audio-loopback reference. MEDIUM on Discord renderer internals (inferred from behaviour, not source). |
-| Architecture | HIGH | Control flow read directly from GoofCord source. Handler registration, `activeRequests` map, callback paths, and picker lifecycle all confirmed. MEDIUM on exact Electron 41.x failure mode (corroborated by issues on 26.x–35.x, not a confirmed 41.x reproduction). |
-| Pitfalls | MEDIUM-HIGH | Electron callback lifecycle pitfalls: HIGH (official docs + multiple issue reports). Discord renderer stuck-state: MEDIUM (inferred from code + API gap). Patchcord track-removal on Windows: HIGH (code read) — runtime-verified via log. |
+| Stack | HIGH | venbind/patchcord read directly from `node_modules`; `copyNativeModules` read directly from `build/build.ts`; napi-rs v3 + windows 0.62.2 verified on crates.io + npm; N-API ABI stability verified against Electron docs |
+| Features | HIGH | User-facing behavior + peer analysis (Vesktop, upstream GoofCord, OBS) cross-confirmed from public issues; build-coverage facts carried from locked recon (`02-FINDINGS.md`) |
+| Architecture | HIGH (capture) / MEDIUM (delivery) | Existing GoofCord audio data-flow read directly from source; patchcord analog verified; PCM-to-MediaStream delivery options (Option A/B) are based on documented mechanisms but their specific availability/cost in this Electron version is the open gap |
+| Pitfalls | HIGH | WASAPI `E_NOTIMPL` + static-link + async-lifecycle gotchas verified against Microsoft docs; process-tree exclusion verified against patchcord.ts + OBS #9669; verification traps follow from locked decisions D-08/D-09 |
 
-**Overall confidence:** MEDIUM-HIGH
-
-The API surface is well-understood and fix directions are clear. Remaining uncertainty: (1) the exact error name Discord's go-live state machine reacts to, confirmed only by the instrumented build; (2) whether `getVirtmic()` returns null on Windows in all real-world configurations, confirmed by a runtime log.
+**Overall confidence:** HIGH on what to build and how to integrate it; MEDIUM on the single open question of which PCM delivery path is viable in Electron 41.3.0.
 
 ### Gaps to Address
 
-- **Discord error name (NotAllowedError vs AbortError):** Research converges on the rejection name as the most likely lever for Bug A but cannot confirm which name Discord's reducer treats as "benign cancel → re-arm" without running. Resolution: Phase 1 build answers H1 vs H2; if H1, the Phase 2 fix can include an error-name switch with a documented rationale.
-- **`getVirtmic()` return value on Windows:** The Patchcord track-removal block is conditionally guarded by a device-label lookup. Research identifies it as the primary Bug B candidate but cannot confirm it fires without a runtime log. Resolution: add `console.log(getVirtmic())` in the Bug B diagnosis build before adding the platform gate.
-- **Electron 41.3.x `callback({})` wedge behaviour:** Issues #39566 and #47980 confirm the symptom class on 26.x–35.x; whether 41.3.0 is affected is unconfirmed. Resolution: the Phase 1 instrumented build distinguishes "handler not invoked" (H2, Electron wedge) from "handler invoked but Discord doesn't re-call" (H1, renderer state). If H2, a specific 41.x workaround investigation is added to Phase 2.
+- **Delivery path (Phase 2 spike — the only genuine unknown):** Whether Option A (virtual capture device without a kernel driver) or Option B (`MediaStreamTrackGenerator` / Web Audio bridge) is viable in Electron 41.3.0 is the make-or-break question for the native addon. The spike resolves it cheaply before committing to the full module. If neither path is viable without a kernel driver, the recommendation falls back to workaround-only.
+- **Audio Service PID parent/child relationship on Electron 41.3.0:** `02-FINDINGS.md §2.2` flags this as an open detail — the Audio Service process is known to exist (patchcord.ts confirms it) but whether it is a descendant of `process.pid` or a detached sibling was not observed on-box. Must be confirmed via logged `app.getAppMetrics()` output on the first ≥ 20348 CI artifact. If detached, the exclude root must be chosen accordingly or the Audio Service PID excluded separately.
+- **`MediaStreamTrackGenerator` in Electron 41.3.0 Chromium:** Only relevant if Option B is chosen. Verify against Electron 41.3.0's bundled Chromium version before using it; Web Audio `MediaStreamDestinationNode` is the fallback if Insertable Streams are unavailable.
 
 ---
 
 ## Sources
 
 ### Primary (HIGH confidence)
-
-- `src/windows/screenshare/screenshare.ts` (direct read) — main handler, `activeRequests`, cancel paths, `audio:"loopback"` grant
-- `src/windows/main/renderer/postVencord/screensharePatch.ts` (direct read) — `getDisplayMedia` monkeypatch, `NotAllowedError` re-throw, Patchcord track-removal block
-- `src/windows/main/main.ts:81` (direct read) — handler registered once per `createMainWindow()`
-- git `710cfde` (direct read) — the cancellation→NotAllowedError fix that exposed the re-click bug
-- `electron/electron` `docs/api/session.md` (`main`/41 branch) — `setDisplayMediaRequestHandler` full signature, `loopback`/`loopbackWithMute` Windows-only, `useSystemPicker` macOS 15+ only
-- `electronjs.org/docs/latest/api/desktop-capturer` — `getSources` options, return type, `id` format, main-process-only
-- electron/electron #47980 — no first-class cancel signal; unhandled handler exception hangs future requests
-- electron/electron #45517 — `video: undefined` + `audio` throws `"video must be a WebFrameMain or DesktopCapturerSource"`
-- electron/electron PRs #43581/#43679/#43680 — `useSystemPicker` macOS-only gating (ScreenCaptureKitPicker)
-- electron/electron #37293 — `disable_local_echo=true` hardcoded; local speakers muted during loopback capture
-- MDN `MediaDevices.getDisplayMedia()` — `NotAllowedError` on cancel; `AbortError` vs `NotAllowedError` taxonomy
-- `.planning/PROJECT.md` — scope, constraints, existing validated requirements
+- `node_modules/venbind/` + `build/build.ts:168-232` (direct read) — venbind distribution model, `copyNativeModules()` pipeline, `nativeModulePlugin` glob matching
+- `src/modules/native/{venbind,patchcord}.ts`, `src/windows/screenshare/screenshare.ts`, `src/windows/main/renderer/postVencord/screensharePatch.ts`, `src/windows/main/preload/bridge.ts` (direct read) — current audio data-flow, patchcord integration shape, track-swap renderer path
+- `.planning/phases/02-fix-bug-b-windows-loopback-audio-captured/02-FINDINGS.md` — settled mechanism (public WASAPI API, EXCLUDE-tree, build ≥ 20348, clean-room GO)
+- [crates.io: windows 0.62.2](https://crates.io/crates/windows) + [windows-docs-rs ActivateAudioInterfaceAsync](https://microsoft.github.io/windows-docs-rs/doc/windows/Win32/Media/Audio/fn.ActivateAudioInterfaceAsync.html) — Rust windows crate, MSRV 1.82.0
+- [@napi-rs/cli npm 3.6.2](https://www.npmjs.com/package/@napi-rs/cli) + [napi-rs v3 announcement](https://napi.rs/blog/announce-v3) — napi-rs v3 stable, cross-compile, prebuilt distribution
+- [Electron native modules](https://www.electronjs.org/docs/latest/tutorial/using-native-node-modules) + [Node-API](https://nodejs.org/api/n-api.html) — N-API ABI stability across Node/Electron
+- [MS PROCESS_LOOPBACK_MODE Requirements](https://learn.microsoft.com/en-us/windows/win32/api/audioclientactivationparams/ne-audioclientactivationparams-process_loopback_mode) — minimum build 20348
+- [MS ApplicationLoopback sample](https://learn.microsoft.com/en-us/samples/microsoft/windows-classic-samples/applicationloopbackaudio-sample/) + [microsoft/Windows-classic-samples LICENSE](https://github.com/microsoft/Windows-classic-samples/blob/main/LICENSE) — clean-room source (MIT); hardcoded format; `E_NOTIMPL` quirk
+- [Microsoft Q&A 1125409](https://learn.microsoft.com/en-us/answers/questions/1125409/) — `GetMixFormat`/`IsFormatSupported` return `E_NOTIMPL` on process-loopback device; hardcode CD-quality 2ch/16-bit/44100
+- [electron/electron#37293](https://github.com/electron/electron/issues/37293) — `disable_local_echo=true` hardcoded; streamer-side mirage
+- [obsproject/obs-studio#9669](https://github.com/obsproject/obs-studio/issues/9669) — process-tree exclusion gotcha (captured OBS's own tree when launched as child)
+- [GoofCord #46](https://github.com/Milkshiift/GoofCord/issues/46) — upstream bug; maintainer quote; workaround documented
 
 ### Secondary (MEDIUM confidence)
+- [Vesktop #789, #657, #569, #772, #918](https://github.com/Vencord/Vesktop/issues/) — closest peer; echo bug closed wontfix/upstream across multiple issues; confirms native is non-trivial
+- [PortAudio #935](https://github.com/PortAudio/portaudio/issues/935) / [Audacity #2356](https://github.com/audacity/audacity/issues/2356) — WASAPI loopback yields no samples when nothing is playing; verify-with-audio-playing requirement
+- [SteelSeries Sonar "Stream with Discord Without Echo" guide](https://support.steelseries.com/hc/en-us/articles/35145998503181) — vendor-documented separate-output-device workaround; confirms workaround is real and works on all builds
+- [WebRTC.ventures: Sending Generated Audio Through WebRTC](https://webrtc.ventures/2015/09/sending-generated-audio-through-webrtc-as-a-live-feed/) + [electron/electron#17690](https://github.com/electron/electron/issues/17690) — Option B (PCM-to-MediaStream) mechanisms; present in Chromium/Electron but availability on Electron 41.3.0 must be confirmed
 
-- electron/electron #39566 — "setDisplayMediaRequestHandler can't be used twice" (reporter could NOT reproduce in Fiddle → app state, not Electron; confirms handler is not the cause)
-- alectrocute/electron-audio-loopback — `{video:true, audio:true}` required; `"loopback"` vs `"loopbackWithMute"`; Electron ≥ 31.0.1
-- Vencord/Vesktop `src/main/screenShare.ts` — `callback({})` on cancel; `streams.audio = "loopback"` for win32 (working comparator)
-- electron/electron #25120 — Windows loopback captures full system mix; no per-app isolation
-- electron/electron #49607 — loopback silence with degenerate video on macOS 40.1.0 (macOS-specific; relevant as a class of failure to rule out on Windows)
-
-### Tertiary (LOW/contextual)
-
-- windowslatest / Chrome for Developers — WGC migration for Win11 24H2+; transparent to GoofCord but explains source enumeration timing changes
-- Electron release notes — Electron 41 = Chromium 146 / Node 24.14 / V8 14.6
+### Tertiary (LOW confidence / backstop)
+- [napi-rs cross-build docs](https://napi.rs/docs/cross-build.en) — Linux to Windows cross-compile; backstop only (CI is on `windows-latest`, making this unnecessary)
 
 ---
-*Research completed: 2026-05-29*
+*Research completed: 2026-05-30*
 *Ready for roadmap: yes*

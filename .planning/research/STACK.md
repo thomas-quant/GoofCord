@@ -1,135 +1,122 @@
 # Stack Research
 
-**Domain:** Electron desktop/screen capture + Windows system-audio (loopback) capture for a Discord client (GoofCord, a Vencord wrapper)
-**Researched:** 2026-05-29
-**Confidence:** HIGH (core API surface verified against Electron `main`-branch docs; some regression/behavioural detail is MEDIUM/LOW and flagged inline)
+**Domain:** Windows WASAPI process-loopback (exclude-tree) audio-capture native addon for an Electron/Bun app (GoofCord), following the existing `venbind`/`patchcord` native-addon precedent — milestone v1.1 echo fix (Bug B / upstream #46).
+**Researched:** 2026-05-30
+**Confidence:** HIGH on the venbind/patchcord build+distribution mechanism (read directly from the installed packages), HIGH on the public WASAPI API surface and toolchain versions (Context7 + crates.io/npm verified), MEDIUM on the cross-compile-from-CI specifics (verified the capability exists; the exact `windows-latest` runner recipe is straightforward but unproven on this repo).
 
-> **Scope note:** This is a *brownfield bug-fix* research pass, not a greenfield stack pick. The "stack" here is the Electron capture API contract the existing code already uses. The goal is to nail down the *exact, current* semantics of `setDisplayMediaRequestHandler`, `getDisplayMedia`, `desktopCapturer.getSources`, and Windows `audio: "loopback"` so the cancel/re-click and audio bugs can be fixed surgically and upstreamed. No new dependencies are recommended.
+> **Supersedes** the prior milestone's STACK.md (v1.0 — Electron capture-API semantics for the cancel/re-click fix). This pass is scoped to the v1.1 echo fix only: the stack/build choices needed to ship a Windows exclude-tree loopback capability, and the near-zero-stack workaround alternative, so the D-06 decision can weigh them.
+
+---
+
+## TL;DR for the D-06 decision
+
+Two paths, very different stack cost:
+
+- **Native addon path** (the real echo fix): add **one** new optional dependency — a small **Rust + napi-rs** `.node` addon wrapping the public WASAPI process-loopback API, built **on the existing `windows-latest` CI runner** (no cross-compile needed — CI already runs on Windows), and wired into the **existing** `native-module:` + `assets/native/*.node` + `copyNativeModules()` pipeline. **Zero new build tooling in GoofCord itself** (Rust/napi-rs live in the addon's own repo, exactly like venbind). This is the venbind clone, not a new pattern.
+- **User-side workaround path** (the < 20348 fallback / do-nothing-native option): **near-zero stack** — one settings-schema entry + a localization string + documentation. No native code, no new deps, trivially upstreamable.
+
+A **hybrid** (native where build ≥ 20348, documented workaround below it) costs exactly the native path's stack plus the workaround's near-zero stack, and is the recommendation the recon's "GO — conditional on build ≥ 20348" verdict points at.
+
+**The single most important precedent fact:** venbind is **already** a Rust + napi-rs `.node` addon distributed as **prebuilt per-platform binaries inside its npm package** — GoofCord never compiles it; `copyNativeModules()` in `build/build.ts` just copies `node_modules/venbind/prebuilds/windows-x86_64/venbind-windows-x86_64.node` to `assets/native/venbind-win32-x64.node`. A new WASAPI addon should follow this **identically**: ship prebuilt, consume prebuilt.
+
+---
+
+## How venbind & patchcord are ACTUALLY built and distributed (the precedent, verified)
+
+Read directly from `node_modules/venbind/` and `node_modules/patchcord/` + the build script. **Not guessed.**
+
+| | **venbind** (the right precedent) | **patchcord** (the wrong shape for audio capture) |
+|---|---|---|
+| What it is | A true N-API `.node` addon, `require()`d in-process | A standalone Rust **CLI binary**, `spawn()`ed as a **subprocess** over stdio |
+| Language / toolchain | **Rust + napi-rs**; also bindgen (needs libclang/LLVM) for its `uiohook-sys` submodule | **Rust** (`cargo build --release`), `miniserde`; no Node addon at all |
+| How GoofCord loads it | `require(venbindPath)` where `venbindPath` resolves a `.node` (`src/modules/native/venbind.ts:22`) | `new AudioSharePatchbay({ command: …path to binary })` → `child_process.spawn` (`node_modules/patchcord/node/patchcord.js:44`) |
+| Distribution | **Prebuilt per-platform `.node` shipped INSIDE the npm package**: `prebuilds/{windows-x86_64,windows-aarch64,linux-x86_64,linux-aarch64}/venbind-*.node`. Declared `"os":["linux","win32"]`,`"cpu":["x64","arm64"]` so npm/Bun only resolves on supported platforms. npm version `0.1.7` (pinned, not git). | **Prebuilt standalone binaries shipped inside the package**: `dist/patchcord-linux-{x64,arm64}`. `"os":["linux"]`. Consumed via `github:Milkshiift/patchcord` (git dep, pinned commit `f261163` in `bun.lock`). Built upstream via `build-rs.sh` (cargo + `-Z build-std`, nightly). |
+| GoofCord's role at build time | `copyNativeModules()` (`build/build.ts:168-232`) copies the matching prebuilt binary into `assets/native/`. **GoofCord does NOT compile it.** | Same — `copyNativeModules()` copies `dist/patchcord-linux-*` into `assets/native/`. |
+| Declared in `package.json` | `optionalDependencies: { "venbind": "0.1.7" }` | `optionalDependencies: { "patchcord": "github:Milkshiift/patchcord" }` |
+| Runtime gate | `--no-venbind` flag + try/catch; `venbindPath` is `null` on unsupported platforms (the `nativeModulePlugin` emits `export default null` when no file matches the target platform/arch) | `--no-patchcord` flag + `hasPipewirePulse` probe; Linux-only |
+
+**Decisive takeaways for the new addon:**
+
+1. **It's an N-API addon, distributed prebuilt.** Because napi-rs targets the **ABI-stable Node-API**, venbind ships **one** `.node` per platform/arch and it loads in Electron 41 **without recompilation** — N-API decouples the binary from `NODE_MODULE_VERSION`. This is *the* reason the prebuilt-binary model works and is the property the new addon must preserve. (Verified: venbind ships a single `venbind-windows-x86_64.node`, no per-Electron-version variants; Node-API is ABI-stable across Node/Electron — [Electron native modules docs](https://www.electronjs.org/docs/latest/tutorial/using-native-node-modules), [Node-API docs](https://nodejs.org/api/n-api.html).)
+2. **The build toolchain lives in the addon's OWN repo, not GoofCord.** GoofCord's build (`build/build.ts`, Bun) only ever **copies** a prebuilt binary. So adding a WASAPI addon adds **no Rust/cargo/cmake to GoofCord's build** — it adds a new prebuilt artifact to copy. This directly satisfies the "no new build tooling" constraint *for GoofCord*.
+3. **patchcord's subprocess model is the wrong shape here.** patchcord works as a subprocess because on Linux the *OS* (PipeWire) does the actual audio routing — patchcord just orchestrates the graph and Discord reads the virtual sink. On Windows there is no equivalent OS routing; the addon itself must run the WASAPI capture loop and stream PCM frames with low latency. That is an **in-process `.node` addon** job (venbind shape), not a stdio subprocess. **Follow venbind, not patchcord.**
 
 ---
 
 ## Recommended Stack
 
-### Core Technologies (already in use — confirmed correct)
+### Core Technologies (NATIVE ADDON PATH)
 
 | Technology | Version | Purpose | Why Recommended |
 |------------|---------|---------|-----------------|
-| Electron | 41.3.0 (Chromium 146, Node 24.14, V8 14.6) | Desktop shell + WebRTC/Chromium capture pipeline | Already pinned; this is the version the bug must be fixed against. All API claims below are checked against Electron `main`/41-line docs. |
-| `session.setDisplayMediaRequestHandler` | Electron API (no separate version) | Main-process hook invoked when renderer calls `getDisplayMedia`; lets the app supply the chosen source via `callback({...})` | The *only* supported way to feed a custom source picker into `getDisplayMedia` in Electron. Correct choice; the bug is in *how* it's driven, not the choice of API. |
-| `desktopCapturer.getSources` | Electron API | Enumerate `screen`/`window` capture sources (id, name, thumbnail) for the custom picker | Main-process only; returns a `Promise<DesktopCapturerSource[]>`. Correctly used in `fetchScreenshareData`. |
-| `navigator.mediaDevices.getDisplayMedia` (renderer) | Web API via Chromium | Renderer entry point that triggers the handler and resolves to a `MediaStream` | Standard. Discord calls it; the existing monkeypatch wraps it. |
-| `audio: "loopback"` (callback field) | Electron, **Windows-only** | Capture system audio alongside the video source on Windows | The documented, driver-free Windows loopback mechanism. Correctly used for the non-Linux audio path. |
+| **Rust** (stable) | 1.82.0+ (windows-rs MSRV) | Implementation language of the new WASAPI addon | Matches **both** existing native addons (venbind & patchcord are Rust). Reuses the maintainer's existing Rust addon muscle memory and lets the addon repo mirror venbind's structure 1:1. C++ is a viable alternative (see Alternatives) but diverges from precedent. |
+| **napi-rs** (`napi` crate + `@napi-rs/cli`) | `napi` 3.x / `@napi-rs/cli` **3.6.2** | Build the Rust code into an ABI-stable N-API `.node` addon + generate the JS/TS loader | **This is exactly what venbind uses.** napi-rs v3 (stable, 2025) targets the ABI-stable Node-API, so one prebuilt `.node` per platform loads in Electron 41 with no recompilation; v3 also dropped the old Docker cross-compile images in favour of native CLI cross-compilation. ([Announcing NAPI-RS v3](https://napi.rs/blog/announce-v3), [@napi-rs/cli npm](https://www.npmjs.com/package/@napi-rs/cli)) |
+| **windows** crate (windows-rs) | **0.62.2** | Safe Rust bindings to the WASAPI process-loopback API (`ActivateAudioInterfaceAsync`, `AUDIOCLIENT_ACTIVATION_PARAMS`, `AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS`, `PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE`, `IAudioClient`/`IAudioCaptureClient`) | Microsoft-published, generated from Windows metadata; exposes **the exact public symbols** the recon named (`02-FINDINGS.md §3.1`) with **no clean-room risk** — these are the public MS API, not Discord internals. `ActivateAudioInterfaceAsync` confirmed present in `windows::Win32::Media::Audio`. ([windows crate on crates.io](https://crates.io/crates/windows), [windows-docs-rs ActivateAudioInterfaceAsync](https://microsoft.github.io/windows-docs-rs/doc/windows/Win32/Media/Audio/fn.ActivateAudioInterfaceAsync.html)) |
 
-### Supporting Libraries (existing — no change recommended)
+> **Feature-gate the windows crate** to keep build time/size down: `windows = { version = "0.62", features = ["Win32_Media_Audio", "Win32_System_Com", "Win32_Foundation"] }`. Do NOT pull the whole crate.
 
-| Library | Version | Purpose | When to Use |
-|---------|---------|---------|-------------|
-| `patchcord` | github:Milkshiift/patchcord | Linux PipeWire/PulseAudio audio routing | Linux only — the `hasPipewirePulse && platform === "linux"` branch. Out of scope for this Windows fix; do not touch. |
-| `@vencord/types` | 1.14.1 | Types for `window.Vencord` / Discord internals in the renderer patch | Dev-only; relevant when editing `screensharePatch.ts`. |
+### Core Technologies (USER-SIDE WORKAROUND PATH)
 
-### Development / Verification Tools
+| Technology | Version | Purpose | Why Recommended |
+|------------|---------|---------|-----------------|
+| **(none — existing stack only)** | — | A settings toggle/help entry + docs telling the user to route GoofCord output to a separate audio device (VB-Cable / SteelSeries Sonar / Voicemeeter) so the captured default-endpoint mix excludes the call | Zero new dependency, zero native code, instantly upstreamable. Uses the **existing** `src/settingsSchema.ts` builder (`setting()`/`button()`) + `src/stores/localization/` strings. This is the only viable path for builds < 20348 regardless. |
+
+### Supporting Libraries / Glue (NATIVE ADDON PATH — all EXISTING, nothing new in GoofCord)
+
+| Library / Mechanism | Version | Purpose | When to Use |
+|---------------------|---------|---------|-------------|
+| `nativeModulePlugin` (`build/nativeImport.ts`) | existing | Resolves `native-module:../../../assets/native/wasapi-loopback-*.node` to the platform/arch-matched prebuilt at build time; emits `export default null` when no match (the graceful-degradation hook) | Reuse verbatim — add an `import wasapiPath from "native-module:.../wasapi-loopback-*.node"` in a new `src/modules/native/windowsLoopback.ts`, mirroring `venbind.ts`. |
+| `copyNativeModules()` (`build/build.ts`) | existing | Copies the prebuilt `.node` from `node_modules/<dep>/prebuilds/...` into `assets/native/<name>-<platform>-<arch>.node` | **Add one entry** to the `modules` array (alongside venbind/patchcord) pointing at the new addon's prebuild path + a `GOOFCORD_WASAPI_LOOPBACK_PATH` env override (mirrors `GOOFCORD_VENBIND_PATH`). |
+| `createRequire` + try/catch load | existing pattern | Load the addon at runtime, swallow failure, expose `is*Loaded()` | Mirror `obtainVenbind()` in `src/modules/native/venbind.ts:19-31`. |
+| Electron `app.getAppMetrics()` | Electron 41.3.0 (existing) | Enumerate GoofCord's own process tree / Audio Service PID to pass as the exclude target | patchcord already uses this (`patchcord.ts:80`) to find the `"Audio Service"` PID — reuse the same approach to resolve the exclude-tree root (resolves `02-FINDINGS.md §2.2` Electron multi-process concern). |
+| `src/settingsSchema.ts` `hidden()`/`setting()` | existing | Build-gate flag + optional user toggle; persisted via electron-sync-store | For the build-≥20348 detection result and any user opt-out. |
+
+### Development Tools (live in the ADDON's repo, not GoofCord)
 
 | Tool | Purpose | Notes |
 |------|---------|-------|
-| `.github/workflows/testBuild.yml` (Windows x64) | Produce a Windows artifact for manual repro | Only reliable way to test — there is no automated screenshare repro. Cancel → re-click and audio capture must be checked by hand on real Windows. |
-| Electron docs (`docs/api/session.md`, `desktop-capturer.md`) on the matching version tag | Confirm callback shape per version | Pin doc reads to the `v41.*`/`main` tag, not "latest", since the audio/picker wording is version-sensitive. |
+| `@napi-rs/cli` 3.6.2 | `napi build --platform --release --target x86_64-pc-windows-msvc` produces the `.node` + scaffolds the CI publish workflow | Run **in the addon repo's own CI**, exactly like venbind. `napi new` scaffolds a GitHub Actions matrix that builds + publishes prebuilds. ([napi build docs](https://napi.rs/docs/cli/build)) |
+| Rust toolchain (`rustup`, stable) | `cargo` builds the crate | windows crate MSRV 1.82.0. No bindgen/libclang needed (windows-rs is pure metadata-generated — **simpler than venbind**, which needs libclang for `uiohook-sys`). |
+| GitHub Actions `windows-latest` | Build the `x86_64-pc-windows-msvc` `.node` natively | The addon's CI uses a Windows runner → **MSVC native build, no cross-compile gymnastics.** Same runner GoofCord's `testBuild.yml` already uses. |
 
 ---
 
-## The API Contract (the load-bearing part of this research)
+## CI changes (GoofCord side) — what `testBuild.yml` needs
 
-### `session.setDisplayMediaRequestHandler(handler[, opts])` — verified signature (Electron `main`/41)
+Crucially, **GoofCord's CI does not need to compile anything.** The build/distribution split is:
 
-```
-handler(request, callback)
-  request:
-    frame          WebFrameMain | null   // null if the frame navigated/was destroyed
-    securityOrigin String
-    videoRequested Boolean
-    audioRequested Boolean
-    userGesture    Boolean
-  callback(streams)
-    streams.video           Object {id, name} | WebFrameMain   (optional)
-    streams.audio           String | WebFrameMain              (optional)
-                              // string MUST be "loopback" or "loopbackWithMute"
-                              // loopback => capture system audio — WINDOWS ONLY
-    streams.enableLocalEcho Boolean (optional, default false)  // only meaningful when audio is a WebFrameMain
-opts (optional, _macOS_ _Experimental_):
-    useSystemPicker Boolean (default false)   // macOS 15+ ONLY (see warning below)
-```
-**Confidence: HIGH** — quoted from `electron/electron` `docs/api/session.md` (`main` branch, matches the 41 line).
+1. **Addon repo CI** (new, owned alongside venbind) — builds + publishes the prebuilt `.node`. Native MSVC build on `windows-latest`; **no cross-compile needed** (the recon's "maintainer can't compile on 19045" constraint is irrelevant to CI — CI runs on a modern Windows runner that is ≥ build 20348). napi-rs v3 cross-compile exists as a backstop but isn't required here.
+2. **GoofCord CI** (`testBuild.yml`) — already runs on `windows-latest`, already runs `bun install --frozen-lockfile` then `bun run build`. Because `copyNativeModules()` copies the prebuilt addon out of `node_modules`, **the only change needed is making sure the new optional dependency is in `package.json` + `bun.lock`.** No new build step, no toolchain install (no Rust on the GoofCord runner).
 
-#### Callback semantics — what each form *does*
+**Concrete `testBuild.yml` deltas (minimal):**
+- **None to the workflow YAML itself** if the addon ships prebuilds via npm/git like venbind — `bun install` pulls it, `copyNativeModules()` copies it.
+- The artifact upload already globs `dist/**/*.zip`; the `.node` ends up inside the packaged app via electron-builder's normal `assets/` inclusion (verify the new file matches existing `assets/native/*.node` packaging — it will, since it lands in the same dir).
+- **If** the addon is *not* published with prebuilds and must be built in CI (NOT recommended), then add a `windows-latest`-only step: install Rust (`dtolnay/rust-toolchain@stable`), `napi build --release --target x86_64-pc-windows-msvc`, copy to `assets/native/`. This couples GoofCord's build to Rust and is the path to avoid — keep the build in the addon repo.
 
-| You call | Result in renderer `getDisplayMedia` | Notes |
-|----------|--------------------------------------|-------|
-| `callback({ video: {id, name} })` | Resolves with a video-only `MediaStream` | `id` is a `DesktopCapturerSource.id` (`screen:…` / `window:…`). The existing code's `{ video: { id, name, width: 9999, height: 9999 } }` works; extra width/height are ignored by the contract (constraints come from the renderer). |
-| `callback({ video: {…}, audio: "loopback" })` | Resolves with video **+ system-audio** track (Windows) | The supported Windows loopback path. **Requires a video source** — see audio section. |
-| `callback({})` (empty object) | **Rejects** `getDisplayMedia` — request is *denied* | This is the de-facto "deny/cancel" signal. It is the right primitive for cancellation. **HIGH** that it rejects; **MEDIUM** on the exact `DOMException.name` Chromium emits (community reports describe a non-`NotAllowedError` rejection, which is exactly why the existing renderer patch re-maps it). |
-| `callback({ video: undefined, audio: "loopback" })` | **Throws in the main process**: `"video must be a WebFrameMain or DesktopCapturerSource"` | Confirmed regression class (issue #45517, Electron 34/35). Never pass `audio` without a valid `video`. The current code avoids this (audio only set when `id` is truthy), but keep it that way. |
-| Handler throws, or never calls `callback` | `getDisplayMedia` hangs / unhandled rejection; subsequent requests can stall | Issue #47980 / #45517. The handler MUST call `callback` exactly once on every path, including errors. |
-
-**Confidence: HIGH** on "must call callback exactly once" and on the `undefined video` throw; **MEDIUM** on the precise rejection `name` for `callback({})`.
-
-#### Resetting / re-arming the handler
-
-- `setDisplayMediaRequestHandler(null)` resets to default. **HIGH.**
-- The handler set on `session.defaultSession` is **persistent** — it stays installed across requests. You do **not** need to re-register it per stream, and re-registering it (as `registerScreenshareHandler` does defensively with `removeHandler` for the IPC channels) is fine but is *not* what re-arms a new `getDisplayMedia` call. **HIGH.**
-- **Implication for the cancel/re-click bug:** the handler itself is not "consumed" by a request. A second `getDisplayMedia` call from the renderer *will* re-invoke the same handler — *if* the renderer actually issues a second call. This strongly points the bug at **renderer-side (Discord) stream-start state not being reset**, not at the main-process handler being torn down. See Pitfalls in the cross-file research; STACK-level conclusion below.
-
-### `navigator.mediaDevices.getDisplayMedia(opts)` (renderer) — rejection taxonomy
-
-| Rejection `name` | Meaning (per WebRTC/Chromium) | How a caller (Discord) should treat it |
-|------------------|-------------------------------|----------------------------------------|
-| `NotAllowedError` | User/permission denied capture | Treated as a clean cancel — **swallowed silently**, UI returns to idle, ready to retry. This is why the existing fix re-throws cancellation as `NotAllowedError`. |
-| `NotReadableError` | Hardware/OS lock prevented access to a device | Often surfaced as an error toast; may be retried |
-| `AbortError` | Any other failure not covered above | Generic failure; behaviour varies by caller |
-| Generic / non-standard | What raw Electron `callback({})` tends to surface | Discord may not recognise it as cancellation → uncaught error (the original #196 symptom) |
-
-**Confidence: HIGH** on the standard names/semantics (MDN, WebRTC spec); **MEDIUM** on "Discord swallows `NotAllowedError` and re-arms its own button" — that is inferred from how browsers behave and from the existing fix's intent, and should be the prime thing verified manually on Windows.
-
-**Key insight for the re-click bug:** mapping cancellation to `NotAllowedError` is the *correct* contract-level choice (it's exactly what real browsers throw on cancel). If a second click still does nothing after that, the problem is almost certainly **Discord's own renderer state machine** treating the stream-start as still in-flight (it never sees a state transition that re-enables the button), *or* the wrapper resolving/rejecting on a path Discord doesn't expect. Resetting/short-circuiting cleanly in the renderer patch (ensure exactly one resolve/reject, no swallowed-then-stuck promise) is the lever, not the main-process handler.
-
-### `desktopCapturer.getSources(options)` — verified
-
-```
-desktopCapturer.getSources({
-  types: ["screen", "window"],          // required
-  thumbnailSize?: { width, height },    // default 150x150; {0,0} skips thumbnails
-  fetchWindowIcons?: boolean            // default false
-}) -> Promise<DesktopCapturerSource[]>
-```
-- **Main process only.** Returns a Promise (the old callback form is removed). **HIGH.**
-- `DesktopCapturerSource`: `{ id, name, thumbnail (NativeImage), display_id, appIcon }`. `id` format: `screen:Z:0` / `window:XX:YY`. **HIGH.**
-- The existing `fetchScreenshareData` usage is correct. The `initialPromise` pre-fetch + `refreshScreenshareSources` reuse pattern is a reasonable perf optimisation and not implicated in the cancel bug.
-- **Windows-specific note:** Chromium on Windows 11 24H2+ is migrating screen capture to **Windows Graphics Capture (WGC)** (replacing the older DXGI duplicator) for HDR/perf. This is mostly transparent but is the kind of capture-stack change that can alter window-capture availability and timing across the 38→41 range. **MEDIUM** (vendor blog + Chromium tracking, not Electron-specific repro).
+**Verification note (from PROJECT.md / MEMORY):** the maintainer's box is Win10 19045 (< 20348), so the native path **cannot be exercised locally**. Verification = the `windows-latest` CI artifact (CI runners are ≥ 20348) + a second physical device on Windows 11, viewer-side, with audio actively playing (WASAPI loopback delivers no samples on silence — D-08).
 
 ---
 
-## Windows `audio: "loopback"` — requirements & limitations
+## Installation (what actually gets added)
 
-| Requirement / Limitation | Detail | Confidence |
-|--------------------------|--------|------------|
-| Windows only | `"loopback"`/`"loopbackWithMute"` are documented as "currently only supported on Windows". On Linux this is correctly replaced by patchcord; on macOS it is unsupported. | HIGH (session.md) |
-| Must request **video** too | `getDisplayMedia({ audio: true, video: false })` throws `NotSupportedError`; loopback only works attached to a granted video source. Renderer must request `video: true` (or video + audio). | HIGH (community + repo issues; consistent across sources) |
-| `loopback` vs `loopbackWithMute` | Both capture system audio; `loopbackWithMute` additionally mutes local playback while capturing. `enableLocalEcho` is the *WebFrameMain* analogue and does not apply to the `"loopback"` string. | HIGH (session.md wording) |
-| Captures **whole system** audio, not per-app | The Windows `"loopback"` mechanism captures the system mix, not a single application. There is no per-application audio isolation on this path (that's what patchcord/venmic do on Linux). Don't promise per-app audio on Windows via this API. | MEDIUM (issue #25120 + lib docs) |
-| Min Electron for loopback to work at all | >= 31.0.1. 41 is well past this. | MEDIUM (electron-audio-loopback docs) |
-| **Silent-stream regression risk (38→41)** | A class of "loopback returns silence / `Can't wrap SharedImage as VideoFrame`" bugs appears when the paired video is 0×0. Reported broken at Electron 40.1.0 vs working at 35.1.2 (issue #49607 — *reported on macOS*, but the failure mode is the loopback/SharedImage pipeline and worth ruling out on Windows). Workaround: use a non-zero video size (e.g. 4×4) for audio-only intent. **For GoofCord this means: when audio is requested, ensure the video track that carries it is a real, non-degenerate source — don't let constraints collapse it.** | MEDIUM/LOW — flag for manual verification on the Windows artifact |
-| Feedback-loop caveat | System loopback includes the app's *own* output (e.g. other call participants), which can create echo. Discord normally handles this app-side; just be aware when validating audio quality. | MEDIUM (issue #25120) |
+```bash
+# NATIVE ADDON PATH — added to GoofCord's package.json optionalDependencies,
+# mirroring venbind. The addon itself is built/published from its own repo.
+#   "optionalDependencies": {
+#     "patchcord": "github:Milkshiift/patchcord",
+#     "venbind": "0.1.7",
+#     "<wasapi-loopback-addon>": "github:Milkshiift/<addon>"   // or pinned npm version
+#   }
+bun add -O github:Milkshiift/<wasapi-loopback-addon>   # optional dep, prebuilt .node inside
 
----
+# In the ADDON's own repo (NOT GoofCord) — the build toolchain:
+cargo add windows --features Win32_Media_Audio,Win32_System_Com,Win32_Foundation
+cargo add napi --features napi8        # napi-rs runtime
+cargo add napi-derive
+npm install -D @napi-rs/cli@3.6.2      # build CLI + CI scaffold
 
-## Electron 38 → 41 changes/regressions relevant to Windows screenshare
-
-| Area | What changed / risk | Confidence | Action |
-|------|---------------------|------------|--------|
-| Chromium bump | 41 = Chromium 146 / Node 24.14 / V8 14.6. Each Chromium bump can shift `getDisplayMedia` rejection wording and capture timing. | HIGH (release notes) | Treat rejection `name` as Chromium-dependent; the renderer patch normalising to `NotAllowedError` insulates against this — keep it. |
-| Loopback / SharedImage silence (#49607) | Loopback silence with degenerate video; reported 40.x vs 35.x. | MEDIUM/LOW | Verify Windows audio with a non-zero video size; rule this out before assuming a GoofCord-only bug. |
-| `video: undefined` + `audio` throw (#45517) | Passing audio with no/empty video throws in main on 34/35; behaviour persists as a contract rule. | HIGH | Never set `audio` unless a valid `video` source exists (current code already guards this). |
-| Cancellation/unhandled-rejection handling (#47980) | Electron has *no* first-class "user cancelled" signal; cancel is expressed by `callback({})` and the app must map it. Unhandled handler exceptions hang future requests. | HIGH | Ensure handler calls `callback` exactly once on every path (it does), and the renderer maps the resulting rejection to `NotAllowedError` (it does). |
-| IPC callback empty-event crash (#48992 / #48987) | "crash when creating event object for ipc events" fixed on the 39-line (Nov 2025). Not screenshare-specific but touches IPC callback plumbing the picker relies on. | LOW | Just be aware; 41.3.0 should already include the fix. |
-| `useSystemPicker` | Still gated to **macOS 15+** and the whole `opts` object is tagged `_macOS_ _Experimental_` on the 41 line. **There is no Windows native-picker support via `useSystemPicker` in Electron 41.** | HIGH (session.md verbatim) | **Do NOT adopt `useSystemPicker` for the Windows fix** (see What NOT to Use). |
+# USER-SIDE WORKAROUND PATH — nothing installed. Edit src/settingsSchema.ts + a lang JSON.
+```
 
 ---
 
@@ -137,58 +124,67 @@ desktopCapturer.getSources({
 
 | Recommended | Alternative | When to Use Alternative |
 |-------------|-------------|-------------------------|
-| Keep the custom `setDisplayMediaRequestHandler` picker | `useSystemPicker: true` (native OS picker) | **Not on Windows** — Electron 41 only supports it on macOS 15+. Even on macOS it bypasses the custom handler and loses GoofCord's resolution/framerate/audio UI. Not upstream-appropriate for this Windows fix. |
-| `audio: "loopback"` (Windows) | `getUserMedia({ audio: { chromeMediaSource: "desktop", … } })` desktop-audio constraint | Legacy desktop-audio path; messier, prone to capturing the app's own output (#25120), and not the documented modern route. Avoid. |
-| `desktopCapturer.getSources` for the picker UI | Direct `chromeMediaSourceId` constraints in renderer | The renderer cannot use `deviceId`/source selection directly with `getDisplayMedia`; the handler is the supported channel. Keep current design. |
+| **Rust + napi-rs** addon | **C++ + node-addon-api + cmake-js / node-gyp** | Choose C++ only if you want the implementation to map 1:1 onto the Microsoft `ApplicationLoopback` C++ sample (the clean-room source) with the least translation. It's a legitimate, even *more direct* clean-room port. **But** it diverges from both existing addons (Rust), needs its own cmake-js/node-gyp toolchain, and `node-addon-api`/`prebuildify` binaries are still N-API ABI-stable so the distribution model is identical. Net: same prebuilt-`.node` outcome, less consistent with the repo. The recon's clean-room reference is C++; napi-rs requires re-expressing it in Rust via windows-rs (mechanical, well-trodden). |
+| **`windows` crate (windows-rs)** | **`wasapi` crate** (henquist/wasapi-rs) | The `wasapi` crate is a friendlier high-level wrapper, but the **process-loopback activation path is niche** and may not expose `AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS` / `EXCLUDE_TARGET_PROCESS_TREE` cleanly. Use raw `windows-rs` for full control over the activation params; consider `wasapi` only if it demonstrably covers the exclude-tree activation. |
+| **windows-latest native CI build** | **napi-rs v3 Linux→Windows cross-compile** | Only if you ever want to build the addon without a Windows runner. Unnecessary here — GoofCord's CI is already on `windows-latest` and the addon's CI can be too. ([napi-rs cross-build](https://napi.rs/docs/cross-build.en)) |
+| **Prebuilt-in-package distribution** (venbind model) | **Build-in-GoofCord-CI** | Avoid. Building the addon inside GoofCord's CI couples GoofCord's build to Rust and violates the spirit of "no new build tooling." Keep the toolchain in the addon repo; GoofCord only copies the artifact. |
+| **Hybrid (native ≥ 20348 + workaround below)** | **Workaround-only** | Workaround-only is the right *interim* milestone if shipping a new native binary + CI is judged too heavy for an upstream PR right now — it's the only thing that works < 20348 anyway, and it's a near-zero-diff change. The recon's GO verdict supports building native eventually; the hybrid captures both. |
 
-## What NOT to Use / Do
+---
+
+## What NOT to Use / NOT to Add
 
 | Avoid | Why | Use Instead |
 |-------|-----|-------------|
-| `useSystemPicker: true` to "fix" Windows | macOS 15+ only in Electron 41; no-op or wrong on Windows, and not upstream-friendly for a Windows bug | Keep the custom picker; fix the state-reset on cancel |
-| Calling `callback` with `audio` but no/`undefined` `video` | Throws `"video must be a WebFrameMain or DesktopCapturerSource"` in main (#45517) | Only attach `audio: "loopback"` when a real video source `id` exists (current guard is correct) |
-| Letting the handler ever return without calling `callback`, or throwing out of it | Hangs `getDisplayMedia`; stalls *future* requests (#47980) — a likely contributor to "second click does nothing" | Call `callback` exactly once on every branch (cancel → `callback({})`, error → `callback({})`); never throw |
-| Re-throwing/raw-surfacing the cancel rejection to Discord | Discord doesn't recognise the generic Electron rejection → uncaught error (#196) | Map cancellation to `DOMException("…","NotAllowedError")` in the renderer patch (already done) |
-| Assuming the *main-process handler* is what's stuck on re-click | The handler on `defaultSession` persists and is re-invoked per call; it is not consumed | Investigate **renderer/Discord stream-start state** + ensure the patched `getDisplayMedia` resolves/rejects exactly once and doesn't leave a hung promise |
-| Degenerate (0×0) video when only audio is wanted | Triggers SharedImage/silent-stream class bugs in recent Chromium (#49607) | Use a real, non-zero video source for the loopback carrier |
+| **Any copied Discord code / Discord's symbol layout** (`ActivateApplicationLoopbackForProcessTree`, `excludedSubtrees`) as an implementation recipe | Breaks the LOCKED clean-room boundary (D-05); poisons the upstream PR and creates licensing exposure | The **public Microsoft `ApplicationLoopback` sample** + windows-rs bindings only. The recon read Discord's DLL **only** to learn *which* API — never *how*. |
+| **A virtual audio cable / kernel driver** (the macOS-style approach) | Heavy, requires install/admin, not cleanly upstreamable, unnecessary — Windows has the in-OS API since build 20348 | In-OS WASAPI process-loopback (no device install). |
+| **Chromium `audio: "loopback"` / `"loopbackWithMute"`** for the echo fix | Captures the **whole** endpoint mix including Discord's own playback — this is the *cause* of Bug B, not a fix | Native exclude-tree capture (the addon). Keep `"loopback"` only as the pre-existing whole-mix behaviour for users who don't hit echo. |
+| **node-gyp/cmake-js inside GoofCord's Bun build** | Adds a second build system to a repo whose constraint is explicitly "no new build tooling"; would force Rust/C++ toolchains onto every GoofCord build/CI | Keep the compile in the addon's own repo; GoofCord's `copyNativeModules()` only copies a prebuilt `.node`. |
+| **Per-Electron-version / per-Node-version prebuilds (`prebuild`/`node-pre-gyp`-style ABI matrix)** | Unnecessary churn — N-API addons are ABI-stable across Node/Electron; venbind ships **one** binary per platform and it works in Electron 41 | A single N-API `.node` per `{platform, arch}` (napi-rs default), exactly like venbind. |
+| **bindgen / libclang dependency** (venbind needs it for `uiohook-sys`) | The WASAPI addon has no C header to bind — windows-rs is metadata-generated | Pure `windows` crate; **simpler build than venbind**, no libclang. |
+| **A heavyweight audio framework (CPAL, miniaudio, ffmpeg)** | Overkill; the capability is a direct WASAPI activation + a capture loop — a few hundred lines against `windows-rs`, matching the MS sample | Raw `windows-rs` WASAPI, modelled on the MS `ApplicationLoopback` sample. |
+
+---
 
 ## Stack Patterns by Variant
 
-**If the second-click-does-nothing bug reproduces with the handler clearly being re-invoked (add a log in the handler):**
-- The main-process side is fine; the stuck state is in Discord's renderer stream-start flow.
-- Fix in `screensharePatch.ts` / renderer: guarantee the wrapped `getDisplayMedia` always settles exactly once, and that cancellation rejects as `NotAllowedError` *without* leaving a pending GoofCord-side promise (e.g. patchcord stop) that blocks the next attempt.
+**If the chosen D-06 path is NATIVE (or HYBRID):**
+- New optional dependency = a **Rust + napi-rs `.node` addon** (venbind clone), built in its **own** repo on `windows-latest`, shipping a prebuilt `x86_64-pc-windows-msvc` `.node`.
+- GoofCord integration is **three small files / edits**: `src/modules/native/windowsLoopback.ts` (mirror `venbind.ts`), one entry in `copyNativeModules()` (`build/build.ts`), one `optionalDependencies` line. Plus the runtime build-≥20348 gate + graceful fallback (the `nativeModulePlugin` already emits `null` for unsupported platforms; add a `winver`/build check before activating).
+- Exclude target = GoofCord/Electron **process tree** (via `app.getAppMetrics()` to find the Audio Service PID), not a single window PID (`02-FINDINGS.md §2.2`).
 
-**If the handler is NOT re-invoked on the second click (no log fires):**
-- Discord never re-issued `getDisplayMedia` → its button/flux state thinks a stream-start is still pending.
-- Look at the `STREAM_CLOSE`/stream-start dispatch path and ensure the cancelled attempt produces the state transition Discord needs to re-enable the button.
+**If the chosen D-06 path is WORKAROUND-ONLY:**
+- **No new dependency, no native code.** One `setting()`/`hidden()` entry in `src/settingsSchema.ts` + a localization string + a docs/help blurb describing the separate-output-device routing. Fully upstreamable, near-zero diff.
 
-**If Windows audio is silent but video works:**
-- Confirm a non-zero video source carries the `"loopback"` track (rule out #49607-class regression).
-- Confirm `audio: "loopback"` is actually being set (the `audioConfig.mode !== "none"` + non-Linux branch in `screenshare.ts`).
-- Confirm the renderer patch isn't stripping the loopback audio track (the patchcord block removes audio tracks only when a virtmic `id` is found — ensure that doesn't fire on Windows).
+**If build < 20348 (always, regardless of path):**
+- The native exclude-tree API is unavailable → degrade gracefully to the workaround/no-system-audio. The addon must detect the build (`02-FINDINGS.md §2.3`) and not hard-fail — mirror Discord's own `"audioses is too old…"` fallback behaviour.
+
+---
 
 ## Version Compatibility
 
-| Package A | Compatible With | Notes |
+| Component | Compatible With | Notes |
 |-----------|-----------------|-------|
-| Electron 41.3.0 | Chromium 146 / Node 24.14 / V8 14.6 | `audio: "loopback"` supported; `useSystemPicker` macOS-15-only |
-| `audio: "loopback"` | Electron >= 31.0.1 | Loopback non-functional below this; 41 is fine |
-| `desktopCapturer.getSources` | Electron (Promise-only) | Callback form removed years ago; current code already Promise-based |
+| napi-rs N-API `.node` | Electron 41.3.0 / Node 24.x | N-API is ABI-stable — one prebuilt binary works across Node/Electron without `NODE_MODULE_VERSION` recompilation. This is why venbind 0.1.7 (built once) loads in Electron 41. ([Electron native modules](https://www.electronjs.org/docs/latest/tutorial/using-native-node-modules)) |
+| `windows` 0.62.2 | Rust 1.82.0+ (MSRV) | windows-rs MSRV is 1.82.0; use stable Rust in the addon repo. ([crates.io/windows](https://crates.io/crates/windows)) |
+| `@napi-rs/cli` 3.6.2 | `napi` 3.x crate | Use matching v3 CLI + runtime; v3 is the current stable line (2025+). |
+| WASAPI process-loopback API | **Windows build ≥ 20348 only** (effectively Windows 11) | Hard runtime precondition; the addon must build-gate. Header `audioclientactivationparams.h`. Win10 retail (incl. 19045) is below it. ([MS Requirements table](https://learn.microsoft.com/en-us/windows/win32/api/audioclientactivationparams/ne-audioclientactivationparams-process_loopback_mode)) |
+| `assets/native/*.node` glob | `nativeImport.ts` matcher | Matcher lowercases and checks the filename `includes(platform) && includes(arch)`. Name the prebuild so `win32`/`x64` (or the `copyNativeModules()` output name `wasapi-loopback-win32-x64.node`) match — follow venbind's `venbind-win32-x64.node` output naming. |
+
+---
 
 ## Sources
 
-- `electron/electron` `docs/api/session.md` (`main` branch, matches 41 line) — `setDisplayMediaRequestHandler` signature, `loopback`/`loopbackWithMute` "Windows only", `useSystemPicker` "macOS 15+ only" `_macOS_ _Experimental_`. **HIGH**
-- electronjs.org `/docs/latest/api/desktop-capturer` + `structures/desktop-capturer-source` — `getSources` options, return type, `id` format, main-process-only, WGC/macOS caveats. **HIGH**
-- electron/electron #47980 "setDisplayMediaRequestHandler must handle exceptions and user cancellation" — no native cancel signal; unhandled rejection hangs future requests. **HIGH**
-- electron/electron #45517 "Unhandled rejection…" — `video: undefined` + `audio` throws `"video must be a WebFrameMain or DesktopCapturerSource"` (34/35). **HIGH**
-- electron/electron PRs #43581/#43679/#43680 — `useSystemPicker` added in Electron 32/33, **macOS only**. **HIGH**
-- electron/electron #49607 "Broken Desktop Audio Capture" — loopback silence / SharedImage, 40.1.0 broke vs 35.1.2 (reported macOS; failure mode is the loopback pipeline). **MEDIUM/LOW**
-- electron/electron #25120 — Windows desktop audio captures system mix incl. app's own output; no per-app isolation. **MEDIUM**
-- alectrocute/electron-audio-loopback (README) — must request `video: true`, Electron >= 31.0.1, Win10+/macOS12.3+/Linux. **MEDIUM**
-- MDN getUserMedia + WebRTC error taxonomy — `NotAllowedError` vs `NotReadableError` vs `AbortError`. **HIGH**
-- releases.electronjs.org / Electron blog — Electron 41 = Chromium 146 / Node 24.14 / V8 14.6. **HIGH**
-- windowslatest / Chrome for Developers — Windows Graphics Capture (WGC) migration for getDisplayMedia on Win11 24H2+. **MEDIUM**
+- **`node_modules/venbind/` + `node_modules/patchcord/` (read directly)** — HIGH. Established the build/distribution mechanism factually: venbind = Rust+napi-rs prebuilt `.node` in `prebuilds/`; patchcord = Rust CLI prebuilt binary in `dist/`, run as a subprocess. `package.json` `os`/`cpu` gating, version pins (`venbind@0.1.7`, `patchcord@github#f261163`).
+- **`build/build.ts:168-232` (`copyNativeModules`), `build/nativeImport.ts`, `src/modules/native/{venbind,patchcord}.ts` (read directly)** — HIGH. Confirmed GoofCord only *copies* prebuilt binaries; no compile in GoofCord's build; the `native-module:` resolution + `null` fallback for unsupported platforms.
+- **`.planning/phases/02-.../02-FINDINGS.md` & `02-RESEARCH.md`** — HIGH (the reconned mechanism; not re-derived). Public WASAPI symbol surface, EXCLUDE-tree = echo fix, build ≥ 20348, Electron multi-process exclude-tree target.
+- [/napi-rs/website via Context7] — HIGH — `napi build` CLI, cross-compile, prebuilt distribution model.
+- [Announcing NAPI-RS v3](https://napi.rs/blog/announce-v3) + [@napi-rs/cli npm](https://www.npmjs.com/package/@napi-rs/cli) — HIGH — `@napi-rs/cli` latest **3.6.2**; v3 native cross-compile (Docker images dropped).
+- [crates.io: windows](https://crates.io/crates/windows) + [windows-docs-rs ActivateAudioInterfaceAsync](https://microsoft.github.io/windows-docs-rs/doc/windows/Win32/Media/Audio/fn.ActivateAudioInterfaceAsync.html) — HIGH — `windows` crate **0.62.2**, MSRV 1.82.0, exposes `ActivateAudioInterfaceAsync` + WASAPI process-loopback types in `Win32::Media::Audio`.
+- [Electron native modules](https://www.electronjs.org/docs/latest/tutorial/using-native-node-modules) + [Node-API](https://nodejs.org/api/n-api.html) — HIGH — N-API ABI stability across Node/Electron (one prebuilt binary, no per-version recompilation).
+- [MS PROCESS_LOOPBACK_MODE Requirements](https://learn.microsoft.com/en-us/windows/win32/api/audioclientactivationparams/ne-audioclientactivationparams-process_loopback_mode) — HIGH — minimum build 20348.
+- [napi-rs cross-build](https://napi.rs/docs/cross-build.en) — MEDIUM — cross-compile capability (backstop, not needed since CI is on `windows-latest`).
 
 ---
-*Stack research for: Electron Windows screen + loopback-audio capture (GoofCord bug-fix)*
-*Researched: 2026-05-29*
+*Stack research for: Windows WASAPI process-loopback (exclude-tree) native addon for GoofCord — milestone v1.1 echo fix*
+*Researched: 2026-05-30*
