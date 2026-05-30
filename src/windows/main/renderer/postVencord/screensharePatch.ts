@@ -33,6 +33,11 @@ export function patchScreenshare() {
 			// Backing out of GoofCord's source picker makes Electron reject getDisplayMedia with a
 			// generic error that Discord doesn't recognize as a cancellation, surfacing it as an
 			// uncaught error. Re-throw the standard error browsers use so the web client ignores it.
+			// Cancellation-name lever (PITFALLS Pitfall 1): the DOMException name below is the single
+			// evidence-gated point of truth. KEEP "NotAllowedError" for the combined diagnostic build;
+			// switch to "AbortError" ONLY if the trace proves H1 (Discord latches go-live state and
+			// never re-issues getDisplayMedia) AND "NotAllowedError" fails to clear that latch. Whatever
+			// name is chosen must still be swallowed by Discord as a cancellation (STREAM-03 / 710cfde).
 			throw new DOMException("Permission denied by system", "NotAllowedError");
 		}
 		console.log("Setting stream's content hint and audio device");
