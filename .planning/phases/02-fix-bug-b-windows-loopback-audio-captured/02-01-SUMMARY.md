@@ -83,3 +83,8 @@ None. The unfilled mechanism verdict, evidence-table rows, the "which process tr
 - The developer runs `02-RECON-RUNBOOK.md` on their Windows box; each of the 9 `Result:` slots maps 1:1 to a row in `02-FINDINGS.md → ## 1. Mechanism + Evidence`.
 - After observations are recorded, the Section-1 Verdict placeholder is replaced with the evidence-backed mechanism (virtual-device driver | public WASAPI process-loopback | other | inconclusive), and Section 3.3 final clean-room go/no-go is synthesized from the public API (Section 3.1) + the hands-on mechanism finding.
 - A `strings` hit MUST be corroborated by `dumpbin /imports` before confidence is upgraded (Pitfall 3/5).
+
+## Self-Check: PASSED
+
+- Files: `02-FINDINGS.md`, `02-RECON-RUNBOOK.md`, `02-01-SUMMARY.md` — all FOUND.
+- Commits: f1267f2, bf2fac2, f0a9401, 1900395 — all FOUND.

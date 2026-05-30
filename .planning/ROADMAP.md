@@ -59,7 +59,7 @@ Plans:
 Plans:
 **Wave 1**
 
-- [ ] 02-01-PLAN.md — Desk-research baseline + inspection runbook: write the public WASAPI process-loopback baseline (API surface, min build 20348, macOS-driver contrast, Electron multi-process complication) into the `02-FINDINGS.md` skeleton, and author the copy-pasteable `02-RECON-RUNBOOK.md` the developer will run on their Windows box. Autonomous (no machine access needed). (D-02, D-05)
+- [x] 02-01-PLAN.md — Desk-research baseline + inspection runbook: write the public WASAPI process-loopback baseline (API surface, min build 20348, macOS-driver contrast, Electron multi-process complication) into the `02-FINDINGS.md` skeleton, and author the copy-pasteable `02-RECON-RUNBOOK.md` the developer will run on their Windows box. Autonomous (no machine access needed). (D-02, D-05)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
@@ -73,4 +73,4 @@ Phases execute in numeric order: 1 → 2
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Fix Bug A — Cancel then Restart Works | 2/2 | Complete    | 2026-05-30 |
-| 2. Fix Bug B — Windows Loopback Audio Captured | 0/2 | Not started | - |
+| 2. Fix Bug B — Windows Loopback Audio Captured | 1/2 | In Progress|  |

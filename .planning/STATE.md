@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-last_updated: "2026-05-30T15:56:27.887Z"
-last_activity: 2026-05-30 -- Phase 02 planning complete
+last_updated: "2026-05-30T16:23:56.543Z"
+last_activity: 2026-05-30
 progress:
   total_phases: 2
   completed_phases: 1
   total_plans: 4
-  completed_plans: 2
+  completed_plans: 3
   percent: 50
 ---
 
@@ -20,16 +20,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-29)
 
 **Core value:** On Windows, a user can start a screenshare, cancel the source picker, and start again — and the stream works — without the app getting stuck or requiring a restart.
-**Current focus:** Phase 2 — fix bug b — windows loopback audio captured
+**Current focus:** Phase 02 — fix-bug-b-windows-loopback-audio-captured
 
 ## Current Position
 
-Phase: 2 of 2 (fix bug b — windows loopback audio captured)
-Plan: Not started
+Phase: 02 (fix-bug-b-windows-loopback-audio-captured) — EXECUTING
+Plan: 2 of 2
 Status: Ready to execute
-Last activity: 2026-05-30 -- Phase 02 planning complete
+Last activity: 2026-05-30
 
-Progress: [██████████] 100%
+Progress: [████████░░] 75%
 
 ## Performance Metrics
 
@@ -53,6 +53,7 @@ Progress: [██████████] 100%
 *Updated after each plan completion*
 | Phase 01 P01 | 4 | 3 tasks | 2 files |
 | Phase 01 P02 | 25 | 4 tasks | 2 files |
+| Phase 02 P01 | 3 | 3 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -71,6 +72,9 @@ Recent decisions affecting current work:
 - [Phase ?]: [01-01] Bug A instrumentation: greppable [ScreenshareDebug][A|B|C] tags + monotonic counters (renderer getDisplayMediaCallCount, main debugRequestCount); B/C append to userData/screenshare-debug.log; one revertable commit 2f4b94d to strip before upstream PR (D-04).
 - [Phase ?]: Bug A fixed by exactly-once finishRequest + KEPT NotAllowedError (Task 4 not needed); verified on combined Windows CI build run 26673048740
 - [Phase ?]: 01-02 instrumentation stripped manually (not git revert 2f4b94d, since 88baaf2 relocated the C log lines); PR-ready diff is finishRequest + NotAllowedError only, source-only, no new deps (UPST-01)
+- [Phase ?]: [02-01] Phase 2 recon desk-research baseline written to 02-FINDINGS.md (public WASAPI EXCLUDE_TARGET_PROCESS_TREE = echo fix, min build 20348 + fallback, Electron separate Audio Service process, macOS contrast); mechanism verdict + clean-room go/no-go left as explicit unfilled [TO BE FILLED IN 02-02] slots (Pitfall 1)
+- [Phase ?]: [02-01] AUDIO-02 investigated-only: getVirtmic() null on Windows -> Patchcord track-removal block never fires -> no GoofCord code change needed (D-03)
+- [Phase ?]: [02-01] 02-RECON-RUNBOOK.md authored: 7-step copy-pasteable Windows inspection script (CLI/GUI only D-09), strings->dumpbin corroboration rule, 9 Result slots mapping to FINDINGS evidence rows
 
 ### Pending Todos
 
@@ -95,6 +99,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-05-30T14:59:00.079Z
+Last session: 2026-05-30T16:23:47.924Z
 Stopped at: Phase 2 context gathered (RE-SCOPED to recon-only)
-Resume file: .planning/phases/02-fix-bug-b-windows-loopback-audio-captured/02-CONTEXT.md
+Resume file: None
