@@ -2,11 +2,11 @@
 gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Windows Screenshare Echo Fix
-status: planning
-last_updated: "2026-05-30T17:33:58.531Z"
+status: ready
+last_updated: "2026-05-30T19:10:00.000Z"
 last_activity: 2026-05-30
 progress:
-  total_phases: 0
+  total_phases: 3
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
@@ -17,23 +17,25 @@ progress:
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-05-29)
+See: .planning/PROJECT.md (updated 2026-05-30)
 
 **Core value:** On Windows, a user can start a screenshare, cancel the source picker, and start again — and the stream works — without the app getting stuck or requiring a restart.
-**Current focus:** Milestone complete
+**Current focus:** v1.1 — Windows Screenshare Echo Fix · Phase 3 (delivery-path spike) ready to plan
 
 ## Current Position
 
-Phase: Not started (defining requirements)
-Plan: —
-Status: Defining requirements
-Last activity: 2026-05-30 — Milestone v1.1 started
+Phase: 3 of 5 (Delivery-Path Spike — PCM → MediaStream, GO/NO-GO) — v1.1's first phase; phases 1-2 are v1.0 (complete)
+Plan: — (roadmap created; phase not yet planned)
+Status: Ready to plan
+Last activity: 2026-05-30 — v1.1 roadmap created (phases 3-5 added; ECHO-01..04 → Phase 4, UPST-02 → Phase 5)
+
+Progress: [░░░░░░░░░░] 0% (v1.1 phases)
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 4
+- Total plans completed: 4 (v1.0)
 - Average duration: — min
 - Total execution time: 0.0 hours
 
@@ -50,30 +52,25 @@ Last activity: 2026-05-30 — Milestone v1.1 started
 - Trend: —
 
 *Updated after each plan completion*
-| Phase 01 P01 | 4 | 3 tasks | 2 files |
-| Phase 01 P02 | 25 | 4 tasks | 2 files |
-| Phase 02 P01 | 3 | 3 tasks | 2 files |
 
 ## Accumulated Context
 
 ### Roadmap Evolution
 
-- Phase 2 edited: re-scoped to recon-only: Bug B retargeted to echo (#46); goal/criteria/plans rewritten; removed Mode:mvp; AUDIO-01/02 marked investigated-only
+- v1.1 roadmap created (2026-05-30): phases 3-5 added; numbering continued from v1.0 (started at 3). Native-only scope — user-side workaround explicitly NOT a deliverable (supersedes research SUMMARY's "workaround-first").
+- Build gate relaxed: WASAPI process-loopback functional on Win10 2004 / build 19041+ (confirmed by official Discord echo-free on maintainer's 19045 box — 02-FINDINGS §2.3 UPDATE). Native path IS locally verifiable; sub-2004 is a minor graceful-fallback (ECHO-03), not a phase.
+- Delivery-path spike kept as its own distinct first phase (Phase 3, user's explicit choice) — a GO/NO-GO gate owning no requirement.
+- Phase 2 (v1.0) was re-scoped to recon-only: Bug B retargeted to echo (#46); AUDIO-01/02 marked investigated-only.
 
 ### Decisions
 
 Decisions are logged in PROJECT.md Key Decisions table.
 Recent decisions affecting current work:
 
-- [Roadmap]: Diagnose-before-fix for Bug A — fold diagnosis into Phase 1 plan 01-01 (one instrumented Windows CI build, three log points) rather than a standalone phase, so each phase stays user-observable per MVP mode.
-- [Roadmap]: Bug A before Bug B — Bug A blocks normal screenshare, so Bug B cannot be isolated/validated until cancel→restart works.
-- [Roadmap]: `useSystemPicker` is out of scope (macOS-only in Electron 41) and re-registering the display-media handler is an anti-feature — do not pursue either as a fix.
-- [Phase ?]: [01-01] Bug A instrumentation: greppable [ScreenshareDebug][A|B|C] tags + monotonic counters (renderer getDisplayMediaCallCount, main debugRequestCount); B/C append to userData/screenshare-debug.log; one revertable commit 2f4b94d to strip before upstream PR (D-04).
-- [Phase ?]: Bug A fixed by exactly-once finishRequest + KEPT NotAllowedError (Task 4 not needed); verified on combined Windows CI build run 26673048740
-- [Phase ?]: 01-02 instrumentation stripped manually (not git revert 2f4b94d, since 88baaf2 relocated the C log lines); PR-ready diff is finishRequest + NotAllowedError only, source-only, no new deps (UPST-01)
-- [Phase ?]: [02-01] Phase 2 recon desk-research baseline written to 02-FINDINGS.md (public WASAPI EXCLUDE_TARGET_PROCESS_TREE = echo fix, min build 20348 + fallback, Electron separate Audio Service process, macOS contrast); mechanism verdict + clean-room go/no-go left as explicit unfilled [TO BE FILLED IN 02-02] slots (Pitfall 1)
-- [Phase ?]: [02-01] AUDIO-02 investigated-only: getVirtmic() null on Windows -> Patchcord track-removal block never fires -> no GoofCord code change needed (D-03)
-- [Phase ?]: [02-01] 02-RECON-RUNBOOK.md authored: 7-step copy-pasteable Windows inspection script (CLI/GUI only D-09), strings->dumpbin corroboration rule, 9 Result slots mapping to FINDINGS evidence rows
+- [Roadmap v1.1]: Phase shape = spike (3) → native addon + integration (4) → verification + upstream PR (5). Spike gates the native investment.
+- [Roadmap v1.1]: ECHO-01..04 owned by Phase 4; UPST-02 owned by Phase 5; Phase 3 owns no requirement (de-risk gate).
+- [02-02]: Mechanism = public WASAPI Application Loopback, EXCLUDE process-tree, dynamically loaded (not a virtual-device driver); clean-room GO from the public MS ApplicationLoopback sample (D-05 LOCKED).
+- [01-02]: Bug A fixed by exactly-once finishRequest + kept NotAllowedError; verified on combined Windows CI build run 26673048740; instrumentation stripped (UPST-01).
 
 ### Pending Todos
 
@@ -85,8 +82,10 @@ None yet.
 
 [Issues that affect future work]
 
-- Verification is MANUAL on a Windows x64 CI artifact — no automated screenshare repro exists. CI round-trips are scarce; batch all diagnostic probes into a single build per phase.
-- Phase 2 research flag: if instrumented build confirms H1 (Discord renderer never re-issues `getDisplayMedia`) and switching the error name from `NotAllowedError` to `AbortError` does not clear the latch, a targeted exploration of Discord's go-live Flux state machine will be needed during Phase 1 planning.
+- The single genuine unknown gates Phase 4: getting natively-captured PCM into Discord's web-client `getDisplayMedia` MediaStream in Electron 41.3.0. Phase 3 resolves it with a stub source before any native code. NO-GO would force a milestone re-scope.
+- Verification is MANUAL on a Windows x64 CI artifact (`.github/workflows/testBuild.yml`) — no automated screenshare repro. The echo check needs a SECOND device/account as viewer, with non-call audio actively playing (WASAPI loopback yields silence on idle; streamer cannot self-verify — Electron mutes local echo). Diagnostics go to userData `screenshare-debug.log`, not DevTools (60% keyboard, no F12).
+- Exclude target = GoofCord/Electron root PID (`process.pid`) via `app.getAppMetrics()` so the separate Audio Service child is covered; confirm the parent/child relationship on Electron 41.3.0 from logged metrics on the first CI artifact.
+- Clean-room boundary LOCKED (D-05): public Microsoft ApplicationLoopback sample only (MIT, retain notice), never Discord code/symbols. Hardcode fixed WAVEFORMATEX (no GetMixFormat on the loopback device); dynamic LoadLibrary/GetProcAddress load (not static link) so the `.node` loads everywhere and activates selectively.
 
 ## Deferred Items
 
@@ -94,10 +93,11 @@ Items acknowledged and carried forward from previous milestone close:
 
 | Category | Item | Status | Deferred At |
 |----------|------|--------|-------------|
-| *(none)* | | | |
+| Scope | User-side separate-output-device workaround | Out of scope (rejected as deliverable) | v1.1 |
+| Scope | WSTRM-01 — further Windows streaming bugs | Deferred to v2 | v1.0 close |
 
 ## Session Continuity
 
-Last session: 2026-05-30T16:23:47.924Z
-Stopped at: Phase 2 context gathered (RE-SCOPED to recon-only)
+Last session: 2026-05-30T19:10:00.000Z
+Stopped at: v1.1 roadmap created (phases 3-5); REQUIREMENTS traceability mapped
 Resume file: None

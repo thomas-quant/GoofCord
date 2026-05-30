@@ -54,6 +54,7 @@ Explicitly excluded. Documented to prevent scope creep.
 |---------|--------|
 | `useSystemPicker` / native Windows source picker | macOS-only in Electron 41; does not apply to Windows and adds upstream divergence (research: STACK/PITFALLS) |
 | Per-application *INCLUDE* capture (sharing only one chosen app's audio) on Windows | Anti-feature for a bug-fix fork. NOTE: v1.1 DOES implement *EXCLUDE*-tree capture (capture everything except GoofCord's own tree — the echo fix). What stays out of scope is selectively sharing a single app's audio (INCLUDE-mode UI). |
+| User-side separate-output-device workaround (VB-Cable / SteelSeries Sonar / VoiceMeeter) as a v1.1 deliverable | User EXPLICITLY rejected the workaround as a deliverable for this milestone — v1.1 is native-only. Sub-2004 (< 19041) builds fall back to today's `"loopback"` (graceful, covered by ECHO-03), not to a shipped workaround. (Supersedes the research SUMMARY.md "workaround-first" recommendation, which predates this decision.) |
 | Re-registering / nulling the display-media handler as a "reset" | Anti-feature — handler is registered once; re-registration is the wrong fix and is unreproducible as a cause (research: ARCHITECTURE/PITFALLS) |
 | Linux / macOS streaming behaviour changes | Fork is Windows-focused; must not regress these but won't chase them |
 | New streaming features or picker UI redesign | This is a bug-fix fork, not a feature fork |
@@ -73,19 +74,26 @@ Which phases cover which requirements. Populated during roadmap creation.
 | AUDIO-01 | Phase 2 | Complete |
 | AUDIO-02 | Phase 2 | Complete |
 | UPST-01 | Phase 1 | Complete |
+| ECHO-01 | Phase 4 | Pending |
+| ECHO-02 | Phase 4 | Pending |
+| ECHO-03 | Phase 4 | Pending |
+| ECHO-04 | Phase 4 | Pending |
+| UPST-02 | Phase 5 | Pending |
 | WSTRM-01 | — (v2 / future milestone) | Deferred |
 
-**Note:** AUDIO-01 / AUDIO-02 "Complete" means the Phase 2 **recon/investigation** scope is complete (mechanism identified + documented in `02-FINDINGS.md`) — it does **not** mean the echo bug (#46) is fixed. The actual fix is the deferred D-06 decision (native exclude-tree module vs. user-side workaround) for a follow-on implementation phase. (Re-scoped 2026-05-30.)
+**Note:** AUDIO-01 / AUDIO-02 "Complete" means the Phase 2 **recon/investigation** scope is complete (mechanism identified + documented in `02-FINDINGS.md`) — it does **not** mean the echo bug (#46) is fixed. The actual fix is implemented in milestone v1.1 (ECHO-01..04, Phase 4). (Re-scoped 2026-05-30.)
 
-**Note:** UPST-01 (surgical, upstream-PR-able, no new dependencies) is a cross-cutting quality constraint. It is owned by Phase 1 for traceability but is re-verified as a success criterion in Phase 2 as well.
+**Note:** UPST-01 (surgical, upstream-PR-able, no new dependencies) is a cross-cutting quality constraint owned by Phase 1. Its v1.1 counterpart UPST-02 (echo fix is upstream-PR-ready, native ships via the prebuilt-`.node` pattern, instrumentation stripped) is owned by Phase 5 and re-verified there.
+
+**Note:** **Phase 3 (delivery-path spike) owns no requirement.** It is a deliberate GO/NO-GO de-risk gate (the user's explicit choice) that proves the PCM→MediaStream delivery path for ECHO-01 before the native investment; ECHO-01 itself is owned and delivered in Phase 4. The spike's deliverable is a written GO/NO-GO decision + a proven delivery path, not a shipped requirement.
 
 **Note:** WSTRM-01 is a v2 requirement (see "v2 Requirements" above) — intentionally **not** in v1 scope and mapped to no v1 phase. It is listed here only so the body and traceability table stay in sync; it is deferred to a future milestone, not delivered.
 
 **Coverage:**
 - v1.0 requirements: 7 total — mapped to phases 1-2, all complete ✓
-- v1.1 requirements: 5 total (ECHO-01..04, UPST-02) — **mapping pending the v1.1 roadmap** (phases 3+)
+- v1.1 requirements: 5 total — ECHO-01..04 → Phase 4, UPST-02 → Phase 5; all mapped (Phase 3 is a de-risk gate owning no requirement) ✓
 - v2 / deferred (not in scope): WSTRM-01
 
 ---
 *Requirements defined: 2026-05-29*
-*Last updated: 2026-05-30 — added v1.1 (Windows Screenshare Echo Fix) requirements; v1.1 traceability pending roadmap*
+*Last updated: 2026-05-30 — v1.1 (Windows Screenshare Echo Fix) traceability mapped: ECHO-01..04 → Phase 4, UPST-02 → Phase 5; Phase 3 spike owns no requirement*
