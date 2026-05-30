@@ -14,7 +14,7 @@ This is a tight, Windows-focused bug-fix milestone for a brownfield Electron/Ven
 Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Fix Bug A — Cancel then Restart Works** - Diagnose on an instrumented Windows build, then make the second start-stream click after a cancel re-open the picker and stream normally (completed 2026-05-30)
-- [ ] **Phase 2: Fix Bug B — Windows Loopback Audio Captured** - When the user opts to share audio on Windows, a remote viewer hears system/app audio
+- [ ] **Phase 2: Fix Bug B — Windows Loopback Audio Captured** - Recon-only: identify and document how Discord captures per-process audio on Windows (the echo fix); no GoofCord code this phase
 
 ## Phase Details
 
@@ -44,23 +44,26 @@ Plans:
 
 ### Phase 2: Fix Bug B — Windows Loopback Audio Captured
 
-**Goal**: On Windows, when the user opts into audio sharing, the captured system/application audio is present on the outgoing stream and a remote viewer hears it — without the Linux Patchcord track-handling ever stripping the Windows loopback track.
-**Mode:** mvp
+**Goal**: On Windows, determine and document exactly how the official Discord desktop client captures per-process / system audio for screenshare *without* echoing the call back to viewers — i.e. identify the mechanism (an installed virtual audio device driver vs. the public WASAPI Application Loopback API with process-tree exclusion, `PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE`). Deliverable is a recon findings document that lets a later phase decide, from evidence, whether GoofCord can replicate it clean-room from the public Microsoft API. No GoofCord code change and no prototype in this phase. (Re-scoped 2026-05-30 — Bug B retargeted to the echo symptom, upstream #46; see 02-CONTEXT.md.)
 **Depends on**: Phase 1
-**Requirements**: AUDIO-01, AUDIO-02
+**Requirements**: AUDIO-01, AUDIO-02 (investigated only — delivery deferred to a follow-on implementation phase; see 02-CONTEXT.md)
 **Success Criteria** (what must be TRUE):
 
-  1. On a Windows x64 CI build, after a loopback grant, the stream carries an audio track (`stream.getAudioTracks().length > 0`) when the user opts into audio sharing. [AUDIO-01]
-  2. A remote viewer (a second account/machine, not the streamer) hears the captured system/application audio during the screenshare — verified from the viewer side because local echo is muted by design. [AUDIO-01]
-  3. The Linux virtual-mic / Patchcord audio-track-removal logic does not run on Windows and never strips the Windows `"loopback"` audio track (track-removal gated on `process.platform !== "win32"`; renderer requests `audio: true` and handler grants `audio: "loopback"`). [AUDIO-02]
-  4. Linux (Patchcord) and macOS audio paths are unchanged, and the diff stays surgical with no new dependencies — PR-ready for upstream GoofCord. [UPST-01]
+  1. A findings document records Discord's Windows per-process audio-capture mechanism (installed virtual audio driver vs. public WASAPI Application Loopback `EXCLUDE_TARGET_PROCESS_TREE`), backed by concrete evidence — native-module/DLL symbol inspection (`ActivateAudioInterfaceAsync` / `AUDIOCLIENT_ACTIVATION_PARAMS` / `PROCESS_LOOPBACK`) and/or a Device Manager virtual-device check.
+  2. The document captures the parameters needed to replicate from the public Microsoft API: include-vs-exclude mode, which process tree Discord excludes (accounting for Electron running audio in a separate process), the minimum Windows build (e.g. 20348+), and the fallback story for older builds.
+  3. The document gives a clear, evidence-based clean-room recommendation on whether GoofCord can replicate the mechanism from the public WASAPI API only (no copied Discord code) — producing the go/no-go inputs for the deferred native-module-vs-workaround decision.
+  4. Recon-only boundary honoured: no GoofCord source changed and no prototype built in this phase; any future implementation stays clean-room and dependency-minimal. [UPST-01]
 
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
+**Wave 1**
 
-- [ ] 02-01: Diagnose Bug B — on a Windows build, log `stream.getAudioTracks()` after a loopback grant and log `getVirtmic()` to confirm whether the Patchcord track-removal block fires on Windows
-- [ ] 02-02: Apply the fix — gate the Patchcord track-removal on `process.platform !== "win32"` in `screensharePatch.ts`, confirm renderer `audio: true` and handler `audio: "loopback"` are both set, rebuild, and verify audio from a second viewer
+- [ ] 02-01-PLAN.md — Desk-research baseline + inspection runbook: write the public WASAPI process-loopback baseline (API surface, min build 20348, macOS-driver contrast, Electron multi-process complication) into the `02-FINDINGS.md` skeleton, and author the copy-pasteable `02-RECON-RUNBOOK.md` the developer will run on their Windows box. Autonomous (no machine access needed). (D-02, D-05)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] 02-02-PLAN.md — Human checkpoint + findings synthesis: the developer executes the runbook on their physical Windows box and records raw observations (`02-RECON-OBSERVATIONS.md`), then `02-FINDINGS.md` is finalized — mechanism verdict + evidence, replication parameters (excluded process tree, build + fallback), and the clean-room go/no-go feeding the deferred D-06 implementation decision. Not autonomous (requires the developer's Windows box). (D-04, D-05, D-08, D-09)
 
 ## Progress
 
