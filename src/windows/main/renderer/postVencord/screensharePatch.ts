@@ -1,3 +1,6 @@
+// [ScreenshareDebug] DIAGNOSTIC INSTRUMENTATION — revert this whole commit before the upstream PR (D-04).
+let getDisplayMediaCallCount = 0;
+
 export function patchScreenshare() {
 	const original = navigator.mediaDevices.getDisplayMedia;
 
@@ -20,6 +23,9 @@ export function patchScreenshare() {
 	}
 
 	navigator.mediaDevices.getDisplayMedia = async function (opts) {
+		// [ScreenshareDebug] DIAGNOSTIC — revert before upstream PR (D-04). Log point A: proves whether Discord re-issues getDisplayMedia on the second (post-cancel) click (H1).
+		const debugCallNum = ++getDisplayMediaCallCount;
+		console.log(`[ScreenshareDebug][A] getDisplayMedia called #${debugCallNum} @ ${new Date().toISOString()}`);
 		let stream: MediaStream;
 		try {
 			stream = await original.call(this, opts);
