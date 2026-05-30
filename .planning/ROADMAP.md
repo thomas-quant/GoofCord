@@ -28,11 +28,11 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. Cancelling the source picker shows no uncaught or visible JavaScript error in Discord (the `710cfde` behaviour is preserved). [STREAM-03]
   4. Repeated cancel then retry cycles remain stable on the Windows build — the start-stream control keeps working after multiple cancellations with no progressive wedging and no main-process "Object has been destroyed" errors. [STREAM-04]
   5. The diff is surgical — `finishRequest()` consolidation in `screenshare.ts` plus the renderer error-shape adjustment in `screensharePatch.ts`; no handler re-registration, no `useSystemPicker`, no new dependencies; PR-ready for upstream GoofCord. [UPST-01]
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 01-01: Diagnose Bug A on a single instrumented Windows CI build — add three log points (patched `getDisplayMedia` entry in `screensharePatch.ts`; `setDisplayMediaRequestHandler` callback entry in `screenshare.ts`; every `callback(...)` site, the `!req` early-return, and the `closed` handler) and run cancel → re-click to route H1 (renderer state) vs H2 (Electron dispatch) vs H3 (callback race)
-- [ ] 01-02: Apply the surgical fix for the confirmed hypothesis — consolidate teardown into an exactly-once `finishRequest()` in `screenshare.ts`, and reset Discord's latched go-live state by verifying/adjusting the rejection name (`NotAllowedError` vs `AbortError`) in `screensharePatch.ts`; rebuild the Windows artifact and re-run the cancel → restart acceptance test
+- [ ] 01-01-PLAN.md — Instrument Bug A (log points A/B/C → DevTools + userData `screenshare-debug.log`) as a distinct, revertable commit; rides the single combined Windows build with the fix (D-01)
+- [ ] 01-02-PLAN.md — Apply the surgical fix (exactly-once `finishRequest()` in `screenshare.ts` + evidence-gated rejection-name in `screensharePatch.ts`), run the single combined Windows build, verify cancel→restart manually, then strip instrumentation for the upstream PR (D-04)
 
 ### Phase 2: Fix Bug B — Windows Loopback Audio Captured
 **Goal**: On Windows, when the user opts into audio sharing, the captured system/application audio is present on the outgoing stream and a remote viewer hears it — without the Linux Patchcord track-handling ever stripping the Windows loopback track.
