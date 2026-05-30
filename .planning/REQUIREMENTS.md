@@ -58,13 +58,19 @@ Which phases cover which requirements. Populated during roadmap creation.
 | AUDIO-01 | Phase 2 | Complete |
 | AUDIO-02 | Phase 2 | Complete |
 | UPST-01 | Phase 1 | Complete |
+| WSTRM-01 | — (v2 / future milestone) | Deferred |
+
+**Note:** AUDIO-01 / AUDIO-02 "Complete" means the Phase 2 **recon/investigation** scope is complete (mechanism identified + documented in `02-FINDINGS.md`) — it does **not** mean the echo bug (#46) is fixed. The actual fix is the deferred D-06 decision (native exclude-tree module vs. user-side workaround) for a follow-on implementation phase. (Re-scoped 2026-05-30.)
 
 **Note:** UPST-01 (surgical, upstream-PR-able, no new dependencies) is a cross-cutting quality constraint. It is owned by Phase 1 for traceability but is re-verified as a success criterion in Phase 2 as well.
+
+**Note:** WSTRM-01 is a v2 requirement (see "v2 Requirements" above) — intentionally **not** in v1 scope and mapped to no v1 phase. It is listed here only so the body and traceability table stay in sync; it is deferred to a future milestone, not delivered.
 
 **Coverage:**
 - v1 requirements: 7 total
 - Mapped to phases: 7 ✓
 - Unmapped: 0 ✓
+- v2 / deferred (not in v1 scope): WSTRM-01
 
 ---
 *Requirements defined: 2026-05-29*
