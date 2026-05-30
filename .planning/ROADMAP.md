@@ -73,4 +73,4 @@ Phases execute in numeric order: 1 → 2
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Fix Bug A — Cancel then Restart Works | 2/2 | Complete    | 2026-05-30 |
-| 2. Fix Bug B — Windows Loopback Audio Captured | 2/2 | Complete   | 2026-05-30 |
+| 2. Fix Bug B — Windows Loopback Audio Captured | 2/2 | Complete    | 2026-05-30 |

@@ -16,8 +16,8 @@ Requirements for this milestone. Each maps to a roadmap phase. All are verified 
 
 ### Windows Audio (AUDIO) — Bug B (related)
 
-- [ ] **AUDIO-01**: On Windows, when the user opts to share audio, a remote viewer hears the captured system/application audio
-- [ ] **AUDIO-02**: The Linux virtual-mic / Patchcord audio-track handling does not run on Windows and never strips the Windows `"loopback"` audio track
+- [x] **AUDIO-01**: On Windows, when the user opts to share audio, a remote viewer hears the captured system/application audio
+- [x] **AUDIO-02**: The Linux virtual-mic / Patchcord audio-track handling does not run on Windows and never strips the Windows `"loopback"` audio track
 
 ### Upstream Quality (UPST)
 
@@ -55,8 +55,8 @@ Which phases cover which requirements. Populated during roadmap creation.
 | STREAM-02 | Phase 1 | Complete |
 | STREAM-03 | Phase 1 | Complete |
 | STREAM-04 | Phase 1 | Complete |
-| AUDIO-01 | Phase 2 | Pending |
-| AUDIO-02 | Phase 2 | Pending |
+| AUDIO-01 | Phase 2 | Complete |
+| AUDIO-02 | Phase 2 | Complete |
 | UPST-01 | Phase 1 | Complete |
 
 **Note:** UPST-01 (surgical, upstream-PR-able, no new dependencies) is a cross-cutting quality constraint. It is owned by Phase 1 for traceability but is re-verified as a success criterion in Phase 2 as well.
