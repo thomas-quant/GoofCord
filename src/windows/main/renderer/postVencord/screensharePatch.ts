@@ -1,6 +1,3 @@
-// [ScreenshareDebug] DIAGNOSTIC INSTRUMENTATION — revert this whole commit before the upstream PR (D-04).
-let getDisplayMediaCallCount = 0;
-
 export function patchScreenshare() {
 	const original = navigator.mediaDevices.getDisplayMedia;
 
@@ -23,21 +20,14 @@ export function patchScreenshare() {
 	}
 
 	navigator.mediaDevices.getDisplayMedia = async function (opts) {
-		// [ScreenshareDebug] DIAGNOSTIC — revert before upstream PR (D-04). Log point A: proves whether Discord re-issues getDisplayMedia on the second (post-cancel) click (H1).
-		const debugCallNum = ++getDisplayMediaCallCount;
-		console.log(`[ScreenshareDebug][A] getDisplayMedia called #${debugCallNum} @ ${new Date().toISOString()}`);
 		let stream: MediaStream;
 		try {
 			stream = await original.call(this, opts);
 		} catch {
 			// Backing out of GoofCord's source picker makes Electron reject getDisplayMedia with a
 			// generic error that Discord doesn't recognize as a cancellation, surfacing it as an
-			// uncaught error. Re-throw the standard error browsers use so the web client ignores it.
-			// Cancellation-name lever (PITFALLS Pitfall 1): the DOMException name below is the single
-			// evidence-gated point of truth. KEEP "NotAllowedError" for the combined diagnostic build;
-			// switch to "AbortError" ONLY if the trace proves H1 (Discord latches go-live state and
-			// never re-issues getDisplayMedia) AND "NotAllowedError" fails to clear that latch. Whatever
-			// name is chosen must still be swallowed by Discord as a cancellation (STREAM-03 / 710cfde).
+			// uncaught error. Re-throw "NotAllowedError" — the standard name the web client treats as a
+			// user-cancelled capture — so the error is swallowed and the go-live control re-arms for a retry.
 			throw new DOMException("Permission denied by system", "NotAllowedError");
 		}
 		console.log("Setting stream's content hint and audio device");

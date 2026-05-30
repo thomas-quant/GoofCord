@@ -1,25 +1,11 @@
-import fs from "node:fs";
 import path from "node:path";
 
 import { hasPipewirePulse, patchcordList, patchcordStartApp, patchcordStartSystem } from "@root/src/modules/native/patchcord.ts";
 import { BrowserWindow, desktopCapturer, ipcMain, session } from "electron";
 import type { ShareableNode } from "patchcord";
 
-import { dirname, isWayland, relToAbs, userDataPath } from "../../utils.ts";
+import { dirname, isWayland, relToAbs } from "../../utils.ts";
 import html from "./renderer/screenshare.html";
-
-// ─── [ScreenshareDebug] DIAGNOSTIC INSTRUMENTATION ──────────────────────────
-// Revert this whole commit before the upstream PR (D-04). A packaged NSIS GUI build has no
-// attached console, so main-process probes (B/C) append to a file under userData (D-02).
-let debugRequestCount = 0;
-function appendDebugLog(line: string) {
-	try {
-		fs.appendFileSync(path.join(userDataPath, "screenshare-debug.log"), `${new Date().toISOString()} ${line}\n`);
-	} catch {
-		// Never let a debug-log write failure throw into the screenshare handler.
-	}
-}
-// ────────────────────────────────────────────────────────────────────────────
 
 interface ActiveRequest {
 	callback: (res: any) => void;
@@ -37,12 +23,8 @@ const activeRequests = new Map<number, ActiveRequest>();
 // callback so a re-entrant `closed` during the callback can't double-fire.
 function finishRequest(wcId: number, result: any) {
 	const req = activeRequests.get(wcId);
-	if (!req) {
-		appendDebugLog(`[ScreenshareDebug][C] finishRequest no-op (already finished) for wcId=${wcId}`);
-		return;
-	}
+	if (!req) return;
 	activeRequests.delete(wcId);
-	appendDebugLog(`[ScreenshareDebug][C] finishRequest callback for wcId=${wcId} audio=${result?.audio ?? "none"}`);
 	try {
 		req.callback(result);
 	} catch {
@@ -91,14 +73,10 @@ export function registerScreenshareHandler() {
 		// Snapshot what we need to read before any `await` — finishRequest owns the
 		// delete + callback + close, so we never pre-delete or call the callback here.
 		const req = activeRequests.get(wcId);
-		if (!req) {
-			appendDebugLog(`[ScreenshareDebug][C] selectScreenshareSource: no active request (early return) for wcId=${wcId}`);
-			return;
-		}
+		if (!req) return;
 		const { frame } = req;
 
 		if (!id) {
-			appendDebugLog(`[ScreenshareDebug][C] cancel path → finishRequest({}) for wcId=${wcId}`);
 			finishRequest(wcId, {});
 			return;
 		}
@@ -121,7 +99,6 @@ export function registerScreenshareHandler() {
 			}
 		}
 
-		appendDebugLog(`[ScreenshareDebug][C] grant path → finishRequest(result) for wcId=${wcId} audio=${result.audio ?? "none"}`);
 		finishRequest(wcId, result);
 	});
 
@@ -134,8 +111,6 @@ export function registerScreenshareHandler() {
 	});
 
 	session.defaultSession.setDisplayMediaRequestHandler((request, callback) => {
-		const debugReqNum = ++debugRequestCount;
-		appendDebugLog(`[ScreenshareDebug][B] setDisplayMediaRequestHandler fired #${debugReqNum} (proves main handler reached on second click → H2)`);
 		const capturerWindow = new BrowserWindow({
 			width: 800,
 			height: 650,
@@ -153,7 +128,6 @@ export function registerScreenshareHandler() {
 		});
 
 		const wcId = capturerWindow.webContents.id;
-		appendDebugLog(`[ScreenshareDebug][B] request #${debugReqNum} wcId=${wcId}`);
 
 		activeRequests.set(wcId, { callback, window: capturerWindow, frame: request.frame, initialPromise: fetchScreenshareData(false) });
 
@@ -161,7 +135,6 @@ export function registerScreenshareHandler() {
 			// Idempotent: if select/cancel already ran, the entry is gone and
 			// finishRequest is a no-op (its `!req` guard). Otherwise (OS close button /
 			// window destroyed mid-request) this is the cancel path.
-			appendDebugLog(`[ScreenshareDebug][C] closed handler → finishRequest({}) for wcId=${wcId}`);
 			finishRequest(wcId, {});
 		});
 
