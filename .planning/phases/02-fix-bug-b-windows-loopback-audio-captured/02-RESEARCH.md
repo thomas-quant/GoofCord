@@ -310,22 +310,25 @@ ApplicationLoopback 1234 excludetree Captured.wav   :: capture EVERYTHING EXCEPT
 | A5 | The free tools listed (`strings`, `dumpbin`, Dependencies) can read Discord's DLLs without admin | Standard Stack | If a DLL is locked/in-use, the developer copies it out first; trivially worked around. Very low risk. |
 | A6 | A future module must exclude the Electron/GoofCord **process tree** (to also cover the separate Audio Service utility process), not just the window PID | Pitfall 4, SC-2 | If the audio actually renders from the window process on this Electron build, the exclude target is simpler. Flag as a future-impl open detail, not a Phase-2 blocker. |
 
-## Open Questions
+## Open Questions (RESOLUTION PATHS DOCUMENTED)
 
 1. **Does Discord install a Windows virtual audio device, or use the in-OS API?**
    - What we know: macOS needs (and Discord ships) a driver; Windows has the in-OS process-loopback API since build 20348. Discord exposes an "experimental method to capture audio from applications" toggle (behavioural signature of app-scoped capture).
    - What's unclear: whether the *current* Windows Discord build routes through the public API or a bundled device — desk research cannot see inside the installed DLLs.
    - Recommendation: **Hands-on (human)** — Device Manager check + `dumpbin /imports` on `discord_voice*.node`. This is the single highest-value on-box finding (resolves A1/A2).
+   - Resolution path: → resolved by 02-02 Task 1 (hands-on, on-box confirm/refute).
 
 2. **Which exact PID/process-tree would a future GoofCord module exclude?**
    - What we know: Chromium/Electron runs audio in a separate sandboxed "Audio Service" utility process; the GoofCord/Electron process tree (parent + children) is the natural exclude target.
    - What's unclear: on Electron 41.3.0 specifically, which process actually renders the call audio (main vs. audio-service child).
    - Recommendation: desk-research the architecture now (done); leave the precise PID resolution as a **future-impl open detail** in SC-2 — not a Phase-2 blocker.
+   - Resolution path: → desk-research baseline in 02-01 Task 2; exact PID deferred as a future-impl detail.
 
 3. **Is there any case where `EXCLUDE_TARGET_PROCESS_TREE` is unavailable (< build 20348)?**
    - What we know: API requires build 20348+. Older builds have only whole-endpoint loopback (no exclude) — no native echo fix.
    - What's unclear: how many real users run < 20348 (Win10 21H2/22H2 and all Win11 are ≥ 20348).
    - Recommendation: document the fallback story in SC-2: below 20348, the only options are the user-side separate-output-device workaround (D-06 deferred) or no system audio. Desk-research-able — already answered.
+   - Resolution path: → resolved by 02-01 Task 2 (desk-research; build-20348 fallback written into the SC-2 section of 02-FINDINGS.md).
 
 ## Environment Availability
 
