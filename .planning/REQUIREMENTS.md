@@ -9,10 +9,10 @@ Requirements for this milestone. Each maps to a roadmap phase. All are verified 
 
 ### Streaming Restart (STREAM) — Bug A (primary)
 
-- [ ] **STREAM-01**: On Windows, after cancelling the screenshare source picker, clicking "Go Live" / start-stream again re-opens the source picker (a picker window appears)
+- [x] **STREAM-01**: On Windows, after cancelling the screenshare source picker, clicking "Go Live" / start-stream again re-opens the source picker (a picker window appears)
 - [ ] **STREAM-02**: On Windows, a screenshare that was cancelled and then restarted starts and streams normally, with no application restart required
 - [ ] **STREAM-03**: Cancelling the screenshare source picker shows no uncaught or visible JavaScript error in Discord (preserves the behaviour shipped in `710cfde`)
-- [ ] **STREAM-04**: Repeated cancel → retry cycles remain stable — the start-stream control keeps working after multiple cancellations, with no progressive wedging
+- [x] **STREAM-04**: Repeated cancel → retry cycles remain stable — the start-stream control keeps working after multiple cancellations, with no progressive wedging
 
 ### Windows Audio (AUDIO) — Bug B (related)
 
@@ -21,7 +21,7 @@ Requirements for this milestone. Each maps to a roadmap phase. All are verified 
 
 ### Upstream Quality (UPST)
 
-- [ ] **UPST-01**: All fixes are surgical, minimal-divergence changes with no new dependencies — structured so they can be submitted as clean PRs to the upstream GoofCord repo
+- [x] **UPST-01**: All fixes are surgical, minimal-divergence changes with no new dependencies — structured so they can be submitted as clean PRs to the upstream GoofCord repo
 
 ## v2 Requirements
 
@@ -51,13 +51,13 @@ Which phases cover which requirements. Populated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| STREAM-01 | Phase 1 | Pending |
+| STREAM-01 | Phase 1 | Complete |
 | STREAM-02 | Phase 1 | Pending |
 | STREAM-03 | Phase 1 | Pending |
-| STREAM-04 | Phase 1 | Pending |
+| STREAM-04 | Phase 1 | Complete |
 | AUDIO-01 | Phase 2 | Pending |
 | AUDIO-02 | Phase 2 | Pending |
-| UPST-01 | Phase 1 | Pending |
+| UPST-01 | Phase 1 | Complete |
 
 **Note:** UPST-01 (surgical, upstream-PR-able, no new dependencies) is a cross-cutting quality constraint. It is owned by Phase 1 for traceability but is re-verified as a success criterion in Phase 2 as well.
 

@@ -36,7 +36,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 Plans:
 **Wave 1**
 
-- [ ] 01-01-PLAN.md — Instrument Bug A (log points A/B/C → DevTools + userData `screenshare-debug.log`) as a distinct, revertable commit; rides the single combined Windows build with the fix (D-01)
+- [x] 01-01-PLAN.md — Instrument Bug A (log points A/B/C → DevTools + userData `screenshare-debug.log`) as a distinct, revertable commit; rides the single combined Windows build with the fix (D-01)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
@@ -69,5 +69,5 @@ Phases execute in numeric order: 1 → 2
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Fix Bug A — Cancel then Restart Works | 0/2 | Not started | - |
+| 1. Fix Bug A — Cancel then Restart Works | 1/2 | In Progress|  |
 | 2. Fix Bug B — Windows Loopback Audio Captured | 0/2 | Not started | - |
