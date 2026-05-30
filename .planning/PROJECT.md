@@ -8,6 +8,18 @@ A fork of GoofCord (an Electron-based custom Discord client that wraps Vencord) 
 
 On Windows, a user can start a screenshare, cancel the source picker, and start again — and the stream works — without the app getting stuck or requiring a restart. If everything else fails, restarting a stream after cancelling must work.
 
+## Current Milestone: v1.1 — Windows Screenshare Echo Fix
+
+**Goal:** On Windows, a user can screenshare system/app audio without remote viewers hearing the call echoed back to them (Bug B / upstream #46).
+
+**Target features (approach decided by research):**
+- Remove GoofCord's own call playback from the captured loopback audio (per-process / process-tree EXCLUDE), so viewers stop hearing themselves.
+- The implementation path is chosen from evidence during research: a native WASAPI exclude-tree `.node` addon, a user-side separate-output-device workaround, or a hybrid (native where Windows build ≥ 20348, documented fallback below it).
+- Graceful behavior on Windows builds < 20348 (the public process-loopback API's minimum).
+- A verification path that does not depend on the maintainer's Win10 19045 dev box (Windows CI build + second device, verified viewer-side with audio actively playing).
+
+**Builds on:** Phase 2 recon — `02-FINDINGS.md §3` (clean-room GO, conditional on build ≥ 20348) is the go/no-go input. Clean-room boundary is LOCKED: public Microsoft `ApplicationLoopback` API only, never copied Discord code.
+
 ## Requirements
 
 ### Validated
@@ -22,13 +34,15 @@ On Windows, a user can start a screenshare, cancel the source picker, and start 
 - ✓ Windows x64 distribution + a CI workflow that builds a Windows x64 artifact for verification (`d606bc0`) — existing
 - ✓ After cancelling the source picker, the second start-stream click re-opens the picker and the stream restarts normally — exactly-once `finishRequest()` teardown consolidation in `screenshare.ts` + the existing `NotAllowedError` cancellation name (Validated in Phase 1: Fix Bug A, `88baaf2`; Windows CI build 26673048740 confirmed cancellation error-free and restart working)
 - ✓ The not-reset-on-cancel state was identified and cleaned: per-request teardown was racing/duplicating the Electron `callback` across the select/cancel and window-`closed` paths; consolidated into single-owner exactly-once `finishRequest(wcId, result)` with the `activeRequests` map-delete as the idempotency token (Validated in Phase 1: Fix Bug A)
+- ✓ Windows echo mechanism identified (recon): Discord uses the public WASAPI Application Loopback API (EXCLUDE process-tree, dynamically loaded), not a virtual-device driver; clean-room replication is viable from the public Microsoft `ApplicationLoopback` sample, conditional on build ≥ 20348 (Validated in Phase 2: Bug B recon; see `02-FINDINGS.md`)
 
 ### Active
 
-<!-- This fork's goals for this milestone. Hypotheses until shipped and verified on Windows. -->
+<!-- This fork's goals for this milestone (v1.1). Hypotheses until shipped and verified on Windows. -->
 
-- [ ] Windows system/app audio (the `result.audio = "loopback"` path) is captured correctly during screenshare — Phase 2 (Bug B)
-- [ ] All fixes are kept minimal and conventional enough to submit as upstream PRs
+- [ ] On Windows, screensharing system/app audio does NOT echo the call back to viewers (Bug B / #46) — v1.1 echo fix; approach (native exclude-tree addon vs. user-side workaround vs. hybrid) decided by research
+- [ ] Graceful behavior on Windows builds < 20348 (below the public process-loopback API minimum)
+- [ ] All fixes are kept minimal and conventional enough to submit as upstream PRs (no Linux/macOS regressions)
 
 ### Out of Scope
 
@@ -62,6 +76,8 @@ On Windows, a user can start a screenshare, cancel the source picker, and start 
 | Fixes must be upstream-able (PR-ready for main repo) | This fork exists to feed fixes back upstream, not to diverge | — Pending |
 | Verify via Windows x64 CI artifact + manual test | No reliable automated screenshare repro on Windows | — Pending |
 | Build the cancellation-error fix as `NotAllowedError` (already shipped in `710cfde`) | Matches the standard browsers raise on cancellation so Discord ignores it | ⚠️ Revisit — stopped the crash but introduced/exposed the re-click failure |
+| [v1.1] Echo-fix approach (D-06) decided by research, not pre-committed | Genuine native-addon-vs-workaround uncertainty + a verification constraint (dev box is build 19045, below the API minimum) — decide from evidence | — Pending (research-first) |
+| [v1.1] Native exclude-tree path cannot be verified on the maintainer's box | Public process-loopback API needs build ≥ 20348; dev box is Win10 19045 — verification must use Windows CI + a second device, viewer-side, audio playing | — Pending |
 
 ## Evolution
 
@@ -81,4 +97,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-05-30 — Phase 1 (Fix Bug A: cancel→restart) complete; cancel/re-click validated on Windows, fix is PR-ready and stripped of instrumentation*
+*Last updated: 2026-05-30 — v1.0 complete (Phase 1 cancel→restart fix validated on Windows + PR-ready; Phase 2 echo recon done). Started milestone v1.1 (Windows Screenshare Echo Fix), research-first.*
