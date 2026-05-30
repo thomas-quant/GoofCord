@@ -20,14 +20,14 @@ On Windows, a user can start a screenshare, cancel the source picker, and start 
 - ✓ Cancelling the picker no longer throws an uncaught error — translated to `NotAllowedError` DOMException (`710cfde`, Closes #196) — existing
 - ✓ Screenshare audio routing: PipeWire/PulseAudio (`patchcord`) on Linux, Electron `"loopback"` on Windows — existing
 - ✓ Windows x64 distribution + a CI workflow that builds a Windows x64 artifact for verification (`d606bc0`) — existing
+- ✓ After cancelling the source picker, the second start-stream click re-opens the picker and the stream restarts normally — exactly-once `finishRequest()` teardown consolidation in `screenshare.ts` + the existing `NotAllowedError` cancellation name (Validated in Phase 1: Fix Bug A, `88baaf2`; Windows CI build 26673048740 confirmed cancellation error-free and restart working)
+- ✓ The not-reset-on-cancel state was identified and cleaned: per-request teardown was racing/duplicating the Electron `callback` across the select/cancel and window-`closed` paths; consolidated into single-owner exactly-once `finishRequest(wcId, result)` with the `activeRequests` map-delete as the idempotency token (Validated in Phase 1: Fix Bug A)
 
 ### Active
 
 <!-- This fork's goals for this milestone. Hypotheses until shipped and verified on Windows. -->
 
-- [ ] After cancelling the source picker, clicking "start stream" again re-opens the picker and starts a stream normally (currently the second click does nothing — no picker window appears)
-- [ ] Identify what state is not being reset on cancel (Discord renderer-side stream-start state vs. main-process `activeRequests` / `setDisplayMediaRequestHandler` lifecycle) and reset it cleanly
-- [ ] Windows system/app audio (the `result.audio = "loopback"` path) is captured correctly during screenshare
+- [ ] Windows system/app audio (the `result.audio = "loopback"` path) is captured correctly during screenshare — Phase 2 (Bug B)
 - [ ] All fixes are kept minimal and conventional enough to submit as upstream PRs
 
 ### Out of Scope
@@ -81,4 +81,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-05-29 after initialization*
+*Last updated: 2026-05-30 — Phase 1 (Fix Bug A: cancel→restart) complete; cancel/re-click validated on Windows, fix is PR-ready and stripped of instrumentation*
