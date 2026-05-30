@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-last_updated: "2026-05-30T03:04:34.475Z"
+last_updated: "2026-05-30T03:35:30.240Z"
 last_activity: 2026-05-30
 progress:
   total_phases: 2
-  completed_phases: 0
+  completed_phases: 1
   total_plans: 2
-  completed_plans: 1
-  percent: 0
+  completed_plans: 2
+  percent: 50
 ---
 
 # Project State
@@ -25,11 +25,11 @@ See: .planning/PROJECT.md (updated 2026-05-29)
 ## Current Position
 
 Phase: 1 of 2 (Fix Bug A — Cancel then Restart Works)
-Plan: 1 of 2 in current phase
+Plan: 2 of 2 in current phase
 Status: Ready to execute
 Last activity: 2026-05-30
 
-Progress: [█████░░░░░] 50%
+Progress: [██████████] 100%
 
 ## Performance Metrics
 
@@ -52,6 +52,7 @@ Progress: [█████░░░░░] 50%
 
 *Updated after each plan completion*
 | Phase 01 P01 | 4 | 3 tasks | 2 files |
+| Phase 01 P02 | 25 | 4 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -64,6 +65,8 @@ Recent decisions affecting current work:
 - [Roadmap]: Bug A before Bug B — Bug A blocks normal screenshare, so Bug B cannot be isolated/validated until cancel→restart works.
 - [Roadmap]: `useSystemPicker` is out of scope (macOS-only in Electron 41) and re-registering the display-media handler is an anti-feature — do not pursue either as a fix.
 - [Phase ?]: [01-01] Bug A instrumentation: greppable [ScreenshareDebug][A|B|C] tags + monotonic counters (renderer getDisplayMediaCallCount, main debugRequestCount); B/C append to userData/screenshare-debug.log; one revertable commit 2f4b94d to strip before upstream PR (D-04).
+- [Phase ?]: Bug A fixed by exactly-once finishRequest + KEPT NotAllowedError (Task 4 not needed); verified on combined Windows CI build run 26673048740
+- [Phase ?]: 01-02 instrumentation stripped manually (not git revert 2f4b94d, since 88baaf2 relocated the C log lines); PR-ready diff is finishRequest + NotAllowedError only, source-only, no new deps (UPST-01)
 
 ### Pending Todos
 
@@ -88,6 +91,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-05-30T03:04:28.654Z
+Last session: 2026-05-30T03:35:12.093Z
 Stopped at: Phase 1 context gathered
 Resume file: None

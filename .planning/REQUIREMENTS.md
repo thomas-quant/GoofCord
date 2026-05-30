@@ -10,8 +10,8 @@ Requirements for this milestone. Each maps to a roadmap phase. All are verified 
 ### Streaming Restart (STREAM) — Bug A (primary)
 
 - [x] **STREAM-01**: On Windows, after cancelling the screenshare source picker, clicking "Go Live" / start-stream again re-opens the source picker (a picker window appears)
-- [ ] **STREAM-02**: On Windows, a screenshare that was cancelled and then restarted starts and streams normally, with no application restart required
-- [ ] **STREAM-03**: Cancelling the screenshare source picker shows no uncaught or visible JavaScript error in Discord (preserves the behaviour shipped in `710cfde`)
+- [x] **STREAM-02**: On Windows, a screenshare that was cancelled and then restarted starts and streams normally, with no application restart required
+- [x] **STREAM-03**: Cancelling the screenshare source picker shows no uncaught or visible JavaScript error in Discord (preserves the behaviour shipped in `710cfde`)
 - [x] **STREAM-04**: Repeated cancel → retry cycles remain stable — the start-stream control keeps working after multiple cancellations, with no progressive wedging
 
 ### Windows Audio (AUDIO) — Bug B (related)
@@ -52,8 +52,8 @@ Which phases cover which requirements. Populated during roadmap creation.
 | Requirement | Phase | Status |
 |-------------|-------|--------|
 | STREAM-01 | Phase 1 | Complete |
-| STREAM-02 | Phase 1 | Pending |
-| STREAM-03 | Phase 1 | Pending |
+| STREAM-02 | Phase 1 | Complete |
+| STREAM-03 | Phase 1 | Complete |
 | STREAM-04 | Phase 1 | Complete |
 | AUDIO-01 | Phase 2 | Pending |
 | AUDIO-02 | Phase 2 | Pending |

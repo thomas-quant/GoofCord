@@ -13,7 +13,7 @@ This is a tight, Windows-focused bug-fix milestone for a brownfield Electron/Ven
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [ ] **Phase 1: Fix Bug A — Cancel then Restart Works** - Diagnose on an instrumented Windows build, then make the second start-stream click after a cancel re-open the picker and stream normally
+- [x] **Phase 1: Fix Bug A — Cancel then Restart Works** - Diagnose on an instrumented Windows build, then make the second start-stream click after a cancel re-open the picker and stream normally (completed 2026-05-30)
 - [ ] **Phase 2: Fix Bug B — Windows Loopback Audio Captured** - When the user opts to share audio on Windows, a remote viewer hears system/app audio
 
 ## Phase Details
@@ -40,7 +40,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 01-02-PLAN.md — Apply the surgical fix (exactly-once `finishRequest()` in `screenshare.ts` + evidence-gated rejection-name in `screensharePatch.ts`), run the single combined Windows build, verify cancel→restart manually, then strip instrumentation for the upstream PR (D-04)
+- [x] 01-02-PLAN.md — Apply the surgical fix (exactly-once `finishRequest()` in `screenshare.ts` + evidence-gated rejection-name in `screensharePatch.ts`), run the single combined Windows build, verify cancel→restart manually, then strip instrumentation for the upstream PR (D-04)
 
 ### Phase 2: Fix Bug B — Windows Loopback Audio Captured
 
@@ -69,5 +69,5 @@ Phases execute in numeric order: 1 → 2
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Fix Bug A — Cancel then Restart Works | 1/2 | In Progress|  |
+| 1. Fix Bug A — Cancel then Restart Works | 2/2 | Complete   | 2026-05-30 |
 | 2. Fix Bug B — Windows Loopback Audio Captured | 0/2 | Not started | - |
