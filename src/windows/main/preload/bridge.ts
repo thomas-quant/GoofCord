@@ -42,6 +42,9 @@ const api = {
 	openSettingsWindow: () => invoke("settings:createSettingsWindow"),
 	setBadgeCount: (count: number) => invoke("dynamicIcon:setBadgeCount", count),
 	stopPatchcord: () => invoke("patchcord:stopPatchcord"),
+	// THROWAWAY — Phase 3 delivery-path spike (GOOFCORD_DELIVERY_SPIKE); strip before upstream PR.
+	deliverySpike: sendSync("screenshareDebug:isDeliverySpikeEnabled"),
+	appendScreenshareDebug: (line: string) => invoke("screenshareDebug:appendScreenshareDebug", line),
 	isVencordPresent: () => isVencordPresent,
 	onInvidiousConfigChanged: (callback: () => void) => ipcRenderer.on("invidiousConfigChanged", callback),
 	openQuickCssWindow: () => invoke("quickCssFix:createQuickCssWindow"),
