@@ -95,7 +95,7 @@ Plans:
 Plans:
 **Wave 1**
 
-- [ ] 03-01-PLAN.md — Main-process plumbing: new `screenshareDebug.ts` with `appendScreenshareDebug<IPCHandle>` (userData `screenshare-debug.log` writer) + `isDeliverySpikeEnabled<IPCOn>` (`GOOFCORD_DELIVERY_SPIKE` env/argv gate), regenerated IPC, and two `goofcord` bridge fields (`deliverySpike` + `appendScreenshareDebug`)
+- [x] 03-01-PLAN.md — Main-process plumbing: new `screenshareDebug.ts` with `appendScreenshareDebug<IPCHandle>` (userData `screenshare-debug.log` writer) + `isDeliverySpikeEnabled<IPCOn>` (`GOOFCORD_DELIVERY_SPIKE` env/argv gate), regenerated IPC, and two `goofcord` bridge fields (`deliverySpike` + `appendScreenshareDebug`)
 
 **Wave 2** *(blocked on Wave 1)*
 
@@ -145,6 +145,6 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 |-------|----------------|--------|-----------|
 | 1. Fix Bug A — Cancel then Restart Works | 2/2 | Complete | 2026-05-30 |
 | 2. Fix Bug B — Windows Loopback Audio Captured | 2/2 | Complete | 2026-05-30 |
-| 3. Delivery-Path Spike — PCM → MediaStream (GO/NO-GO) | 0/3 | Planned | - |
+| 3. Delivery-Path Spike — PCM → MediaStream (GO/NO-GO) | 1/3 | In Progress|  |
 | 4. Native Clean-Room Exclude-Tree Addon + Integration | 0/0 | Not started | - |
 | 5. Verification + Upstream PR | 0/0 | Not started | - |
