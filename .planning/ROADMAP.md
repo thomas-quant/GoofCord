@@ -90,7 +90,20 @@ Plans:
   3. An explicit, written **GO/NO-GO decision** is produced: GO = a viable, upstream-shaped delivery path is proven and named (the path Phase 4 will wire the real capture into); NO-GO = no path delivers audio without a kernel/virtual-audio driver, which would force a milestone re-scope (documented, not silently absorbed).
   4. The spike touches no Linux/macOS code path and leaves the existing Windows `"loopback"` behaviour intact behind the experiment — it is additive, throwaway-where-possible scaffolding, and any code kept is marked for the Phase 4 integration.
 
-**Plans**: TBD
+**Plans**: 3 plans
+
+Plans:
+**Wave 1**
+
+- [ ] 03-01-PLAN.md — Main-process plumbing: new `screenshareDebug.ts` with `appendScreenshareDebug<IPCHandle>` (userData `screenshare-debug.log` writer) + `isDeliverySpikeEnabled<IPCOn>` (`GOOFCORD_DELIVERY_SPIKE` env/argv gate), regenerated IPC, and two `goofcord` bridge fields (`deliverySpike` + `appendScreenshareDebug`)
+
+**Wave 2** *(blocked on Wave 1)*
+
+- [ ] 03-02-PLAN.md — Packaged spike renderer module + gated main-world injection: `spike-loaded` reachability log, MSTG-probe→Web-Audio reconstruction of a distinctive 48k/stereo/f32 track, swap-seam injection at `screensharePatch.ts:79-84`, `RTCRtpSender` capture + `getStats()` poll, STREAM_CLOSE teardown — shipped from `ts-out/**` via `webFrame.executeJavaScript` (NOT the downloaded `postVencord.js`)
+
+**Wave 3** *(blocked on Wave 2 — has human checkpoint)*
+
+- [ ] 03-03-PLAN.md — Manual verification runbook + the terminal GO/NO-GO verdict (`03-FINDINGS.md`): trigger the Windows x64 CI build, confirm `spike-loaded` reachability, run the second-device audible test, read `getStats`, and write the evidence-backed GO/NO-GO decision naming the working path (GO) or Option A (NO-GO) plus the main→renderer transport residual risk for Phase 4
 
 ### Phase 4: Native Clean-Room Exclude-Tree Addon + Integration
 
@@ -132,6 +145,6 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 |-------|----------------|--------|-----------|
 | 1. Fix Bug A — Cancel then Restart Works | 2/2 | Complete | 2026-05-30 |
 | 2. Fix Bug B — Windows Loopback Audio Captured | 2/2 | Complete | 2026-05-30 |
-| 3. Delivery-Path Spike — PCM → MediaStream (GO/NO-GO) | 0/0 | Not started | - |
+| 3. Delivery-Path Spike — PCM → MediaStream (GO/NO-GO) | 0/3 | Planned | - |
 | 4. Native Clean-Room Exclude-Tree Addon + Integration | 0/0 | Not started | - |
 | 5. Verification + Upstream PR | 0/0 | Not started | - |
