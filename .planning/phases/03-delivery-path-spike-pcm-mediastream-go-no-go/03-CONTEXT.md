@@ -4,8 +4,8 @@
 **What this phase delivers:** A written GO/NO-GO decision, proven on a real Windows x64 CI build, on whether audio originating outside Discord's own pipeline can be driven through Electron 41.3.0 into the Discord web client's `getDisplayMedia` MediaStream and heard by a remote viewer — using a synthetic/stub PCM source (no native WASAPI code yet) to isolate the delivery path.
 
 **Boundary:**
-- IN: a synthetic PCM source generated in the main process; the main→renderer transport; renderer reconstruction of a live `MediaStreamTrack`; injection at the real screenshare swap seam; viewer-side audible verification + logged corroboration; an explicit GO/NO-GO verdict.
-- OUT: any clean-room native WASAPI capture code (Phase 4); the real exclude-tree PID resolution (Phase 4); A/V sync work (deferred to Phase 4); any Linux/macOS code path change; shipping the spike in normal builds.
+- IN: a synthetic PCM source generated **in the renderer**; renderer reconstruction of a live `MediaStreamTrack`; injection at the real screenshare swap seam; viewer-side audible verification + logged corroboration; an explicit GO/NO-GO verdict.
+- OUT: the main→renderer PCM transport (renderer-only spike — transport is a named residual risk for Phase 4); any clean-room native WASAPI capture code (Phase 4); the real exclude-tree PID resolution (Phase 4); A/V sync work (deferred to Phase 4); any Linux/macOS code path change; shipping the spike in normal builds.
 - Owns no requirement — this is a de-risk gate that proves the delivery path for ECHO-01 (owned/delivered in Phase 4).
 </domain>
 
@@ -23,9 +23,9 @@
 **Implications:** Spike reuses the existing pattern: stop/remove the existing audio track(s), `addTrack` the reconstructed one. Keep it additive and behind the gate so the normal `"loopback"` behaviour is untouched when the spike is off.
 
 ### Transport scope (main → renderer)
-**Decision:** Generate the synthetic PCM in the **main process** and ship it to the renderer over the real transport (MessagePort / transferable `ArrayBuffer` chunks — never per-frame `ipcRenderer.send`). Prove the whole bridge end-to-end.
-**Rationale:** Phase 4's real PCM originates from the native addon in the main process, so the main→renderer bridge is part of what must be proven. Exercises the research-flagged IPC-throughput/GC risk now, not in Phase 4. (Resolved after an initial conflicting answer — locked to "include transport end-to-end".)
-**Implications:** Transport must use transferables/chunking, not JSON-serialized per-frame IPC (research anti-pattern, ARCHITECTURE.md:250-253). Clock drift/latency surfaces during the spike.
+**Decision:** **Renderer-only.** Generate the synthetic PCM in the renderer (no IPC) and prove only the make-or-break question: a non-Discord audio track reconstructed in the renderer reaches a remote viewer through the existing swap seam. The main→renderer PCM bridge (MessagePort / transferable `ArrayBuffer` chunks, and its IPC-throughput/GC risk) is an **explicit residual risk Phase 4 must own** — documented here, not proven by the spike.
+**Rationale:** Fastest clean GO/NO-GO. The genuine make-or-break unknown is whether a non-Discord track can reach the viewer at all (reconstruction + injection), not the transport — isolating it fails faster and cleaner. (Tie-break: the user initially leaned "include transport," but when asked to resolve the conflict explicitly chose renderer-only + a residual-risk note.)
+**Implications:** No main-process PCM generation and no IPC in the spike. The plan MUST carry the main→renderer transport as a NAMED residual risk for Phase 4 — and Phase 4 must use chunked transferables, never per-frame `ipcRenderer.send` (research anti-pattern, ARCHITECTURE.md:250-253).
 
 ### Synthetic source character
 **Decision:** An obviously-synthetic, recognizable pattern (periodic beeps or a repeating frequency sweep) — not a flat tone, not noise, not a bundled clip.
@@ -37,10 +37,10 @@
 **Rationale:** Mirrors WebRTC/Opus, Web Audio, and the fixed `WAVEFORMATEX` the WASAPI process-loopback addon will emit in Phase 4 (the loopback device forces a fixed format; `GetMixFormat` → `E_NOTIMPL`). No format-conversion surprises deferred to Phase 4.
 **Implications:** AudioData / Web Audio buffers are f32; if MSTG is used, frames are constructed at this format. Any int conversion the real addon needs is a Phase 4 concern only if the addon emits something other than f32.
 
-### Generation/ship cadence
-**Decision:** Emit small chunks at a real-time rate (~10 ms / 480-frame buffers, ~100 chunks/sec) for the stream's duration.
-**Rationale:** Genuinely stresses the MessagePort/transferable throughput + GC — the whole point of including transport — and surfaces drift/latency now.
-**Implications:** Exact chunk size/cadence is an implementation detail the planner/executor can tune; the constraint is "realistic streaming cadence, many small chunks," not one big buffer.
+### Generation/feed cadence
+**Decision:** Feed the reconstruction (MSTG / Web Audio) at a realistic streaming cadence (~10 ms / 480-frame buffers, ~100 chunks/sec) for the stream's duration.
+**Rationale:** Exercises the reconstruction + live track at a real-time rate and surfaces underrun/drift/latency in the renderer path now (rather than a single one-shot buffer that proves little).
+**Implications:** This is **in-renderer feeding**, not main→renderer shipping (transport is renderer-only per the decision above; the IPC-throughput aspect is the deferred residual risk). Exact chunk size/cadence is a tunable implementation detail.
 
 ### GO/NO-GO success bar + verification rigor
 **Decision:** GO requires BOTH (a) a second-device viewer audibly confirming the injected pattern in a live stream AND (b) `screenshare-debug.log` recording corroborating signals. The key corroboration is `RTCRtpSender.getStats()` outbound-rtp **audio** `packetsSent`/`bytesSent` climbing (proves audio is actually leaving the peer connection, independent of the viewer), plus cheap signals: which mechanism was chosen/succeeded, `track.readyState`/`muted`, and that an audio track is attached to a sender.
@@ -67,7 +67,7 @@
 - Windows audio branch the fix ultimately targets: `src/windows/screenshare/screenshare.ts:90-100` (`result.audio = "loopback"` at L98) — UNCHANGED by the spike; spike replaces the track in-renderer.
 
 **Transport / format:**
-- Anti-pattern to avoid: per-frame `ipcRenderer.send` of raw PCM — use chunked transfers / `ArrayBuffer` transferables (research ARCHITECTURE.md:250-253).
+- **Residual risk for Phase 4 (NOT proven by this spike):** the main→renderer PCM bridge. Phase 4 must use chunked transfers / `ArrayBuffer` transferables — never per-frame `ipcRenderer.send` of raw PCM (research anti-pattern, ARCHITECTURE.md:250-253).
 - PCM format 48 kHz / stereo / float32 — matches Phase 4 fixed `WAVEFORMATEX` (research SUMMARY.md:53, FINDINGS `GetMixFormat → E_NOTIMPL`).
 
 **Verification (no DevTools):**
@@ -104,6 +104,7 @@
 <deferred>
 ## Deferred Ideas
 
+- **Main→renderer PCM transport** — the spike is renderer-only; the real transport (MessagePort / transferable `ArrayBuffer` chunks) and its IPC-throughput/GC risk are a named residual risk Phase 4 must own and prove.
 - **A/V sync** between injected audio and the screenshare video — explicitly out of scope for the spike; defer all sync concerns to Phase 4. The spike only proves "audio reaches the viewer at all."
 - **Option A (virtual capture device, no kernel driver)** — not built in this spike; named in the NO-GO verdict as the first re-scope avenue if Option B fails both APIs.
 - **Real exclude-tree WASAPI capture + PID resolution** — Phase 4.
@@ -113,6 +114,6 @@
 ## Open Questions
 
 - Is `MediaStreamTrackGenerator` (Insertable Streams) available in Electron 41.3.0's bundled Chromium? (The spike resolves this — it is the point of the runtime probe.)
-- Does high-rate 48 kHz stereo float32 PCM survive the main→renderer MessagePort/transferable transport without unacceptable latency/GC pressure? (The realistic-cadence transport is designed to surface this.)
+- **(Residual risk — deferred to Phase 4, NOT resolved by this spike):** Does high-rate 48 kHz stereo float32 PCM survive the main→renderer MessagePort/transferable transport without unacceptable latency/GC pressure? The spike is renderer-only, so this is carried forward as a named Phase 4 risk.
 - Exact chunk size / beep cadence / env-var name / `screenshare-debug.log` line format — implementation details for the planner/executor to settle.
 </open_questions>

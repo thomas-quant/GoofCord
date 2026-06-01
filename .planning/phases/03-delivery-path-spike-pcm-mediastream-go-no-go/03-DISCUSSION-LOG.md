@@ -29,8 +29,8 @@
 - Include transport (main→renderer) — generate PCM in main, ship over MessagePort/transferable ArrayBuffer chunks
 - Isolate renderer only — generate tone in-renderer, no IPC
 
-**Selected:** Include transport end-to-end
-**Notes:** This question was initially asked twice (a redundant follow-up with a fabricated "simplest" premise produced a conflicting "renderer-only" answer). Reconciled with an explicit tie-break question; user locked **Include transport end-to-end** — the spike proves the whole Phase 4 bridge including the flagged IPC-throughput/GC risk.
+**Selected:** Renderer-only + residual-risk note
+**Notes:** This question went through three askings. The first batch answer was "Include transport"; a redundant follow-up (with a fabricated "simplest" premise — my error) returned "renderer-only"; the conflict was then resolved with an explicit tie-break question, where the user chose **Renderer-only + residual-risk note**. Authoritative outcome: the spike generates the tone in-renderer and proves only "non-Discord track → viewer hears it"; the main→renderer PCM bridge (and its IPC-throughput/GC risk) is documented as an explicit residual risk Phase 4 must own. (An intermediate CONTEXT.md draft mistakenly recorded "include transport" because the tie-break answer arrived after that draft was written; corrected before final commit.)
 
 ---
 
