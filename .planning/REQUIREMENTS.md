@@ -29,7 +29,7 @@ Native clean-room implementation of the echo fix (upstream #46), building on the
 
 ### Echo Fix (ECHO) — Bug B implementation
 
-- [ ] **ECHO-01**: On Windows, when a user screenshares with audio, remote viewers hear the shared system/application audio but do NOT hear the Discord call echoed back to them (#46)
+- [x] **ECHO-01**: On Windows, when a user screenshares with audio, remote viewers hear the shared system/application audio but do NOT hear the Discord call echoed back to them (#46)
 - [ ] **ECHO-02**: The echo fix works on current Windows — Windows 10 version 2004 (build 19041) and later, and Windows 11 — using the in-OS WASAPI per-process-tree EXCLUDE loopback (confirmed functional on the maintainer's build 19045 by official Discord's echo-free behaviour there; the documented "20348" minimum is over-stated — see `02-FINDINGS.md §2.3 UPDATE`)
 - [ ] **ECHO-03**: Existing screenshare/audio behaviour is preserved with no regression on Linux (patchcord), macOS, and on any Windows build where the per-process API is unavailable (graceful fallback to today's `"loopback"` behaviour — no crash, no worse than current)
 - [ ] **ECHO-04**: The native capability is implemented clean-room from the public Microsoft ApplicationLoopback sample (MIT-licensed; copyright notice retained); no Discord code or proprietary symbol layout is used
@@ -74,7 +74,7 @@ Which phases cover which requirements. Populated during roadmap creation.
 | AUDIO-01 | Phase 2 | Complete |
 | AUDIO-02 | Phase 2 | Complete |
 | UPST-01 | Phase 1 | Complete |
-| ECHO-01 | Phase 4 | Pending |
+| ECHO-01 | Phase 4 | Complete |
 | ECHO-02 | Phase 4 | Pending |
 | ECHO-03 | Phase 4 | Pending |
 | ECHO-04 | Phase 4 | Pending |
