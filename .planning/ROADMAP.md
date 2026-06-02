@@ -119,7 +119,20 @@ Plans:
   4. The native capability is implemented clean-room from the public Microsoft `ApplicationLoopback` sample with Microsoft's MIT copyright notice retained in the addon source; no Discord symbol layout (`ActivateApplicationLoopbackForProcessTree`, `excludedSubtrees`, etc.) is used as a recipe, and the addon hardcodes a fixed `WAVEFORMATEX` (no `GetMixFormat` on the loopback device). [ECHO-04]
   5. The addon loads under Electron 41.3.0 (N-API, verified by an in-Electron smoke call — not just bare Node) and is packaged into the Windows artifact (`copyNativeModules()` entry + `nativeModulePlugin` glob name match + electron-builder inclusion), with a CI packaging assertion that the `.node` is present in the build output. [ECHO-01, ECHO-03]
 
-**Plans**: TBD
+**Plans**: 3 plans
+
+Plans:
+**Wave 1**
+
+- [ ] 04-01-PLAN.md — Transport spike (MVP slice 1): main-process synthetic 48k/stereo/f32 tone over the REAL MessageChannelMain transport → hop-2 port-forward → main-world MSTG feeder → swap seam → second-device viewer-audible GO on a Windows x64 CI artifact (de-risks Phase 3 Residual Risk #1; KEEP transport, throwaway tone) [ECHO-01]
+
+**Wave 2** *(blocked on Wave 1 GO)*
+
+- [ ] 04-02-PLAN.md — Clean-room Rust WASAPI EXCLUDE-tree addon: hardcoded 48k/stereo/f32 WAVEFORMATEXTENSIBLE + AUTOCONVERTPCM, dynamic LoadLibrary/GetProcAddress + try-activate-and-catch, EXCLUDE process-tree on the caller PID, napi ThreadsafeFunction push (NonBlocking, drop-oldest); MIT notice retained, zero Discord symbols [ECHO-02, ECHO-03, ECHO-04]
+
+**Wave 3** *(blocked on Waves 1+2 — touches wasapiLoopback.ts from Wave 1, consumes the .node from Wave 2; has manual checkpoint)*
+
+- [ ] 04-03-PLAN.md — Integration (MVP slice 2): swap the real addon behind the proven transport, additive 3-way screenshare.ts gate (Linux patchcord → win32 native exclude-tree → loopback fallback), PID resolution + logging, packaging (copyNativeModules entry + CI Rust build + GOOFCORD_WASAPI_LOOPBACK_PATH + packaging assertion + in-Electron N-API smoke), and viewer-side #46 echo-fix verification [ECHO-01, ECHO-02, ECHO-03]
 
 ### Phase 5: Verification + Upstream PR
 
@@ -146,5 +159,5 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 | 1. Fix Bug A — Cancel then Restart Works | 2/2 | Complete | 2026-05-30 |
 | 2. Fix Bug B — Windows Loopback Audio Captured | 2/2 | Complete | 2026-05-30 |
 | 3. Delivery-Path Spike — PCM → MediaStream (GO/NO-GO) | 3/3 | Complete    | 2026-06-02 |
-| 4. Native Clean-Room Exclude-Tree Addon + Integration | 0/0 | Not started | - |
+| 4. Native Clean-Room Exclude-Tree Addon + Integration | 0/3 | Planned | - |
 | 5. Verification + Upstream PR | 0/0 | Not started | - |
