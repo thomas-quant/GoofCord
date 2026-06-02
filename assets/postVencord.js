@@ -260,9 +260,16 @@ function patchScreenshare() {
     }
   }
   navigator.mediaDevices.getDisplayMedia = async function(opts) {
-    const stream = await original.call(this, opts);
+    let stream;
+    try {
+      stream = await original.call(this, opts);
+    } catch {
+      throw new DOMException("Permission denied by system", "NotAllowedError");
+    }
     console.log("Setting stream's content hint and audio device");
     const settings = window.screenshareSettings;
+    if (!settings)
+      return stream;
     settings.width = Math.round(settings.resolution * (screen.width / screen.height));
     const videoTrack = stream.getVideoTracks()[0];
     videoTrack.contentHint = settings.contentHint || "motion";
@@ -280,6 +287,16 @@ function patchScreenshare() {
     const audioTrack = stream.getAudioTracks()[0];
     if (audioTrack)
       audioTrack.contentHint = "music";
+    const wasapiFeeder = globalThis.__goofcordWasapiFeeder;
+    if (wasapiFeeder?.track) {
+      for (const t of stream.getAudioTracks()) {
+        t.stop();
+        stream.removeTrack(t);
+      }
+      stream.addTrack(wasapiFeeder.track);
+      GoofCord.appendScreenshareDebug("wasapi swap-seam injected reconstructed audio track");
+      return stream;
+    }
     const id = await getVirtmic();
     if (id) {
       const audio = await navigator.mediaDevices.getUserMedia({
@@ -307,6 +324,11 @@ function patchScreenshare() {
     const owner = streamKey.split(":").at(-1);
     if (owner !== Common.UserStore.getCurrentUser().id) {
       return;
+    }
+    const wasapiFeeder = globalThis.__goofcordWasapiFeeder;
+    if (wasapiFeeder) {
+      wasapiFeeder.teardown();
+      globalThis.__goofcordWasapiFeeder = undefined;
     }
     if (GoofCord.stopVenmic) {
       GoofCord.stopVenmic();

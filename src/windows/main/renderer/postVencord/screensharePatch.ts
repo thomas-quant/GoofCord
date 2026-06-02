@@ -59,6 +59,20 @@ export function patchScreenshare() {
 		const audioTrack = stream.getAudioTracks()[0];
 		if (audioTrack) audioTrack.contentHint = "music";
 
+		// THROWAWAY — Phase 4 transport spike (GOOFCORD_TRANSPORT_SPIKE); strip before upstream PR.
+		// If the main-world transport feeder (wasapiTransport.ts) reconstructed a track from the
+		// MessagePort-delivered PCM, swap it in here (same seam shape as the patchcord path below).
+		const wasapiFeeder = (globalThis as { __goofcordWasapiFeeder?: { track: MediaStreamTrack } }).__goofcordWasapiFeeder;
+		if (wasapiFeeder?.track) {
+			for (const t of stream.getAudioTracks()) {
+				t.stop();
+				stream.removeTrack(t);
+			}
+			stream.addTrack(wasapiFeeder.track);
+			void GoofCord.appendScreenshareDebug("wasapi swap-seam injected reconstructed audio track");
+			return stream;
+		}
+
 		// Patchcord
 		const id = await getVirtmic();
 		if (id) {
@@ -92,6 +106,15 @@ export function patchScreenshare() {
 
 		if (owner !== Common.UserStore.getCurrentUser().id) {
 			return;
+		}
+
+		// THROWAWAY — Phase 4 transport spike (GOOFCORD_TRANSPORT_SPIKE); strip before upstream PR.
+		// Tear down the main-world transport feeder (clear drain loop, release writer, close port,
+		// call GoofCord.stopWasapiLoopback) on stream close.
+		const wasapiFeeder = (globalThis as { __goofcordWasapiFeeder?: { teardown: () => void } }).__goofcordWasapiFeeder;
+		if (wasapiFeeder) {
+			wasapiFeeder.teardown();
+			(globalThis as { __goofcordWasapiFeeder?: unknown }).__goofcordWasapiFeeder = undefined;
 		}
 
 		// @ts-expect-error
