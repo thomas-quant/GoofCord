@@ -35,6 +35,7 @@ On Windows, a user can start a screenshare, cancel the source picker, and start 
 - ✓ After cancelling the source picker, the second start-stream click re-opens the picker and the stream restarts normally — exactly-once `finishRequest()` teardown consolidation in `screenshare.ts` + the existing `NotAllowedError` cancellation name (Validated in Phase 1: Fix Bug A, `88baaf2`; Windows CI build 26673048740 confirmed cancellation error-free and restart working)
 - ✓ The not-reset-on-cancel state was identified and cleaned: per-request teardown was racing/duplicating the Electron `callback` across the select/cancel and window-`closed` paths; consolidated into single-owner exactly-once `finishRequest(wcId, result)` with the `activeRequests` map-delete as the idempotency token (Validated in Phase 1: Fix Bug A)
 - ✓ Windows echo mechanism identified (recon): Discord uses the public WASAPI Application Loopback API (EXCLUDE process-tree, dynamically loaded), not a virtual-device driver; clean-room replication is viable from the public Microsoft `ApplicationLoopback` sample, conditional on build ≥ 20348 (Validated in Phase 2: Bug B recon; see `02-FINDINGS.md`)
+- ✓ Delivery path proven — GO (de-risk spike): a renderer-reconstructed non-Discord audio track (`MediaStreamTrackGenerator`, confirmed working on Electron 41.3.0 / Chrome 146) swapped into `getDisplayMedia` at the `screensharePatch.ts` seam is heard by a remote viewer on a Windows x64 CI build (run 26740748142). This is the make-or-break for the native echo fix; the remaining main→renderer PCM transport (chunked transferables, never per-frame `ipcRenderer.send`) is the named Phase 4 residual risk (Validated in Phase 3: Delivery-Path Spike; see `03-FINDINGS.md`)
 
 ### Active
 
@@ -78,6 +79,7 @@ On Windows, a user can start a screenshare, cancel the source picker, and start 
 | Build the cancellation-error fix as `NotAllowedError` (already shipped in `710cfde`) | Matches the standard browsers raise on cancellation so Discord ignores it | ⚠️ Revisit — stopped the crash but introduced/exposed the re-click failure |
 | [v1.1] Echo-fix approach (D-06) decided by research, not pre-committed | Genuine native-addon-vs-workaround uncertainty + a verification constraint (dev box is build 19045, below the API minimum) — decide from evidence | — Pending (research-first) |
 | [v1.1] Native exclude-tree path cannot be verified on the maintainer's box | Public process-loopback API needs build ≥ 20348; dev box is Win10 19045 — verification must use Windows CI + a second device, viewer-side, audio playing | — Pending |
+| [v1.1] Delivery-path spike verdict = GO (Phase 3) | Prove PCM → renderer track → `getDisplayMedia` → viewer before any native investment | ✓ GO — `MediaStreamTrackGenerator` works on Chrome 146; renderer swap-seam delivery confirmed viewer-side on Windows CI; Phase 4 owns the main→renderer transport |
 
 ## Evolution
 
@@ -97,4 +99,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-05-30 — v1.0 complete (Phase 1 cancel→restart fix validated on Windows + PR-ready; Phase 2 echo recon done). Started milestone v1.1 (Windows Screenshare Echo Fix), research-first.*
+*Last updated: 2026-06-02 — Phase 3 (Delivery-Path Spike) complete: GO verdict — MSTG → `getDisplayMedia` → viewer delivery proven on Windows x64 CI (run 26740748142, Chrome 146). Next: Phase 4 (native clean-room exclude-tree addon + integration); main→renderer PCM transport is the carried residual risk.*
