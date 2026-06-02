@@ -103,7 +103,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2 — has human checkpoint)*
 
-- [ ] 03-03-PLAN.md — Manual verification runbook + the terminal GO/NO-GO verdict (`03-FINDINGS.md`): trigger the Windows x64 CI build, confirm `spike-loaded` reachability, run the second-device audible test, read `getStats`, and write the evidence-backed GO/NO-GO decision naming the working path (GO) or Option A (NO-GO) plus the main→renderer transport residual risk for Phase 4
+- [x] 03-03-PLAN.md — Manual verification runbook + the terminal GO/NO-GO verdict (`03-FINDINGS.md`): trigger the Windows x64 CI build, confirm `spike-loaded` reachability, run the second-device audible test, read `getStats`, and write the evidence-backed GO/NO-GO decision naming the working path (GO) or Option A (NO-GO) plus the main→renderer transport residual risk for Phase 4
 
 ### Phase 4: Native Clean-Room Exclude-Tree Addon + Integration
 
@@ -145,6 +145,6 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 |-------|----------------|--------|-----------|
 | 1. Fix Bug A — Cancel then Restart Works | 2/2 | Complete | 2026-05-30 |
 | 2. Fix Bug B — Windows Loopback Audio Captured | 2/2 | Complete | 2026-05-30 |
-| 3. Delivery-Path Spike — PCM → MediaStream (GO/NO-GO) | 2/3 | In Progress|  |
+| 3. Delivery-Path Spike — PCM → MediaStream (GO/NO-GO) | 3/3 | Complete   | 2026-06-02 |
 | 4. Native Clean-Room Exclude-Tree Addon + Integration | 0/0 | Not started | - |
 | 5. Verification + Upstream PR | 0/0 | Not started | - |
