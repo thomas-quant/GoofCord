@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Windows Screenshare Echo Fix
 status: executing
-last_updated: "2026-06-01T07:10:00Z"
-last_activity: 2026-06-01 -- 03-03 runbook authored (d1ac230); paused at human-verify checkpoint
+last_updated: "2026-06-02T00:00:00Z"
+last_activity: 2026-06-02 -- 03-03 GO verdict written (03-FINDINGS.md); Phase 03 spike COMPLETE (GO)
 progress:
   total_phases: 5
   completed_phases: 2
   total_plans: 7
-  completed_plans: 6
-  percent: 40
+  completed_plans: 7
+  percent: 47
 ---
 
 # Project State
@@ -24,12 +24,12 @@ See: .planning/PROJECT.md (updated 2026-05-30)
 
 ## Current Position
 
-Phase: 03 (delivery-path-spike-pcm-mediastream-go-no-go) — EXECUTING (Wave 3 checkpoint)
-Plan: 03-03 in progress — Task 1/3 done; BLOCKED at Task 2 human-verify checkpoint
-Status: Awaiting developer Windows x64 CI audible test (2nd device) to write 03-FINDINGS.md (Task 3)
-Last activity: 2026-06-01 -- 03-03 runbook authored (d1ac230); paused at human-verify checkpoint
+Phase: 03 (delivery-path-spike-pcm-mediastream-go-no-go) — COMPLETE (verdict GO)
+Plan: 03-03 done (3/3 tasks) — GO/NO-GO verdict written to 03-FINDINGS.md
+Status: Phase 03 spike COMPLETE — GO. Delivery path proven viewer-side on Windows x64 CI artifact (run 26740748142, Chrome 146). Ready for Phase 04 (native clean-room exclude-tree addon + integration). Orchestrator owns phase-level completion (checkbox + verification).
+Last activity: 2026-06-02 -- 03-03 GO verdict written (03-FINDINGS.md); Phase 03 spike COMPLETE
 
-Progress: [░░░░░░░░░░] 0% (v1.1 phases)
+Progress: [████░░░░░░] 33% (v1.1 phases: 1/3 — Phase 03 done, Phases 04-05 remain)
 
 ## Performance Metrics
 
@@ -69,6 +69,7 @@ Recent decisions affecting current work:
 
 - [Roadmap v1.1]: Phase shape = spike (3) → native addon + integration (4) → verification + upstream PR (5). Spike gates the native investment.
 - [Roadmap v1.1]: ECHO-01..04 owned by Phase 4; UPST-02 owned by Phase 5; Phase 3 owns no requirement (de-risk gate).
+- [03-03]: **Phase 3 delivery-path spike verdict = GO** (03-FINDINGS.md). `MediaStreamTrackGenerator` (Insertable Streams) is CONFIRMED present + working on Electron 41.3.0 / Chrome 146 (resolves A1/A2); a renderer-reconstructed synthetic audio track swapped at `screensharePatch.ts:79-84` was heard by a second-device viewer on Windows x64 CI artifact (run 26740748142). Proven path: renderer MSTG reconstruction → getDisplayMedia swap seam → RTCPeerConnection → viewer. KEEP the MSTG/Web-Audio reconstruction + swap seam as the Phase 4 seed; THROW AWAY the synthetic beep generator + getStats poll. The main→renderer PCM transport is the named Phase 4 residual risk (chunked transferables, NEVER per-frame ipcRenderer.send — ARCHITECTURE.md:250-253). `getStats` showed audioSenders=0 (Pitfall 4: Discord uses replaceTrack on a pre-created transceiver, not addTrack) — an instrumentation blind spot, NOT a delivery failure; viewer-audible is the dispositive ground truth.
 - [02-02]: Mechanism = public WASAPI Application Loopback, EXCLUDE process-tree, dynamically loaded (not a virtual-device driver); clean-room GO from the public MS ApplicationLoopback sample (D-05 LOCKED).
 - [01-02]: Bug A fixed by exactly-once finishRequest + kept NotAllowedError; verified on combined Windows CI build run 26673048740; instrumentation stripped (UPST-01).
 
@@ -82,7 +83,7 @@ None yet.
 
 [Issues that affect future work]
 
-- The single genuine unknown gates Phase 4: getting natively-captured PCM into Discord's web-client `getDisplayMedia` MediaStream in Electron 41.3.0. Phase 3 resolves it with a stub source before any native code. NO-GO would force a milestone re-scope.
+- ~~The single genuine unknown gates Phase 4: getting natively-captured PCM into Discord's web-client `getDisplayMedia` MediaStream in Electron 41.3.0.~~ **RESOLVED by Phase 3 (GO, 03-03):** the renderer-side delivery path (MSTG reconstruction → getDisplayMedia swap seam → viewer) is proven on the Windows x64 CI artifact. The REMAINING half — the main→renderer PCM transport — is now the explicit Phase 4 residual risk: use chunked ArrayBuffer/transferable (MessagePort) transport, NEVER per-frame `ipcRenderer.send` of raw PCM (ARCHITECTURE.md:250-253).
 - Verification is MANUAL on a Windows x64 CI artifact (`.github/workflows/testBuild.yml`) — no automated screenshare repro. The echo check needs a SECOND device/account as viewer, with non-call audio actively playing (WASAPI loopback yields silence on idle; streamer cannot self-verify — Electron mutes local echo). Diagnostics go to userData `screenshare-debug.log`, not DevTools (60% keyboard, no F12).
 - Exclude target = GoofCord/Electron root PID (`process.pid`) via `app.getAppMetrics()` so the separate Audio Service child is covered; confirm the parent/child relationship on Electron 41.3.0 from logged metrics on the first CI artifact.
 - Clean-room boundary LOCKED (D-05): public Microsoft ApplicationLoopback sample only (MIT, retain notice), never Discord code/symbols. Hardcode fixed WAVEFORMATEX (no GetMixFormat on the loopback device); dynamic LoadLibrary/GetProcAddress load (not static link) so the `.node` loads everywhere and activates selectively.
@@ -98,6 +99,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-06-01T07:10:00Z
-Stopped at: Phase 03 / Plan 03-03 Task 2 — blocking human-verify checkpoint. Task 1 (runbook) authored & committed (d1ac230). Awaiting developer's Windows x64 CI artifact results (viewer-audible? which mechanism? packetsSent climbing?) to run Task 3 (write 03-FINDINGS.md verdict) + create 03-03-SUMMARY.md. To resume: re-run /gsd-execute-phase 3 (skips completed plans, resumes at the checkpoint) and report the observed results.
-Resume file: .planning/phases/03-delivery-path-spike-pcm-mediastream-go-no-go/03-SPIKE-RUNBOOK.md
+Last session: 2026-06-02T00:00:00Z
+Stopped at: Phase 03 / Plan 03-03 COMPLETE (3/3 tasks). Developer ran the runbook on the Windows x64 CI artifact (run 26740748142, Chrome 146) and reported GO: second-device viewer heard the injected MSTG beep. Task 3 wrote the GO verdict to 03-FINDINGS.md; 03-03-SUMMARY.md created. Phase 03 spike is COMPLETE (verdict GO). Next: Phase 04 (native clean-room exclude-tree addon + integration) — orchestrator owns phase-level completion (ROADMAP checkbox + phase verification).
+Resume file: .planning/phases/03-delivery-path-spike-pcm-mediastream-go-no-go/03-FINDINGS.md
