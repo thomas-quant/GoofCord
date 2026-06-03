@@ -84,25 +84,34 @@ export async function tryStartWasapiLoopback(): Promise<boolean> {
 			const port = port1;
 			if (!port) return;
 
-			// Pack a fresh interleaved-stereo f32 buffer (L,R,L,R...) for THIS chunk.
-			const buf = new ArrayBuffer(CHUNK_BYTES);
-			const view = new Float32Array(buf);
-			for (let i = 0; i < FRAMES; i++) {
-				const s = makeDistinctiveSample(phase++);
-				view[i * 2] = s;
-				view[i * 2 + 1] = s;
-			}
-			// Transfer list [buf] → zero-copy, NOT structured clone (RESEARCH line 264).
-			// @ts-expect-error Electron types MessagePortMain.postMessage's transfer list as
-			// MessagePortMain[], but the runtime accepts (and is documented for) ArrayBuffer
-			// transferables — the canonical zero-copy audio path this spike is proving.
-			port.postMessage(buf, [buf]);
-			chunkCount++;
+			try {
+				// Pack a fresh interleaved-stereo f32 buffer (L,R,L,R...) for THIS chunk.
+				const buf = new ArrayBuffer(CHUNK_BYTES);
+				const view = new Float32Array(buf);
+				for (let i = 0; i < FRAMES; i++) {
+					const s = makeDistinctiveSample(phase++);
+					view[i * 2] = s;
+					view[i * 2 + 1] = s;
+				}
+				// Electron's MAIN-process MessagePortMain.postMessage transfer list accepts ONLY
+				// MessagePortMain instances — NOT ArrayBuffers (unlike the renderer/DOM MessagePort,
+				// which does honor ArrayBuffer transferables). Passing [buf] throws "Port at index 0
+				// is not a valid port" on every tick and surfaces as an uncaught main-process error.
+				// Send the buffer as the message instead; it is structured-cloned (~3840 bytes at
+				// ~100/s ≈ 384 KB/s — negligible). The renderer feeder still receives an ArrayBuffer.
+				port.postMessage(buf);
+				chunkCount++;
 
-			// Periodic auditable chunk-count line (every ~1s) — required for honest verification.
-			if (chunkCount - logCount >= 100) {
-				logCount = chunkCount;
-				void appendScreenshareDebug(`wasapi activation=spike-synthetic hop1=messageport chunks=${chunkCount}`);
+				// Periodic auditable chunk-count line (every ~1s) — required for honest verification.
+				if (chunkCount - logCount >= 100) {
+					logCount = chunkCount;
+					void appendScreenshareDebug(`wasapi activation=spike-synthetic hop1=messageport chunks=${chunkCount}`);
+				}
+			} catch (e) {
+				// A throw inside a timer is an UNCAUGHT main-process exception (crash dialog). Never
+				// let the spike crash the app (ECHO-03 discipline): log once and stop cleanly.
+				void appendScreenshareDebug(`wasapi synth-interval threw, stopping: ${getErrorMessage(e)}`);
+				void stopWasapiLoopback();
 			}
 		}, intervalMs);
 
