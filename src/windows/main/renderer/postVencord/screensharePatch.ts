@@ -32,29 +32,6 @@ export function patchScreenshare() {
 		}
 		console.log("Setting stream's content hint and audio device");
 
-		// THROWAWAY — Phase 4 transport spike (GOOFCORD_TRANSPORT_SPIKE); strip before upstream PR.
-		// The audio swap seam runs FIRST — BEFORE the `if (!settings) return stream;` early-return
-		// below. The reconstructed transport track is independent of window.screenshareSettings
-		// (those are VIDEO constraints), so a missing/late settings object must not strand us on the
-		// raw loopback track (that was the echo: the wrapper returned at the settings guard before it
-		// ever reached the swap). Gated on the feeder-installed flag, so with the spike OFF this whole
-		// block is inert and the page stays byte-identical to upstream.
-		const transportSpikeActive = !!(globalThis as Record<string, unknown>).__goofcordWasapiTransportInstalled;
-		const wasapiFeeder = (globalThis as { __goofcordWasapiFeeder?: { track: MediaStreamTrack } }).__goofcordWasapiFeeder;
-		if (transportSpikeActive) {
-			void GoofCord.appendScreenshareDebug(`getDisplayMedia wrapper entered: settings=${window.screenshareSettings ? "present" : "MISSING"} wasapiFeeder=${wasapiFeeder?.track ? "track-present" : "absent"} audioTracks=${stream.getAudioTracks().length}`);
-			if (wasapiFeeder?.track) {
-				for (const t of stream.getAudioTracks()) {
-					t.stop();
-					stream.removeTrack(t);
-				}
-				stream.addTrack(wasapiFeeder.track);
-				void GoofCord.appendScreenshareDebug("wasapi swap-seam injected reconstructed audio track");
-			} else {
-				void GoofCord.appendScreenshareDebug("wasapi swap-seam SKIPPED — feeder track absent (would fall through to loopback → echo)");
-			}
-		}
-
 		const settings = window.screenshareSettings;
 		if (!settings) return stream;
 		settings.width = Math.round(settings.resolution * (screen.width / screen.height));
@@ -82,31 +59,29 @@ export function patchScreenshare() {
 		const audioTrack = stream.getAudioTracks()[0];
 		if (audioTrack) audioTrack.contentHint = "music";
 
-		// Patchcord — skipped when the transport spike already swapped in its reconstructed track.
-		if (!(transportSpikeActive && wasapiFeeder?.track)) {
-			const id = await getVirtmic();
-			if (id) {
-				const audio = await navigator.mediaDevices.getUserMedia({
-					audio: {
-						deviceId: {
-							exact: id,
-						},
-						autoGainControl: false,
-						echoCancellation: false,
-						noiseSuppression: false,
-						channelCount: 2,
-						sampleRate: 48000,
-						sampleSize: 16,
+		// Patchcord
+		const id = await getVirtmic();
+		if (id) {
+			const audio = await navigator.mediaDevices.getUserMedia({
+				audio: {
+					deviceId: {
+						exact: id,
 					},
-				});
+					autoGainControl: false,
+					echoCancellation: false,
+					noiseSuppression: false,
+					channelCount: 2,
+					sampleRate: 48000,
+					sampleSize: 16,
+				},
+			});
 
-				for (const t of stream.getAudioTracks()) {
-					t.stop();
-					stream.removeTrack(t);
-				}
-
-				stream.addTrack(audio.getAudioTracks()[0]);
+			for (const t of stream.getAudioTracks()) {
+				t.stop();
+				stream.removeTrack(t);
 			}
+
+			stream.addTrack(audio.getAudioTracks()[0]);
 		}
 
 		return stream;
@@ -117,15 +92,6 @@ export function patchScreenshare() {
 
 		if (owner !== Common.UserStore.getCurrentUser().id) {
 			return;
-		}
-
-		// THROWAWAY — Phase 4 transport spike (GOOFCORD_TRANSPORT_SPIKE); strip before upstream PR.
-		// Tear down the main-world transport feeder (clear drain loop, release writer, close port,
-		// call GoofCord.stopWasapiLoopback) on stream close.
-		const wasapiFeeder = (globalThis as { __goofcordWasapiFeeder?: { teardown: () => void } }).__goofcordWasapiFeeder;
-		if (wasapiFeeder) {
-			wasapiFeeder.teardown();
-			(globalThis as { __goofcordWasapiFeeder?: unknown }).__goofcordWasapiFeeder = undefined;
 		}
 
 		// @ts-expect-error

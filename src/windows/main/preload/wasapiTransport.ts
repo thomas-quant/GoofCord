@@ -181,10 +181,46 @@ export function installWasapiTransport(): void {
 		if (ab instanceof ArrayBuffer) pushChunk(ab);
 	};
 
-	// READINESS HANDSHAKE (load-bearing — RESEARCH §Pitfall 1): now that the message listener
-	// AND the feeder are registered, signal the preload that the main world is ready to receive
-	// the port. The preload buffers the port until it sees this, then forwards it.
-	log("wasapi-transport main-world feeder installed; posting ready");
+	// ── SWAP SEAM: wrap getDisplayMedia HERE, in this preload-injected main-world script —
+	// NOT in screensharePatch.ts. postVencord.js is fetched at runtime from upstream `main`
+	// (settingsSchema PostVencord URL), so fork edits to screensharePatch.ts would silently not
+	// ship; only this ts-out-packaged preload reliably reaches the artifact (same reason
+	// deliverySpike.ts wraps getDisplayMedia itself — see its packaging note). Mirrors
+	// deliverySpike.ts:242-279. Injection only happens when the transport gate is on, so the
+	// wrap is unconditional here; with the gate OFF this script is never injected ⇒ the page is
+	// byte-identical to upstream.
+	const md = navigator.mediaDevices;
+	const originalGDM = md.getDisplayMedia.bind(md);
+	md.getDisplayMedia = async function (this: MediaDevices, opts?: DisplayMediaStreamOptions): Promise<MediaStream> {
+		const stream = await originalGDM(opts);
+		try {
+			// On Windows the upstream path leaves the captured "loopback" audio track in the stream
+			// (no virtmic), which is what echoes the call back to viewers. Swap it for the
+			// reconstructed transport track (fed from the main-process MessagePort).
+			for (const t of stream.getAudioTracks()) {
+				t.stop();
+				stream.removeTrack(t);
+			}
+			stream.addTrack(gen as MediaStreamTrack);
+			log(`wasapi swap-seam injected reconstructed audio track (chunks=${chunkCount})`);
+
+			// Teardown trigger: FluxDispatcher STREAM_CLOSE is unavailable in preload-injected
+			// main-world code (deliverySpike.ts:261), so the swapped track or the video track
+			// ending tears the feeder + the main-process synthetic/native capture down.
+			const videoTrack = stream.getVideoTracks()[0];
+			const onEnd = () => teardown();
+			(gen as MediaStreamTrack).addEventListener("ended", onEnd);
+			if (videoTrack) videoTrack.addEventListener("ended", onEnd);
+		} catch (e) {
+			log(`wasapi swap-seam failed err=${e instanceof Error ? e.message : String(e)}`);
+		}
+		return stream;
+	};
+
+	// READINESS HANDSHAKE (load-bearing — RESEARCH §Pitfall 1): now that the message listener,
+	// the feeder, AND the getDisplayMedia swap seam are registered, signal the preload that the
+	// main world is ready to receive the port. The preload buffers the port until it sees this.
+	log("wasapi-transport main-world feeder + swap seam installed; posting ready");
 	window.postMessage("goofcord:wasapi-ready", "*");
 }
 
