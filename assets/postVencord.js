@@ -267,6 +267,21 @@ function patchScreenshare() {
       throw new DOMException("Permission denied by system", "NotAllowedError");
     }
     console.log("Setting stream's content hint and audio device");
+    const transportSpikeActive = !!globalThis.__goofcordWasapiTransportInstalled;
+    const wasapiFeeder = globalThis.__goofcordWasapiFeeder;
+    if (transportSpikeActive) {
+      GoofCord.appendScreenshareDebug(`getDisplayMedia wrapper entered: settings=${window.screenshareSettings ? "present" : "MISSING"} wasapiFeeder=${wasapiFeeder?.track ? "track-present" : "absent"} audioTracks=${stream.getAudioTracks().length}`);
+      if (wasapiFeeder?.track) {
+        for (const t of stream.getAudioTracks()) {
+          t.stop();
+          stream.removeTrack(t);
+        }
+        stream.addTrack(wasapiFeeder.track);
+        GoofCord.appendScreenshareDebug("wasapi swap-seam injected reconstructed audio track");
+      } else {
+        GoofCord.appendScreenshareDebug("wasapi swap-seam SKIPPED — feeder track absent (would fall through to loopback → echo)");
+      }
+    }
     const settings = window.screenshareSettings;
     if (!settings)
       return stream;
@@ -287,36 +302,28 @@ function patchScreenshare() {
     const audioTrack = stream.getAudioTracks()[0];
     if (audioTrack)
       audioTrack.contentHint = "music";
-    const wasapiFeeder = globalThis.__goofcordWasapiFeeder;
-    if (wasapiFeeder?.track) {
-      for (const t of stream.getAudioTracks()) {
-        t.stop();
-        stream.removeTrack(t);
-      }
-      stream.addTrack(wasapiFeeder.track);
-      GoofCord.appendScreenshareDebug("wasapi swap-seam injected reconstructed audio track");
-      return stream;
-    }
-    const id = await getVirtmic();
-    if (id) {
-      const audio = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          deviceId: {
-            exact: id
-          },
-          autoGainControl: false,
-          echoCancellation: false,
-          noiseSuppression: false,
-          channelCount: 2,
-          sampleRate: 48000,
-          sampleSize: 16
+    if (!(transportSpikeActive && wasapiFeeder?.track)) {
+      const id = await getVirtmic();
+      if (id) {
+        const audio = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            deviceId: {
+              exact: id
+            },
+            autoGainControl: false,
+            echoCancellation: false,
+            noiseSuppression: false,
+            channelCount: 2,
+            sampleRate: 48000,
+            sampleSize: 16
+          }
+        });
+        for (const t of stream.getAudioTracks()) {
+          t.stop();
+          stream.removeTrack(t);
         }
-      });
-      for (const t of stream.getAudioTracks()) {
-        t.stop();
-        stream.removeTrack(t);
+        stream.addTrack(audio.getAudioTracks()[0]);
       }
-      stream.addTrack(audio.getAudioTracks()[0]);
     }
     return stream;
   };
