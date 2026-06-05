@@ -1,3 +1,4 @@
+import fs from "node:fs/promises";
 import path from "node:path";
 
 import type { BunPlugin, OnLoadArgs } from "bun";
@@ -31,18 +32,25 @@ export const nativeModulePlugin = (options: NativePluginOptions = {}): BunPlugin
 			const targetPlatform = options.targetPlatform || process.platform;
 			const targetArch = options.targetArch || process.arch;
 
-			// Resolve the glob's directory to an ABSOLUTE path and scan by basename only. Bun.Glob does
-			// not reliably traverse `../` segments when the build HOST is Windows (the pattern silently
-			// matches nothing → `export default null` → the native addon never loads at runtime, a silent
-			// fallback). Splitting dir + basename keeps resolution portable across Linux/macOS/Windows
-			// build hosts. (Linux-host builds matched fine either way; this only changes Windows-host behavior.)
+			// Resolve the glob's directory to an ABSOLUTE path and enumerate it with fs.readdir + a regex
+			// derived from the basename pattern — NOT Bun.Glob. Bun.Glob.scan() silently matches nothing
+			// when the build HOST is Windows (both for `../` traversal AND for an absolute backslash cwd),
+			// so every native addon resolved to `export default null` → silent runtime fallback on Windows
+			// builds (venbind too). fs.readdir + a precompiled regex is deterministic across Linux/macOS/
+			// Windows hosts. The `*` in the pattern (e.g. "venbind-*.node") becomes `.*`; other chars are
+			// escaped. The platform/arch substring filter below then picks the right artifact.
 			const searchDir = path.resolve(importerDir, path.dirname(globPattern));
 			const filePattern = path.basename(globPattern);
+			const patternRe = new RegExp(`^${filePattern.split("*").map((seg) => seg.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join(".*")}$`);
 
-			const glob = new Bun.Glob(filePattern);
-			const files = await Array.fromAsync(glob.scan(searchDir));
+			let files: string[] = [];
+			try {
+				files = await fs.readdir(searchDir);
+			} catch {
+				files = []; // dir absent (e.g. no native module staged for this build) → null export below
+			}
 
-			const matchedFile = files.find((file) => {
+			const matchedFile = files.filter((file) => patternRe.test(file)).find((file) => {
 				const lower = file.toLowerCase();
 				return lower.includes(targetPlatform.toLowerCase()) && lower.includes(targetArch.toLowerCase());
 			});
