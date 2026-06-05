@@ -82,6 +82,7 @@ const results = await Promise.all([buildMain(), ...buildRendererScripts(), ...(a
 console.timeEnd("Build");
 
 if (results.every(Boolean)) {
+	await copyNativeAddonsToOutDir();
 	console.log(pc.green("\n✅ Build completed successfully! 🎉\n"));
 } else {
 	console.error(pc.red("\n❌ Build completed with errors.\n"));
@@ -244,4 +245,38 @@ async function copyNativeModules() {
 
 	await Promise.all(tasks);
 	return true;
+}
+
+// Phase 4 — HOST-AGNOSTIC native-addon emission into ts-out/native/.
+//
+// The `native-module:` Bun file-loader (build/nativeImport.ts, `with { type: "file" }`) silently
+// fails to copy the .node into OUT_DIR when the BUILD HOST is Windows (CI windows-latest on bun
+// `latest`): ts-out ends up with ZERO .node files, so every addon resolves to `export default null`
+// → silent "loopback" fallback (Pitfall 3 — looks like the echo fix doesn't work, with no error).
+// A plain fs copy is deterministic across Linux/macOS/Windows build hosts. wasapiLoopback.ts loads
+// the addon from this ts-out/native/ path at runtime (NOT via the file-loader). electron-builder's
+// per-platform `files` filters already key off `ts-out/native/*-<plat>-*.node`, so packaging needs
+// no change. Scoped to wasapi-loopback only; venbind keeps the `native-module:` loader for now.
+// PHASE-5 REMOVAL: drops out with the rest of the wasapi env-override scaffolding.
+async function copyNativeAddonsToOutDir() {
+	const srcDir = path.join(ASSETS_DIR, "native");
+	const destDir = path.join(OUT_DIR, "native");
+
+	let entries: string[];
+	try {
+		entries = await fs.promises.readdir(srcDir);
+	} catch {
+		return; // nothing staged for this platform → nothing to copy
+	}
+
+	const addons = entries.filter((name) => /^wasapi-loopback-.*\.node$/.test(name));
+	if (addons.length === 0) return;
+
+	await fs.promises.mkdir(destDir, { recursive: true });
+	await Promise.all(
+		addons.map(async (name) => {
+			await Bun.write(path.join(destDir, name), Bun.file(path.join(srcDir, name)));
+			console.log(pc.cyan("Copied native addon into ts-out/native:"), name);
+		}),
+	);
 }

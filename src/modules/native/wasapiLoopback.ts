@@ -10,25 +10,25 @@
 // process tree (the Audio Service child included via EXCLUDE_TARGET_PROCESS_TREE), so the
 // viewer hears shared desktop audio but NOT the Discord call echoed back.
 //
-// Load model mirrors venbind.ts: `native-module:` glob import + createRequire + a --no-wasapi
-// guard. The addon's `start(excludeRootPid, onChunk)` returns false (never throws) when the
-// API is unavailable on this build → we fall through to Electron "loopback" (ECHO-03).
+// Load model: the addon ships at ts-out/native/wasapi-loopback-<plat>-<arch>.node (placed there by
+// build.ts via a HOST-AGNOSTIC fs copy — NOT Bun's `native-module:` file-loader, which silently
+// fails to emit the .node when the BUILD HOST is Windows). createRequire + a --no-wasapi guard load
+// it; the addon's `start(excludeRootPid, onChunk)` returns false (never throws) when the API is
+// unavailable on this build → we fall through to Electron "loopback" (ECHO-03).
 //
 // Diagnostics → userData screenshare-debug.log (no DevTools on the Windows test box).
 // On non-win32 / --no-wasapi / addon-not-loaded, tryStartWasapiLoopback returns false
 // immediately so the normal "loopback" path stays byte-identical to upstream.
 // ─────────────────────────────────────────────────────────────────────────────
 
+import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
-
-import { app, MessageChannelMain, type MessagePortMain } from "electron";
-// @ts-expect-error The .node is platform-specific; nativeModulePlugin resolves the win32/x64 file,
-// emitting `export default null` on other targets (→ addon never loads, "loopback" fallback).
-import wasapiPath from "native-module:../../../assets/native/wasapi-loopback-*.node";
-import pc from "picocolors";
+import path from "node:path";
 
 import { appendScreenshareDebug } from "@root/src/modules/screenshareDebug.ts";
 import { getErrorMessage } from "@root/src/utils.ts";
+import { app, MessageChannelMain, type MessagePortMain } from "electron";
+import pc from "picocolors";
 
 import { mainWindow } from "../../windows/main/main.ts";
 
@@ -48,12 +48,19 @@ interface WasapiAddon {
 let addon: WasapiAddon | undefined;
 let addonLoadAttempted = false;
 
-// Log whether the glob resolved the .node at all — a null path (wrong filename / not packaged)
-// is otherwise a SILENT "loopback" fallback (Pitfall 3). `!!wasapiPath` distinguishes the two.
-void appendScreenshareDebug(`wasapi wasapiPath resolved? ${!!wasapiPath}`);
+// The addon is loaded from ts-out/native/ (placed there by build.ts's host-agnostic copy) via a
+// runtime path anchored at the app root: app.getAppPath() is the project root in dev and the
+// app.asar path when packaged (Electron's require() redirects the unpacked .node automatically).
+// Computing the path here — instead of relying on Bun's `native-module:` file-loader — is what makes
+// a Windows BUILD HOST work; the prior file-loader import emitted ZERO .node on windows-latest.
+const wasapiPath = path.join(app.getAppPath(), "ts-out", "native", `wasapi-loopback-${process.platform}-${process.arch}.node`);
+const wasapiPathExists = existsSync(wasapiPath);
+
+// A missing .node is otherwise a SILENT "loopback" fallback (Pitfall 3); log resolution explicitly.
+void appendScreenshareDebug(`wasapi wasapiPath resolved? ${wasapiPathExists} path=${wasapiPath}`);
 
 function obtainWasapiLoopback(): WasapiAddon | undefined {
-	if (addon !== undefined || addonLoadAttempted || process.argv.includes("--no-wasapi") || !wasapiPath) return addon;
+	if (addon !== undefined || addonLoadAttempted || process.argv.includes("--no-wasapi") || !wasapiPathExists) return addon;
 	addonLoadAttempted = true;
 	try {
 		addon = require(wasapiPath) as WasapiAddon;
