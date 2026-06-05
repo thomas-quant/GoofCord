@@ -124,7 +124,7 @@ Plans:
 Plans:
 **Wave 1**
 
-- [ ] 04-01-PLAN.md — Transport spike (MVP slice 1): main-process synthetic 48k/stereo/f32 tone over the REAL MessageChannelMain transport → hop-2 port-forward → main-world MSTG feeder → swap seam → second-device viewer-audible GO on a Windows x64 CI artifact (de-risks Phase 3 Residual Risk #1; KEEP transport, throwaway tone) [ECHO-01]
+- [x] 04-01-PLAN.md — Transport spike (MVP slice 1): main-process synthetic 48k/stereo/f32 tone over the REAL MessageChannelMain transport → hop-2 port-forward → main-world MSTG feeder → swap seam → second-device viewer-audible GO on a Windows x64 CI artifact (de-risks Phase 3 Residual Risk #1; KEEP transport, throwaway tone) [ECHO-01]
 
 **Wave 2** *(blocked on Wave 1 GO)*
 
@@ -159,5 +159,5 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 | 1. Fix Bug A — Cancel then Restart Works | 2/2 | Complete | 2026-05-30 |
 | 2. Fix Bug B — Windows Loopback Audio Captured | 2/2 | Complete | 2026-05-30 |
 | 3. Delivery-Path Spike — PCM → MediaStream (GO/NO-GO) | 3/3 | Complete    | 2026-06-02 |
-| 4. Native Clean-Room Exclude-Tree Addon + Integration | 0/3 | Planned | - |
+| 4. Native Clean-Room Exclude-Tree Addon + Integration | 1/3 | In Progress|  |
 | 5. Verification + Upstream PR | 0/0 | Not started | - |
