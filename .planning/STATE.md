@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Windows Screenshare Echo Fix
 status: executing
-last_updated: "2026-06-05T00:00:14.887Z"
-last_activity: 2026-06-02 -- Phase 04 execution started
+last_updated: "2026-06-06T00:00:00.000Z"
+last_activity: 2026-06-06 -- Phase 04 COMPLETE — #46 echo fix verified on real Windows hardware
 progress:
   total_phases: 5
-  completed_phases: 3
+  completed_phases: 4
   total_plans: 10
-  completed_plans: 7
-  percent: 60
+  completed_plans: 8
+  percent: 80
 ---
 
 # Project State
@@ -20,16 +20,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-30)
 
 **Core value:** On Windows, a user can start a screenshare, cancel the source picker, and start again — and the stream works — without the app getting stuck or requiring a restart.
-**Current focus:** Phase 04 — native-clean-room-exclude-tree-addon-integration
+**Current focus:** Phase 05 — strip diagnostic scaffolding + shape the upstream PR (Phase 04 echo fix is verified working)
 
 ## Current Position
 
-Phase: 04 (native-clean-room-exclude-tree-addon-integration) — EXECUTING
-Plan: 1 of 3
-Status: Executing Phase 04
-Last activity: 2026-06-02 -- Phase 04 execution started
+Phase: 04 (native-clean-room-exclude-tree-addon-integration) — COMPLETE
+Plan: 3 of 3 (all complete)
+Status: Phase 04 complete — #46 echo fix VERIFIED on real Windows hardware (CI 27044504559 / commit 8078b20): second-device viewer heard shared desktop audio (Spotify), no call echo, chunks streamed 31→6600
+Last activity: 2026-06-06 -- Phase 04 COMPLETE
 
-Progress: [████░░░░░░] 33% (v1.1 phases: 1/3 — Phase 03 done, Phases 04-05 remain)
+Progress: [███████░░░] 67% (v1.1 phases: 2/3 — Phases 03-04 done, Phase 05 (PR prep) remains)
 
 ## Performance Metrics
 

@@ -132,7 +132,7 @@ Plans:
 
 **Wave 3** *(blocked on Waves 1+2 — touches wasapiLoopback.ts from Wave 1, consumes the .node from Wave 2; has manual checkpoint)*
 
-- [ ] 04-03-PLAN.md — Integration (MVP slice 2): swap the real addon behind the proven transport, additive 3-way screenshare.ts gate (Linux patchcord → win32 native exclude-tree → loopback fallback), PID resolution + logging, packaging (copyNativeModules entry + CI Rust build + GOOFCORD_WASAPI_LOOPBACK_PATH + packaging assertion + in-Electron N-API smoke), and viewer-side #46 echo-fix verification [ECHO-01, ECHO-02, ECHO-03]
+- [x] 04-03-PLAN.md — Integration (MVP slice 2): swap the real addon behind the proven transport, additive 3-way screenshare.ts gate (Linux patchcord → win32 native exclude-tree → loopback fallback), PID resolution + logging, packaging (copyNativeModules entry + CI Rust build + GOOFCORD_WASAPI_LOOPBACK_PATH + packaging assertion + in-Electron N-API smoke), and viewer-side #46 echo-fix verification [ECHO-01, ECHO-02, ECHO-03] — VERIFIED on hardware (CI 27044504559 / commit 8078b20): viewer heard desktop audio, no call echo, chunks streamed 31→6600
 
 ### Phase 5: Verification + Upstream PR
 
