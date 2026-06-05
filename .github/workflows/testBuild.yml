@@ -87,6 +87,12 @@ jobs:
         if: matrix.name == 'win'
         shell: pwsh
         run: |
+          # ── DIAGNOSTICS (temporary): show what actually bundled, to localize a Windows-host gap ──
+          Write-Host "--- assets/native/*.node (staged by copyNativeModules) ---"
+          Get-ChildItem -Path "assets/native" -Filter "*.node" -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  $($_.Name) ($($_.Length) bytes)" }
+          Write-Host "--- ts-out/**/*.node (bundled by native-module plugin; venbind is the control) ---"
+          Get-ChildItem -Path "ts-out" -Filter "*.node" -Recurse -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  $($_.FullName)" }
+          Write-Host "----------------------------------------------------------------------------------"
           $pattern = "wasapi-loopback-win32-x64-*.node"
           $tsOut = Get-ChildItem -Path "ts-out" -Filter $pattern -Recurse -ErrorAction SilentlyContinue
           if (-not $tsOut) { Write-Error "ASSERT FAIL: no $pattern in ts-out (copyNativeModules + native-module bundler did not produce it)"; exit 1 }
