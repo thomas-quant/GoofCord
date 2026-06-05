@@ -79,19 +79,22 @@ jobs:
 
       # ── PHASE-5 REMOVAL (Plan 04-03): packaging assertion ──────────────────────────
       # A missing .node is otherwise a SILENT "loopback" fallback (Pitfall 3 — looks like the fix
-      # doesn't work, with no error). Assert wasapi-loopback-win32-x64.node is present in the build
-      # output (ts-out/native/ before pack, and inside the packaged app) and FAIL the job if absent.
+      # doesn't work, with no error). The native-module: bundler plugin (build/nativeImport.ts) copies
+      # the .node into ts-out ROOT via Bun's file loader, which HASHES the basename — e.g.
+      # ts-out/wasapi-loopback-win32-x64-<hash>.node (same shape as venbind's), NOT ts-out/native/ and
+      # NOT the exact name. Assert the hashed pattern is present in ts-out and in the packaged app.
       - name: Assert wasapi addon packaged
         if: matrix.name == 'win'
         shell: pwsh
         run: |
-          $name = "wasapi-loopback-win32-x64.node"
-          $tsOut = Get-ChildItem -Path "ts-out/native" -Filter $name -ErrorAction SilentlyContinue
-          if (-not $tsOut) { Write-Error "ASSERT FAIL: $name missing from ts-out/native (copyNativeModules did not produce it)"; exit 1 }
-          Write-Host "OK: $name present in ts-out/native"
-          $packaged = Get-ChildItem -Path "dist" -Filter $name -Recurse -ErrorAction SilentlyContinue
-          if (-not $packaged) { Write-Error "ASSERT FAIL: $name missing from packaged dist/ output"; exit 1 }
-          Write-Host "OK: $name present in packaged output: $($packaged.FullName -join ', ')"
+          $pattern = "wasapi-loopback-win32-x64-*.node"
+          $tsOut = Get-ChildItem -Path "ts-out" -Filter $pattern -Recurse -ErrorAction SilentlyContinue
+          if (-not $tsOut) { Write-Error "ASSERT FAIL: no $pattern in ts-out (copyNativeModules + native-module bundler did not produce it)"; exit 1 }
+          Write-Host "OK: present in ts-out: $($tsOut.Name -join ', ')"
+          # electron-builder unpacks .node to app.asar.unpacked; the recursive search finds it under dist/.
+          $packaged = Get-ChildItem -Path "dist" -Filter $pattern -Recurse -ErrorAction SilentlyContinue
+          if (-not $packaged) { Write-Error "ASSERT FAIL: $pattern missing from packaged dist/ output"; exit 1 }
+          Write-Host "OK: present in packaged output: $($packaged.FullName -join ', ')"
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
