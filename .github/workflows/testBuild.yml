@@ -87,19 +87,25 @@ jobs:
         if: matrix.name == 'win'
         shell: pwsh
         run: |
-          # ── DIAGNOSTICS (remove once green): show what actually bundled ──
+          # ── DIAGNOSTICS (remove once green): show exactly what bundled + where in dist ──
           Write-Host "--- assets/native/*.node (staged by copyNativeModules) ---"
           Get-ChildItem -Path "assets/native" -Filter "*.node" -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  $($_.Name) ($($_.Length) bytes)" }
           Write-Host "--- ts-out/**/*.node (native addons emitted by build.ts) ---"
           Get-ChildItem -Path "ts-out" -Filter "*.node" -Recurse -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  $($_.FullName)" }
+          Write-Host "--- dist/ (top level) ---"
+          Get-ChildItem -Path "dist" -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  $($_.Name)" }
+          Write-Host "--- dist/**/app.asar.unpacked dirs ---"
+          Get-ChildItem -Path "dist" -Filter "app.asar.unpacked" -Recurse -Directory -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  $($_.FullName)" }
+          Write-Host "--- dist/**/*.node (loose, unpacked) ---"
+          Get-ChildItem -Path "dist" -Filter "*.node" -Recurse -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  $($_.FullName)" }
           Write-Host "----------------------------------------------------------------------------------"
           $name = "wasapi-loopback-win32-x64.node"
           $tsOut = Get-ChildItem -Path "ts-out" -Filter $name -Recurse -ErrorAction SilentlyContinue
           if (-not $tsOut) { Write-Error "ASSERT FAIL: $name absent from ts-out (build.ts host-agnostic copy did not produce it)"; exit 1 }
           Write-Host "OK: present in ts-out: $($tsOut.FullName -join ', ')"
-          # electron-builder unpacks .node to app.asar.unpacked; the recursive search finds it under dist/.
+          # asarUnpack `**/*.node` unpacks it to app.asar.unpacked/ts-out/native/ — a loose file under dist/.
           $packaged = Get-ChildItem -Path "dist" -Filter $name -Recurse -ErrorAction SilentlyContinue
-          if (-not $packaged) { Write-Error "ASSERT FAIL: $name missing from packaged dist/ output"; exit 1 }
+          if (-not $packaged) { Write-Error "ASSERT FAIL: $name missing from packaged dist/ output (not unpacked from app.asar)"; exit 1 }
           Write-Host "OK: present in packaged output: $($packaged.FullName -join ', ')"
 
       - name: Upload Artifacts
