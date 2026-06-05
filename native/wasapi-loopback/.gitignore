@@ -1,0 +1,11 @@
+# Rust build artifacts (the prebuilt .node is produced on the windows-latest CI runner
+# and consumed by GoofCord via GOOFCORD_WASAPI_LOOPBACK_PATH — never committed here).
+/target/
+
+# napi-rs build outputs
+*.node
+index.js
+index.d.ts
+
+# Node deps for the crate's own (Windows-only) build
+/node_modules/
