@@ -10,7 +10,7 @@ import type { cycleThroughPasswords as ___modules_messageEncryption_cycleThrough
 import type { stopPatchcord as ___modules_native_patchcord_stopPatchcord } from "../modules/native/patchcord";
 import type { isVenbindLoaded as ___modules_native_venbind_isVenbindLoaded, setKeybinds as ___modules_native_venbind_setKeybinds } from "../modules/native/venbind";
 import type { stopWasapiLoopback as ___modules_native_wasapiLoopback_stopWasapiLoopback } from "../modules/native/wasapiLoopback";
-import type { appendScreenshareDebug as ___modules_screenshareDebug_appendScreenshareDebug, isDeliverySpikeEnabled as ___modules_screenshareDebug_isDeliverySpikeEnabled, isTransportSpikeEnabled as ___modules_screenshareDebug_isTransportSpikeEnabled } from "../modules/screenshareDebug";
+import type { appendScreenshareDebug as ___modules_screenshareDebug_appendScreenshareDebug, isDeliverySpikeEnabled as ___modules_screenshareDebug_isDeliverySpikeEnabled, isTransportSpikeEnabled as ___modules_screenshareDebug_isTransportSpikeEnabled, shouldInjectWasapiTransport as ___modules_screenshareDebug_shouldInjectWasapiTransport } from "../modules/screenshareDebug";
 import type { getDisplayVersion as ___utils_getDisplayVersion, getVersion as ___utils_getVersion, isEncryptionAvailable as ___utils_isEncryptionAvailable, saveFileToGCFolder as ___utils_saveFileToGCFolder } from "../utils";
 import type { createQuickCssWindow as ___windows_main_quickCssFix_createQuickCssWindow } from "../windows/main/quickCssFix";
 import type { deleteCloud as ___windows_settings_cloud_cloud_deleteCloud, loadCloud as ___windows_settings_cloud_cloud_loadCloud, saveCloud as ___windows_settings_cloud_cloud_saveCloud } from "../windows/settings/cloud/cloud";
@@ -46,6 +46,7 @@ export interface IpcOnChannels {
   "messageEncryption:encryptMessage": typeof ___modules_messageEncryption_encryptMessage;
   "screenshareDebug:isDeliverySpikeEnabled": typeof ___modules_screenshareDebug_isDeliverySpikeEnabled;
   "screenshareDebug:isTransportSpikeEnabled": typeof ___modules_screenshareDebug_isTransportSpikeEnabled;
+  "screenshareDebug:shouldInjectWasapiTransport": typeof ___modules_screenshareDebug_shouldInjectWasapiTransport;
   "utils:getDisplayVersion": typeof ___utils_getDisplayVersion;
   "utils:getVersion": typeof ___utils_getVersion;
   "utils:isEncryptionAvailable": typeof ___utils_isEncryptionAvailable;

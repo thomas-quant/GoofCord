@@ -24,3 +24,15 @@ export function isDeliverySpikeEnabled<IPCOn>() {
 export function isTransportSpikeEnabled<IPCOn>() {
 	return process.env.GOOFCORD_TRANSPORT_SPIKE === "1" || process.argv.includes("--transport-spike");
 }
+
+// Phase 4 (Plan 04-03) — whether preload.mts should inject the MSTG feeder + getDisplayMedia swap
+// seam into the Discord page main world. The REAL Windows WASAPI EXCLUDE-tree path needs the feeder
+// present whenever the addon can run (win32, not --no-wasapi) — NOT only under the spike env — so the
+// addon's chunks have a feeder to land in (otherwise capture silently falls through to echoing
+// "loopback"). The transport spike (synthetic tone) keeps working on any platform via the env gate.
+// Read from main via sendSync (the sandboxed preload has no process.env / authoritative platform).
+// Off-Windows AND spike-disabled ⇒ false ⇒ no injection ⇒ the page stays byte-identical to upstream.
+export function shouldInjectWasapiTransport<IPCOn>() {
+	const realWindowsPath = process.platform === "win32" && !process.argv.includes("--no-wasapi");
+	return realWindowsPath || isTransportSpikeEnabled();
+}

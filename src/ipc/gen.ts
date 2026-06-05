@@ -11,7 +11,7 @@ import { cycleThroughPasswords as ___modules_messageEncryption_cycleThroughPassw
 import { stopPatchcord as ___modules_native_patchcord_stopPatchcord } from "../modules/native/patchcord";
 import { isVenbindLoaded as ___modules_native_venbind_isVenbindLoaded, setKeybinds as ___modules_native_venbind_setKeybinds } from "../modules/native/venbind";
 import { stopWasapiLoopback as ___modules_native_wasapiLoopback_stopWasapiLoopback } from "../modules/native/wasapiLoopback";
-import { appendScreenshareDebug as ___modules_screenshareDebug_appendScreenshareDebug, isDeliverySpikeEnabled as ___modules_screenshareDebug_isDeliverySpikeEnabled, isTransportSpikeEnabled as ___modules_screenshareDebug_isTransportSpikeEnabled } from "../modules/screenshareDebug";
+import { appendScreenshareDebug as ___modules_screenshareDebug_appendScreenshareDebug, isDeliverySpikeEnabled as ___modules_screenshareDebug_isDeliverySpikeEnabled, isTransportSpikeEnabled as ___modules_screenshareDebug_isTransportSpikeEnabled, shouldInjectWasapiTransport as ___modules_screenshareDebug_shouldInjectWasapiTransport } from "../modules/screenshareDebug";
 import { getDisplayVersion as ___utils_getDisplayVersion, getVersion as ___utils_getVersion, isEncryptionAvailable as ___utils_isEncryptionAvailable, saveFileToGCFolder as ___utils_saveFileToGCFolder } from "../utils";
 import { createQuickCssWindow as ___windows_main_quickCssFix_createQuickCssWindow } from "../windows/main/quickCssFix";
 import { deleteCloud as ___windows_settings_cloud_cloud_deleteCloud, loadCloud as ___windows_settings_cloud_cloud_loadCloud, saveCloud as ___windows_settings_cloud_cloud_saveCloud } from "../windows/settings/cloud/cloud";
@@ -35,6 +35,7 @@ export function registerAllHandlers() {
   ipcMain.handle("screenshareDebug:appendScreenshareDebug", async (event, line) => { return await ___modules_screenshareDebug_appendScreenshareDebug(line); });
   ipcMain.on("screenshareDebug:isDeliverySpikeEnabled", (event) => { event.returnValue = ___modules_screenshareDebug_isDeliverySpikeEnabled(); });
   ipcMain.on("screenshareDebug:isTransportSpikeEnabled", (event) => { event.returnValue = ___modules_screenshareDebug_isTransportSpikeEnabled(); });
+  ipcMain.on("screenshareDebug:shouldInjectWasapiTransport", (event) => { event.returnValue = ___modules_screenshareDebug_shouldInjectWasapiTransport(); });
   ipcMain.handle("settings:createSettingsWindow", async (event) => { return await ___windows_settings_settings_createSettingsWindow(); });
   ipcMain.handle("settings:hotreloadLocale", async (event) => { return await ___windows_settings_settings_hotreloadLocale(); });
   ipcMain.handle("settings:invidiousConfigChanged", async (event) => { return await ___windows_settings_settings_invidiousConfigChanged(); });

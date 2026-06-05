@@ -1,11 +1,10 @@
 import path from "node:path";
 
 import { hasPipewirePulse, patchcordList, patchcordStartApp, patchcordStartSystem } from "@root/src/modules/native/patchcord.ts";
-// THROWAWAY — Phase 4 transport spike (GOOFCORD_TRANSPORT_SPIKE); strip before upstream PR.
-// Plan 04-03 replaces tryStartWasapiLoopback's synthetic source with the real WASAPI addon
-// behind this exact same call site (additive 3-way audio gate).
+// Phase 4 — Windows WASAPI EXCLUDE-tree echo fix (the #46 fix). Additive 3-way audio gate:
+// Linux patchcord → win32 native exclude-tree → universal "loopback" fallback.
 import { tryStartWasapiLoopback } from "@root/src/modules/native/wasapiLoopback.ts";
-import { appendScreenshareDebug, isTransportSpikeEnabled } from "@root/src/modules/screenshareDebug.ts";
+import { appendScreenshareDebug } from "@root/src/modules/screenshareDebug.ts";
 import { BrowserWindow, desktopCapturer, ipcMain, session } from "electron";
 import type { ShareableNode } from "patchcord";
 
@@ -99,18 +98,17 @@ export function registerScreenshareHandler() {
 				} catch (err) {
 					console.error("[Screenshare] Failed to start patchcord node:", err);
 				}
-			} else if (process.platform === "win32" && isTransportSpikeEnabled() && (await tryStartWasapiLoopback())) {
-				// THROWAWAY — Phase 4 transport spike (GOOFCORD_TRANSPORT_SPIKE); strip before upstream PR.
-				// THIS is the trigger Plan 04-01 omitted: the main-process transport host must be started
-				// when a screenshare begins so it posts the MessagePort the renderer feeder is waiting on.
-				// Still "loopback" so the renderer swap seam captures-then-discards the loopback track and
-				// swaps in the reconstructed transport track (Plan 04-03 keeps this exact shape — the only
-				// change there is a real WASAPI source instead of the synthetic tone).
+			} else if (process.platform === "win32" && (await tryStartWasapiLoopback())) {
+				// Phase 4 — Windows native WASAPI EXCLUDE-tree capture started (the #46 echo fix).
+				// Still request "loopback" so the renderer's swap seam (stop/remove the captured
+				// loopback track → addTrack the reconstructed exclude-tree track) is byte-identical
+				// to the Phase 3 / patchcord shape (Assumption A3): the loopback track is captured-
+				// then-discarded, the reconstructed exclude-tree track replaces it before it streams.
 				result.audio = "loopback";
-				void appendScreenshareDebug(`screenshare wcId=${wcId} audio=loopback path=win32-transport-spike (host started)`);
+				void appendScreenshareDebug(`screenshare wcId=${wcId} audio=loopback path=win32-wasapi-exclude-tree (capture started)`);
 			} else {
 				result.audio = "loopback";
-				void appendScreenshareDebug(`screenshare wcId=${wcId} audio=loopback path=universal-fallback (platform=${process.platform} transportSpike=${isTransportSpikeEnabled()})`);
+				void appendScreenshareDebug(`screenshare wcId=${wcId} audio=loopback path=universal-fallback (platform=${process.platform})`);
 			}
 		}
 

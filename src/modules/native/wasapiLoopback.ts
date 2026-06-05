@@ -1,70 +1,124 @@
+// @ts-nocheck Bun won't install the wasapi-loopback addon on macOS/linux, so typescript can't compile with checks (mirror venbind.ts:1)
+
 // ─────────────────────────────────────────────────────────────────────────────
-// Phase 4 — main-process transport host for the Windows WASAPI EXCLUDE-tree echo fix.
+// Phase 4 — main-process wrapper for the Windows WASAPI EXCLUDE-tree echo fix (the #46 fix).
 //
-// SPIKE STATE (Slice 1, gated by GOOFCORD_TRANSPORT_SPIKE): this file currently ships a
-// SYNTHETIC 48k/stereo/f32 tone (THROWAWAY) instead of a real WASAPI capture. The file
-// NAME and SHAPE are the KEEP — Slice 2 (Plan 02/03) swaps the real clean-room `.node`
-// addon in behind the exact same transport (MessageChannelMain → webContents.postMessage).
-// The synthetic tone proves the last-unproven half of the make-or-break delivery path
-// (the main→renderer PCM transport, Phase 3 residual risk #1) before any native investment.
+// Plan 04-03 (Slice 2, part 2): swap the Plan 01 SYNTHETIC tone for the REAL clean-room
+// Plan 02 `.node` addon, KEEPING the exact MessageChannelMain transport proven GO in Plan 01
+// (MessageChannelMain → webContents.postMessage → preload-injected MSTG feeder → viewer).
+// The addon (native/wasapi-loopback) captures the full endpoint mix EXCEPT GoofCord's own
+// process tree (the Audio Service child included via EXCLUDE_TARGET_PROCESS_TREE), so the
+// viewer hears shared desktop audio but NOT the Discord call echoed back.
+//
+// Load model mirrors venbind.ts: `native-module:` glob import + createRequire + a --no-wasapi
+// guard. The addon's `start(excludeRootPid, onChunk)` returns false (never throws) when the
+// API is unavailable on this build → we fall through to Electron "loopback" (ECHO-03).
 //
 // Diagnostics → userData screenshare-debug.log (no DevTools on the Windows test box).
-// All spike code is gated; with the gate OFF this module's start path is a no-op (returns
-// false immediately) so the normal Windows "loopback" path is byte-identical to upstream.
+// On non-win32 / --no-wasapi / addon-not-loaded, tryStartWasapiLoopback returns false
+// immediately so the normal "loopback" path stays byte-identical to upstream.
 // ─────────────────────────────────────────────────────────────────────────────
 
+import { createRequire } from "node:module";
+
 import { app, MessageChannelMain, type MessagePortMain } from "electron";
+// @ts-expect-error The .node is platform-specific; nativeModulePlugin resolves the win32/x64 file,
+// emitting `export default null` on other targets (→ addon never loads, "loopback" fallback).
+import wasapiPath from "native-module:../../../assets/native/wasapi-loopback-*.node";
 import pc from "picocolors";
 
-import { appendScreenshareDebug, isTransportSpikeEnabled } from "@root/src/modules/screenshareDebug.ts";
+import { appendScreenshareDebug } from "@root/src/modules/screenshareDebug.ts";
 import { getErrorMessage } from "@root/src/utils.ts";
 
 import { mainWindow } from "../../windows/main/main.ts";
 
+const require = createRequire(import.meta.url);
+
 const LOG_PREFIX = pc.cyan("[Screenshare]");
 
-// 48k / stereo / f32, 480-frame (~10ms) chunks — matches the Phase 3 renderer contract.
-const SAMPLE_RATE = 48_000;
-const CHANNELS = 2;
-const FRAMES = 480;
-const CHUNK_BYTES = FRAMES * CHANNELS * 4; // 480 * 2 * 4 = 3840 bytes
+// The addon's contract (see native/wasapi-loopback/src/lib.rs + 04-02-SUMMARY):
+//   start(excludeRootPid: number, onChunk: (chunk: Buffer) => void): boolean  // false = unsupported, never throws
+//   stop(): void                                                              // idempotent, bounded join
+interface WasapiAddon {
+	start(excludeRootPid: number, onChunk: (chunk: Buffer) => void): boolean;
+	stop(): void;
+}
+
+// ── Addon load (mirror obtainVenbind: load-once flag + --no-wasapi guard + null-on-failure) ──
+let addon: WasapiAddon | undefined;
+let addonLoadAttempted = false;
+
+// Log whether the glob resolved the .node at all — a null path (wrong filename / not packaged)
+// is otherwise a SILENT "loopback" fallback (Pitfall 3). `!!wasapiPath` distinguishes the two.
+void appendScreenshareDebug(`wasapi wasapiPath resolved? ${!!wasapiPath}`);
+
+function obtainWasapiLoopback(): WasapiAddon | undefined {
+	if (addon !== undefined || addonLoadAttempted || process.argv.includes("--no-wasapi") || !wasapiPath) return addon;
+	addonLoadAttempted = true;
+	try {
+		addon = require(wasapiPath) as WasapiAddon;
+		if (!addon || typeof addon.start !== "function" || typeof addon.stop !== "function") {
+			throw new Error("wasapi-loopback addon missing start/stop exports");
+		}
+		// In-Electron N-API smoke (SC#5 / Open Q1): a successful require + a typeof check of the
+		// exports proves the .node's N-API ABI loads under Electron 41.3.0 (not just bare Node).
+		// This surfaces an ABI mismatch at startup rather than as a wasted second-device round-trip.
+		void appendScreenshareDebug("wasapi smoke: loaded under electron napi ok");
+		console.log(pc.green("[WASAPI]"), "Loaded wasapi-loopback addon");
+	} catch (e: unknown) {
+		addon = undefined;
+		void appendScreenshareDebug(`wasapi smoke: load failed: ${getErrorMessage(e)}`);
+		console.error("Failed to import wasapi-loopback", e);
+	}
+	return addon;
+}
+
+// 48k / stereo / f32, 480-frame (~10ms) chunks — matches the Phase 3 renderer contract AND the
+// addon's emitted chunk shape (3840 bytes); the renderer feeder consumes exactly this.
+const CHUNK_BYTES = 480 * 2 * 4; // 3840
 
 // ── State (nulled by stopWasapiLoopback; safe to call stop twice) ────────────────────────
 let port1: MessagePortMain | undefined;
-let synthInterval: NodeJS.Timeout | undefined;
 let chunkCount = 0;
 let logCount = 0;
 
-// THROWAWAY: synthesize a distinctive 440→660Hz sweep (200ms on / 200ms off) from a running
-// sample counter so the cadence is unmistakable to the viewer (NOT a flat tone, NOT noise).
-// Mirrors deliverySpike.ts:85-91 makeDistinctiveSample, but generated in the MAIN process.
-function makeDistinctiveSample(sampleIndex: number): number {
-	const tSec = sampleIndex / SAMPLE_RATE;
-	const intoBeat = tSec % 0.4; // 0..0.4
-	if (intoBeat >= 0.2) return 0; // 200ms on / 200ms off
-	const freq = 440 + (660 - 440) * (intoBeat / 0.2);
-	return 0.3 * Math.sin(2 * Math.PI * freq * tSec);
+// The addon's onChunk delivers a napi Buffer; forward its bytes down the kept MessagePort.
+// COPY into a fresh ArrayBuffer (the Buffer may share/reuse V8 backing memory) so the
+// structured clone over the port is stable.
+function toArrayBuffer(chunk: Buffer): ArrayBuffer {
+	const out = new ArrayBuffer(chunk.byteLength);
+	new Uint8Array(out).set(chunk);
+	return out;
 }
 
 /**
- * Start the transport host. For the spike: synthesize a tone in the main process and ship it
- * over a MessageChannelMain port to the renderer (hop-1). Returns false (no-op) when the spike
- * gate is off or on any failure — never crashes (the byte-identical-fallback discipline ECHO-03
- * will later rely on this).
+ * Start the REAL WASAPI EXCLUDE-tree capture behind the proven Plan 01 transport.
+ *
+ * Returns false (never throws) on: non-win32, --no-wasapi, addon-not-loaded, addon activation
+ * unsupported on this build, or any exception → the caller falls through to Electron "loopback"
+ * (ECHO-03). On success, the addon's ThreadsafeFunction pushes 480-frame/3840-byte f32 buffers
+ * which we forward zero-copy down `port1` to the renderer feeder.
  */
 export async function tryStartWasapiLoopback(): Promise<boolean> {
-	if (!isTransportSpikeEnabled()) return false;
+	if (process.platform !== "win32" || process.argv.includes("--no-wasapi")) return false;
+
+	const wasapi = obtainWasapiLoopback();
+	if (!wasapi) {
+		void appendScreenshareDebug("wasapi unsupported: addon not loaded");
+		return false;
+	}
 
 	try {
-		// PID discipline (ECHO-02) exercised early even in the spike: resolve the EXCLUDE-tree
-		// root (Electron main) and log the Audio Service child so the first CI artifact confirms
-		// the tree layout. RESEARCH §Code Examples L423-435.
+		// PID discipline (ECHO-02): resolve the EXCLUDE-tree root (Electron main) and log the
+		// Audio Service child so the CI artifact confirms the tree layout. The addon excludes the
+		// whole tree rooted at rootPid via EXCLUDE_TARGET_PROCESS_TREE (covers the Audio Service
+		// utility child — Plan 01 Assumption A4). RESEARCH §Code Examples L423-435.
 		const rootPid = process.pid;
 		const metrics = app.getAppMetrics();
 		const audioService = metrics.find((p) => p.name === "Audio Service");
 		void appendScreenshareDebug(`wasapi exclude-root=${rootPid} audioService=${audioService?.pid ?? "not-found"} procs=${metrics.map((p) => `${p.name}:${p.pid}`).join(",")}`);
 
-		// Make start idempotent across re-clicks: tear down any prior synthetic source first.
+		// Make start idempotent across re-clicks: tear down any prior session/port first.
 		await stopWasapiLoopback();
 
 		// Hop-1: create the channel, keep port1, transfer port2 to the renderer's preload
@@ -77,61 +131,69 @@ export async function tryStartWasapiLoopback(): Promise<boolean> {
 
 		chunkCount = 0;
 		logCount = 0;
-		let phase = 0; // running sample counter for the synthetic tone
 
-		const intervalMs = (FRAMES / SAMPLE_RATE) * 1000; // ≈10ms
-		synthInterval = setInterval(() => {
+		// Start the REAL addon. start() returns the activation verdict synchronously on the JS
+		// side (false on non-S_OK / missing entrypoint — never throws). The ThreadsafeFunction
+		// onChunk runs per ~10ms with a 3840-byte f32 Buffer.
+		const ok = await wasapi.start(rootPid, (chunk: Buffer) => {
 			const port = port1;
 			if (!port) return;
-
 			try {
-				// Pack a fresh interleaved-stereo f32 buffer (L,R,L,R...) for THIS chunk.
-				const buf = new ArrayBuffer(CHUNK_BYTES);
-				const view = new Float32Array(buf);
-				for (let i = 0; i < FRAMES; i++) {
-					const s = makeDistinctiveSample(phase++);
-					view[i * 2] = s;
-					view[i * 2 + 1] = s;
-				}
 				// Electron's MAIN-process MessagePortMain.postMessage transfer list accepts ONLY
-				// MessagePortMain instances — NOT ArrayBuffers (unlike the renderer/DOM MessagePort,
-				// which does honor ArrayBuffer transferables). Passing [buf] throws "Port at index 0
-				// is not a valid port" on every tick and surfaces as an uncaught main-process error.
-				// Send the buffer as the message instead; it is structured-cloned (~3840 bytes at
-				// ~100/s ≈ 384 KB/s — negligible). The renderer feeder still receives an ArrayBuffer.
-				port.postMessage(buf);
+				// MessagePortMain instances — NOT ArrayBuffers (unlike the renderer/DOM MessagePort).
+				// Passing a transfer list of [buf] throws "Port at index 0 is not a valid port" on
+				// every chunk → uncaught main-process crash dialog (Plan 01 Deviation 3). Send the
+				// buffer as the MESSAGE (structured-cloned, ~384 KB/s — negligible).
+				port.postMessage(toArrayBuffer(chunk));
 				chunkCount++;
 
 				// Periodic auditable chunk-count line (every ~1s) — required for honest verification.
 				if (chunkCount - logCount >= 100) {
 					logCount = chunkCount;
-					void appendScreenshareDebug(`wasapi activation=spike-synthetic hop1=messageport chunks=${chunkCount}`);
+					void appendScreenshareDebug(`wasapi activation=ok hop1=messageport hop2=port-forward chunks=${chunkCount}`);
 				}
 			} catch (e) {
-				// A throw inside a timer is an UNCAUGHT main-process exception (crash dialog). Never
-				// let the spike crash the app (ECHO-03 discipline): log once and stop cleanly.
-				void appendScreenshareDebug(`wasapi synth-interval threw, stopping: ${getErrorMessage(e)}`);
+				// A throw inside the threadsafe callback would be an uncaught main-process exception.
+				// Never let the capture crash the app (ECHO-03 discipline): log once and stop cleanly.
+				void appendScreenshareDebug(`wasapi onChunk threw, stopping: ${getErrorMessage(e)}`);
 				void stopWasapiLoopback();
 			}
-		}, intervalMs);
+		});
 
-		console.log(LOG_PREFIX, "Transport spike: synthetic tone streaming over MessageChannelMain");
+		void appendScreenshareDebug(`wasapi activation=${ok ? "ok" : "unsupported"} hop1=messageport hop2=port-forward chunks=${chunkCount}`);
+
+		if (!ok) {
+			// Activation != S_OK (API unavailable on this build): close the port and fall through
+			// to "loopback" — no crash (ECHO-03). The addon already cleaned up its own thread.
+			await stopWasapiLoopback();
+			return false;
+		}
+
+		console.log(LOG_PREFIX, "WASAPI EXCLUDE-tree capture streaming over MessageChannelMain");
 		return true;
 	} catch (e) {
 		void appendScreenshareDebug(`wasapi start threw: ${getErrorMessage(e)}`);
+		await stopWasapiLoopback();
 		return false; // → "loopback" fallback, never crash (ECHO-03)
 	}
 }
 
 /**
- * Idempotent teardown: clear the synthetic interval, close the kept port, null state.
+ * Idempotent teardown: stop the native capture, close the kept port, null state.
  * Safe to call twice (mirrors stopPatchcord; composes with the single-owner finishRequest).
  */
 export async function stopWasapiLoopback<IPCHandle>() {
-	if (synthInterval) {
-		clearInterval(synthInterval);
-		synthInterval = undefined;
+	// Stop the native capture FIRST so no more chunks arrive after we drop the port. The addon's
+	// stop() is idempotent with a bounded internal join; obtain (cached) without re-loading.
+	const wasapi = addon;
+	if (wasapi) {
+		try {
+			wasapi.stop();
+		} catch (e) {
+			void appendScreenshareDebug(`wasapi stop threw: ${getErrorMessage(e)}`);
+		}
 	}
+
 	const port = port1;
 	port1 = undefined;
 	if (port) {
@@ -140,14 +202,14 @@ export async function stopWasapiLoopback<IPCHandle>() {
 		} catch {
 			// already closed
 		}
-		void appendScreenshareDebug(`wasapi activation=spike-synthetic hop1=messageport chunks=${chunkCount}`);
-		console.log(LOG_PREFIX, "Transport spike: stopped synthetic tone");
+		void appendScreenshareDebug(`wasapi activation=ok hop1=messageport hop2=port-forward chunks=${chunkCount}`);
+		console.log(LOG_PREFIX, "WASAPI EXCLUDE-tree capture stopped");
 	}
 }
 
-// A hung stop must not wedge quit (mirror patchcord.ts:168-184 Promise.race([dispose, timeout])).
+// A hung native stop must not wedge quit (mirror patchcord.ts:168-184 Promise.race([dispose, timeout])).
 app.on("before-quit", (event) => {
-	if (!port1 && !synthInterval) return;
+	if (!port1 && !addon) return;
 
 	event.preventDefault();
 	Promise.race([stopWasapiLoopback(), new Promise((resolve) => setTimeout(resolve, 1500))])
