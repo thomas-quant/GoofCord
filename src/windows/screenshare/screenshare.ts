@@ -100,12 +100,15 @@ export function registerScreenshareHandler() {
 				}
 			} else if (process.platform === "win32" && (await tryStartWasapiLoopback())) {
 				// Phase 4 — Windows native WASAPI EXCLUDE-tree capture started (the #46 echo fix).
-				// Still request "loopback" so the renderer's swap seam (stop/remove the captured
-				// loopback track → addTrack the reconstructed exclude-tree track) is byte-identical
-				// to the Phase 3 / patchcord shape (Assumption A3): the loopback track is captured-
-				// then-discarded, the reconstructed exclude-tree track replaces it before it streams.
-				result.audio = "loopback";
-				void appendScreenshareDebug(`screenshare wcId=${wcId} audio=loopback path=win32-wasapi-exclude-tree (capture started)`);
+				// Do NOT also request Chromium "loopback" here. The addon is already running its OWN
+				// WASAPI loopback capture, and a SECOND concurrent WASAPI loopback (Chromium's) fighting
+				// over the same shared Windows audio session corrupts it → CoreMessaging.dll heap-
+				// corruption HARD CRASH on system-audio shares (confirmed: crash only with wasapi ON +
+				// system audio; Chromium loopback alone and the addon alone are each fine). Leaving
+				// result.audio unset means Chromium captures NO audio; the swap seam adds the
+				// reconstructed exclude-tree track to the (audio-less) stream — the addon is the sole
+				// capturer (and the seam discarded Chromium's loopback track anyway, so nothing is lost).
+				void appendScreenshareDebug(`screenshare wcId=${wcId} audio=none path=win32-wasapi-exclude-tree (addon sole capturer, no chromium loopback)`);
 			} else {
 				result.audio = "loopback";
 				void appendScreenshareDebug(`screenshare wcId=${wcId} audio=loopback path=universal-fallback (platform=${process.platform})`);

@@ -21,7 +21,7 @@
 // immediately so the normal "loopback" path stays byte-identical to upstream.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { existsSync } from "node:fs";
+import { appendFileSync, existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 
@@ -59,11 +59,26 @@ const wasapiPathExists = existsSync(wasapiPath);
 // A missing .node is otherwise a SILENT "loopback" fallback (Pitfall 3); log resolution explicitly.
 void appendScreenshareDebug(`wasapi wasapiPath resolved? ${wasapiPathExists} path=${wasapiPath}`);
 
+// SYNCHRONOUS crash-resilient breadcrumb. appendScreenshareDebug uses fs.promises.appendFile (async),
+// so any line issued microseconds before a NATIVE crash (e.g. WASAPI heap corruption inside the
+// addon's start()) is lost unflushed. These appendFileSync writes survive the crash — the LAST [sync]
+// line on disk pinpoints the exact failing call (require vs start()) without a debugger.
+// (Diagnostic scaffolding — strip with the rest of screenshare-debug before the upstream PR.)
+function syncCrumb(line: string): void {
+	try {
+		appendFileSync(path.join(app.getPath("userData"), "screenshare-debug.log"), `${new Date().toISOString()} [sync] ${line}\n`);
+	} catch {
+		// best-effort; never throw from diagnostics
+	}
+}
+
 function obtainWasapiLoopback(): WasapiAddon | undefined {
 	if (addon !== undefined || addonLoadAttempted || process.argv.includes("--no-wasapi") || !wasapiPathExists) return addon;
 	addonLoadAttempted = true;
 	try {
+		syncCrumb(`addon require begin ${wasapiPath}`);
 		addon = require(wasapiPath) as WasapiAddon;
+		syncCrumb("addon require ok");
 		if (!addon || typeof addon.start !== "function" || typeof addon.stop !== "function") {
 			throw new Error("wasapi-loopback addon missing start/stop exports");
 		}
@@ -142,6 +157,7 @@ export async function tryStartWasapiLoopback(): Promise<boolean> {
 		// Start the REAL addon. start() returns the activation verdict synchronously on the JS
 		// side (false on non-S_OK / missing entrypoint — never throws). The ThreadsafeFunction
 		// onChunk runs per ~10ms with a 3840-byte f32 Buffer.
+		syncCrumb(`start() begin exclude-root=${rootPid}`);
 		const ok = await wasapi.start(rootPid, (chunk: Buffer) => {
 			const port = port1;
 			if (!port) return;
@@ -166,6 +182,7 @@ export async function tryStartWasapiLoopback(): Promise<boolean> {
 				void stopWasapiLoopback();
 			}
 		});
+		syncCrumb(`start() returned ok=${ok}`);
 
 		void appendScreenshareDebug(`wasapi activation=${ok ? "ok" : "unsupported"} hop1=messageport hop2=port-forward chunks=${chunkCount}`);
 
