@@ -190,6 +190,21 @@ async function copyNativeModules() {
 				{ src: ["venbind", "prebuilds", "linux-aarch64", "venbind-linux-aarch64.node"], platform: "linux", arch: "arm64" },
 			],
 		},
+		// Phase 4 — Windows WASAPI EXCLUDE-tree echo-fix addon (native/wasapi-loopback, Plan 02).
+		// PHASE-5 REMOVAL: when the addon moves to its own published repo + optionalDependencies, the
+		// envPath/Rust-build path goes away and this becomes a normal prebuild-only entry (or is dropped).
+		// CRITICAL (Pitfall 3): with name "wasapi-loopback" the envPath branch produces dest
+		// `wasapi-loopback-win32-x64.node` on a win32/x64 build — containing BOTH "win32" AND "x64",
+		// exactly what nativeImport.ts's glob substring match needs. A name lacking either substring
+		// would silently emit `export default null` → silent "loopback" fallback (looks like the fix
+		// doesn't work, with no error). The prebuild entry below sets up the Phase-5 published path; it
+		// is best-effort (.catch in the prebuild branch), so a missing prebuild off-Windows never fails
+		// the local build — Phase 4 ships via the GOOFCORD_WASAPI_LOOPBACK_PATH env override on CI.
+		{
+			name: "wasapi-loopback",
+			envPath: process.env.GOOFCORD_WASAPI_LOOPBACK_PATH,
+			prebuilds: [{ src: ["wasapi-loopback", "prebuilds", "windows-x86_64", "wasapi-loopback-win32-x64.node"], platform: "win32", arch: "x64" }],
+		},
 	];
 
 	const copyFile = async (src: string, dest: string) => {

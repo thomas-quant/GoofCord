@@ -41,11 +41,57 @@ jobs:
       - name: Install electron-builder globally
         run: bun add electron-builder -g
 
+      # ── PHASE-5 REMOVAL (Plan 04-03) ────────────────────────────────────────────────
+      # The Windows WASAPI EXCLUDE-tree echo-fix addon (native/wasapi-loopback) is built here
+      # on the windows-latest runner and fed into the GoofCord build via the
+      # GOOFCORD_WASAPI_LOOPBACK_PATH env override (copyNativeModules() honors it). This
+      # temporarily couples CI to Rust; Phase 5 removes these steps + the env var when the addon
+      # moves to its own published repo + optionalDependencies (like venbind's prebuilt .node).
+      # A Rust COMPILE ERROR fails the job HERE — caught before the expensive second-device test.
+      - name: Install Rust toolchain (wasapi-loopback addon)
+        if: matrix.name == 'win'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Build wasapi-loopback addon (.node)
+        if: matrix.name == 'win'
+        working-directory: native/wasapi-loopback
+        shell: pwsh
+        run: |
+          bun add -d "@napi-rs/cli@3.7.0"
+          bun x napi build --release --target x86_64-pc-windows-msvc
+          # napi names the output `wasapi-loopback.win32-x64-msvc.node` (or similar); locate it and
+          # normalize to the exact glob-matched name `wasapi-loopback-win32-x64.node` (contains BOTH
+          # win32 AND x64 — Pitfall 3). copyNativeModules() copies+renames via the env override below.
+          $node = Get-ChildItem -Path . -Filter "*.node" -Recurse | Select-Object -First 1
+          if (-not $node) { Write-Error "napi build produced no .node"; exit 1 }
+          $dest = Join-Path $PWD "wasapi-loopback-win32-x64.node"
+          Copy-Item $node.FullName $dest -Force
+          Write-Host "wasapi addon built: $($node.FullName) -> $dest"
+          "GOOFCORD_WASAPI_LOOPBACK_PATH=$dest" | Out-File -FilePath $env:GITHUB_ENV -Append
+
       - name: Build GoofCord
         run: bun run build
 
       - name: Package GoofCord
         run: electron-builder ${{ matrix.arch }} --${{ matrix.name }} ${{ matrix.targets }} --publish=never
+
+      # ── PHASE-5 REMOVAL (Plan 04-03): packaging assertion ──────────────────────────
+      # A missing .node is otherwise a SILENT "loopback" fallback (Pitfall 3 — looks like the fix
+      # doesn't work, with no error). Assert wasapi-loopback-win32-x64.node is present in the build
+      # output (ts-out/native/ before pack, and inside the packaged app) and FAIL the job if absent.
+      - name: Assert wasapi addon packaged
+        if: matrix.name == 'win'
+        shell: pwsh
+        run: |
+          $name = "wasapi-loopback-win32-x64.node"
+          $tsOut = Get-ChildItem -Path "ts-out/native" -Filter $name -ErrorAction SilentlyContinue
+          if (-not $tsOut) { Write-Error "ASSERT FAIL: $name missing from ts-out/native (copyNativeModules did not produce it)"; exit 1 }
+          Write-Host "OK: $name present in ts-out/native"
+          $packaged = Get-ChildItem -Path "dist" -Filter $name -Recurse -ErrorAction SilentlyContinue
+          if (-not $packaged) { Write-Error "ASSERT FAIL: $name missing from packaged dist/ output"; exit 1 }
+          Write-Host "OK: $name present in packaged output: $($packaged.FullName -join ', ')"
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
