@@ -20,7 +20,7 @@
 
 #![cfg(windows)]
 
-use std::mem::size_of;
+use std::mem::{size_of, ManuallyDrop};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::Mutex;
 use std::thread::JoinHandle;
@@ -233,7 +233,15 @@ unsafe fn activate_exclude_tree(exclude_root_pid: u32) -> ActivationResult {
     };
 
     // 3. Wrap the params in a PROPVARIANT (VT_BLOB) for the activation call.
-    let mut prop = PROPVARIANT::default();
+    //
+    // HEAP-CORRUPTION FIX (0xc0000374): windows-rs's PROPVARIANT is an OWNING type — its Drop
+    // calls PropVariantClear, which for VT_BLOB does CoTaskMemFree(blob.pBlobData). Here pBlobData
+    // borrows the STACK `activation_params` (the PROPVARIANT owns NOTHING), so letting it drop would
+    // CoTaskMemFree a stack pointer → heap corruption → hard crash inside start(). The C++
+    // ApplicationLoopback sample uses a raw PROPVARIANT with no destructor; mirror that exactly by
+    // wrapping in ManuallyDrop so PropVariantClear NEVER runs. No leak: the blob is stack memory
+    // released with the stack frame, and the async activation completes (we wait) before we return.
+    let mut prop = ManuallyDrop::new(PROPVARIANT::default());
     {
         let pv = &mut prop.Anonymous.Anonymous;
         pv.vt = VT_BLOB;
@@ -256,7 +264,7 @@ unsafe fn activate_exclude_tree(exclude_root_pid: u32) -> ActivationResult {
     let operation: IActivateAudioInterfaceAsyncOperation = match ActivateAudioInterfaceAsync(
         VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
         &IAudioClient::IID,
-        Some(&prop),
+        Some(&*prop),
         &handler,
     ) {
         Ok(op) => op,
