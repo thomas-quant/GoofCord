@@ -40,7 +40,9 @@ const LOG_PREFIX = pc.cyan("[Screenshare]");
 //   start(excludeRootPid: number, onChunk: (chunk: Buffer) => void): boolean  // false = unsupported, never throws
 //   stop(): void                                                              // idempotent, bounded join
 interface WasapiAddon {
-	start(excludeRootPid: number, onChunk: (chunk: Buffer) => void): boolean;
+	// onChunk is a napi CalleeHandled ThreadsafeFunction → JS is invoked as (err, chunk):
+	// the error slot is the FIRST arg (null on Ok), the audio Buffer is the SECOND.
+	start(excludeRootPid: number, onChunk: (err: unknown, chunk: Buffer) => void): boolean;
 	stop(): void;
 }
 
@@ -158,9 +160,13 @@ export async function tryStartWasapiLoopback(): Promise<boolean> {
 		// side (false on non-S_OK / missing entrypoint — never throws). The ThreadsafeFunction
 		// onChunk runs per ~10ms with a 3840-byte f32 Buffer.
 		syncCrumb(`start() begin exclude-root=${rootPid}`);
-		const ok = await wasapi.start(rootPid, (chunk: Buffer) => {
+		// CalleeHandled ThreadsafeFunction → invoked as (err, chunk): the chunk Buffer is the SECOND
+		// arg (the first is the error slot, null on Ok). Reading the first arg as the chunk yielded
+		// `null` → toArrayBuffer(null).byteLength threw on the first packet and tore the capture down
+		// (viewer heard nothing). Guard on err/chunk so a stray error frame can't crash the callback.
+		const ok = await wasapi.start(rootPid, (err: unknown, chunk: Buffer) => {
 			const port = port1;
-			if (!port) return;
+			if (!port || err || !chunk) return;
 			try {
 				// Electron's MAIN-process MessagePortMain.postMessage transfer list accepts ONLY
 				// MessagePortMain instances — NOT ArrayBuffers (unlike the renderer/DOM MessagePort).
