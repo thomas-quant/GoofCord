@@ -42,16 +42,16 @@ function injectDeliverySpike() {
 		.catch((err) => error(`Failed Delivery Spike: ${err}`));
 }
 
-// Phase 4 — Windows WASAPI EXCLUDE-tree echo fix (the #46 fix), plus the transport spike.
+// Windows WASAPI EXCLUDE-tree echo fix (the #46 fix).
 // Hop-2 (preload isolated world → page main world): inject the MessagePort-fed MSTG feeder +
 // getDisplayMedia swap seam into the Discord page MAIN WORLD, then forward the hop-1 MessagePort
 // into it via window.postMessage(..., [port]) — but ONLY after the main world signals it has
-// registered its listener (the load-bearing readiness handshake; RESEARCH §Pitfall 1).
-// The gate is now `shouldInjectWasapiTransport` (true on the REAL win32 wasapi path OR under the
-// transport spike) so the real addon's chunks have a feeder to land in — NOT only under the spike
-// env. Off-Windows AND spike-disabled ⇒ no injection, byte-identical to upstream.
+// registered its listener (the load-bearing readiness handshake).
+// The gate `shouldInjectWasapiTransport` is true on the win32 wasapi path (not --no-wasapi) so the
+// addon's chunks have a feeder to land in. Off-Windows or --no-wasapi ⇒ no injection, byte-identical
+// to upstream.
 function injectWasapiTransport() {
-	if (!sendSync("screenshareDebug:shouldInjectWasapiTransport")) return;
+	if (!sendSync("wasapiLoopback:shouldInjectWasapiTransport")) return;
 
 	// Buffer the hop-1 port until the main world posts "goofcord:wasapi-ready"; then forward it
 	// zero-copy (DEFAULT mechanism). A port forwarded before the listener exists silently loses
