@@ -158,7 +158,7 @@ Plans:
 **Wave 2** *(blocked on Wave 1)*
 
 - [x] 05-03-PLAN.md — Strip all diagnostic scaffolding (relocate-then-delete) + the ECHO-03 silent-fallback guard + regenerated IPC (D-13/D-11)
-- [ ] 05-04-PLAN.md — Flip the addon to one optionalDependencies line, strip the in-CI Rust build/diagnostics, getPlatformString fix as a separate commit (D-08/D-13/D-12)
+- [x] 05-04-PLAN.md — Flip the addon to one optionalDependencies line, strip the in-CI Rust build/diagnostics, getPlatformString fix as a separate commit (D-08/D-13/D-12)
 
 **Wave 3** *(blocked on Wave 2 — user-identity checkpoint)*
 
@@ -183,4 +183,4 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 | 2. Fix Bug B — Windows Loopback Audio Captured | 2/2 | Complete | 2026-05-30 |
 | 3. Delivery-Path Spike — PCM → MediaStream (GO/NO-GO) | 3/3 | Complete    | 2026-06-02 |
 | 4. Native Clean-Room Exclude-Tree Addon + Integration | 2/3 | In Progress|  |
-| 5. Verification + Upstream PR | 3/7 | In Progress|  |
+| 5. Verification + Upstream PR | 4/7 | In Progress|  |
