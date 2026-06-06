@@ -36,7 +36,7 @@ Native clean-room implementation of the echo fix (upstream #46), building on the
 
 ### Upstream Quality (UPST) — v1.1
 
-- [ ] **UPST-02**: The echo fix is upstream-PR-ready — native code ships via the existing prebuilt-`.node` pattern (venbind-style: a separate addon repo publishing per-platform prebuilds, copied by `copyNativeModules()`), the GoofCord-side diff is surgical, and any diagnostic instrumentation is stripped before the PR
+- [x] **UPST-02**: The echo fix is upstream-PR-ready — native code ships via the existing prebuilt-`.node` pattern (venbind-style: a separate addon repo publishing per-platform prebuilds, copied by `copyNativeModules()`), the GoofCord-side diff is surgical, and any diagnostic instrumentation is stripped before the PR
 
 ## v2 Requirements
 
@@ -78,7 +78,7 @@ Which phases cover which requirements. Populated during roadmap creation.
 | ECHO-02 | Phase 4 | Pending |
 | ECHO-03 | Phase 4 | Pending |
 | ECHO-04 | Phase 4 | Pending |
-| UPST-02 | Phase 5 | Pending |
+| UPST-02 | Phase 5 | Complete |
 | WSTRM-01 | — (v2 / future milestone) | Deferred |
 
 **Note:** AUDIO-01 / AUDIO-02 "Complete" means the Phase 2 **recon/investigation** scope is complete (mechanism identified + documented in `02-FINDINGS.md`) — it does **not** mean the echo bug (#46) is fixed. The actual fix is implemented in milestone v1.1 (ECHO-01..04, Phase 4). (Re-scoped 2026-05-30.)

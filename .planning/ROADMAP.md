@@ -26,7 +26,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 3: Delivery-Path Spike — PCM → MediaStream (GO/NO-GO)** - Prove, on a real Windows CI build, that a stub/synthetic audio source can be driven through Electron 41.3.0 into Discord's `getDisplayMedia` MediaStream viewer-side — the GO/NO-GO gate before any native investment (completed 2026-06-02)
 - [ ] **Phase 4: Native Clean-Room Exclude-Tree Addon + Integration** - Build the clean-room WASAPI process-tree EXCLUDE loopback `.node` addon and wire it into the Windows audio branch via the proven delivery path, with graceful fallback and no Linux/macOS regression
-- [ ] **Phase 5: Verification + Upstream PR** - Verify the fix end-to-end viewer-side on a real Windows build with audio playing, strip instrumentation, and shape the surgical upstream-PR-ready diff plus the separate addon repo
+- [x] **Phase 5: Verification + Upstream PR** - Verify the fix end-to-end viewer-side on a real Windows build with audio playing, strip instrumentation, and shape the surgical upstream-PR-ready diff plus the separate addon repo (completed 2026-06-06)
 
 ## Phase Details
 
@@ -170,7 +170,7 @@ Plans:
 
 **Wave 5** *(blocked on Wave 4 — user-identity checkpoint)*
 
-- [ ] 05-07-PLAN.md — Shape the clean surgical PR branch off upstream/main + the verification-first description; USER opens the PR closing #46 (D-01..D-07)
+- [x] 05-07-PLAN.md — Shape the clean surgical PR branch off upstream/main + the verification-first description; USER opens the PR closing #46 (D-01..D-07)
 
 ## Progress
 
@@ -183,4 +183,4 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 | 2. Fix Bug B — Windows Loopback Audio Captured | 2/2 | Complete | 2026-05-30 |
 | 3. Delivery-Path Spike — PCM → MediaStream (GO/NO-GO) | 3/3 | Complete    | 2026-06-02 |
 | 4. Native Clean-Room Exclude-Tree Addon + Integration | 2/3 | In Progress|  |
-| 5. Verification + Upstream PR | 6/7 | In Progress|  |
+| 5. Verification + Upstream PR | 7/7 | Complete    | 2026-06-06 |
