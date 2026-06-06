@@ -1,10 +1,15 @@
 ---
-status: fixing
+status: resolved
 trigger: "PR #211 Windows screenshare audio regression: audio works on the FIRST screenshare (no echo, full system audio), but after the first screenshare is stopped, every subsequent screenshare has NO audio. WASAPI Application Loopback (EXCLUDE process-tree) via the wasapi-loopback native addon."
 created: 2026-06-06
 updated: 2026-06-06
 slug: pr211-2nd-share-no-audio
 ---
+
+> RESOLVED 2026-06-06: per-share feeder fix verified working by the user on a Windows
+> test build (run 27056472801). Fix folded into PR #211 (force-pushed to 3 clean
+> commits on pr/fix-windows-screenshare-echo; #210 confirmed out of scope). Clean
+> #210-free build verified at run 27056758797.
 
 # Debug: PR #211 — no audio on 2nd+ screenshare
 
