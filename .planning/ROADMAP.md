@@ -162,7 +162,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2 — user-identity checkpoint)*
 
-- [ ] 05-05-PLAN.md — USER pushes the addon repo; build + packaging-assert the stripped/dependency-packaged Windows artifact (D-14 step 3 setup)
+- [x] 05-05-PLAN.md — USER pushes the addon repo; build + packaging-assert the stripped/dependency-packaged Windows artifact (D-14 step 3 setup)
 
 **Wave 4** *(blocked on Wave 3 — human-verify checkpoint)*
 
@@ -183,4 +183,4 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 | 2. Fix Bug B — Windows Loopback Audio Captured | 2/2 | Complete | 2026-05-30 |
 | 3. Delivery-Path Spike — PCM → MediaStream (GO/NO-GO) | 3/3 | Complete    | 2026-06-02 |
 | 4. Native Clean-Room Exclude-Tree Addon + Integration | 2/3 | In Progress|  |
-| 5. Verification + Upstream PR | 4/7 | In Progress|  |
+| 5. Verification + Upstream PR | 5/7 | In Progress|  |
