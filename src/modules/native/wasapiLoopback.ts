@@ -23,6 +23,7 @@
 
 import { appendFileSync, existsSync } from "node:fs";
 import { createRequire } from "node:module";
+import os from "node:os";
 import path from "node:path";
 
 import { appendScreenshareDebug } from "@root/src/modules/screenshareDebug.ts";
@@ -141,6 +142,11 @@ export async function tryStartWasapiLoopback(): Promise<boolean> {
 		const metrics = app.getAppMetrics();
 		const audioService = metrics.find((p) => p.name === "Audio Service");
 		void appendScreenshareDebug(`wasapi exclude-root=${rootPid} audioService=${audioService?.pid ?? "not-found"} procs=${metrics.map((p) => `${p.name}:${p.pid}`).join(",")}`);
+
+		// Detected OS build breadcrumb (RESEARCH Q7 gap): os.release() on Windows returns "10.0.<build>",
+		// the only place the WASAPI Application-Loopback support floor (19041+) can be confirmed from the
+		// shipped artifact. (Diagnostic scaffolding — strip with the rest of screenshare-debug in 05-03.)
+		void appendScreenshareDebug(`wasapi build=${os.release()}`);
 
 		// Make start idempotent across re-clicks: tear down any prior session/port first.
 		await stopWasapiLoopback();
