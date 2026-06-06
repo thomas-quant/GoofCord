@@ -191,19 +191,20 @@ async function copyNativeModules() {
 				{ src: ["venbind", "prebuilds", "linux-aarch64", "venbind-linux-aarch64.node"], platform: "linux", arch: "arm64" },
 			],
 		},
-		// Phase 4 — Windows WASAPI EXCLUDE-tree echo-fix addon (native/wasapi-loopback, Plan 02).
-		// PHASE-5 REMOVAL: when the addon moves to its own published repo + optionalDependencies, the
-		// envPath/Rust-build path goes away and this becomes a normal prebuild-only entry (or is dropped).
-		// CRITICAL (Pitfall 3): with name "wasapi-loopback" the envPath branch produces dest
+		// Phase 5 — Windows WASAPI EXCLUDE-tree echo-fix addon, consumed as a published
+		// optionalDependency (github:thomas-quant/wasapi-loopback), mirroring patchcord/venbind.
+		// Phase 5: env override removed; prebuild-only (host-agnostic copy stays — Bun's file-loader
+		// emits zero .node on a Windows build host). bun clones the github ref and the committed
+		// prebuild lands at node_modules/wasapi-loopback/prebuilds/windows-x86_64/wasapi-loopback-win32-x64.node.
+		// CRITICAL (Pitfall 3): with name "wasapi-loopback" the prebuild dest is
 		// `wasapi-loopback-win32-x64.node` on a win32/x64 build — containing BOTH "win32" AND "x64",
 		// exactly what nativeImport.ts's glob substring match needs. A name lacking either substring
 		// would silently emit `export default null` → silent "loopback" fallback (looks like the fix
-		// doesn't work, with no error). The prebuild entry below sets up the Phase-5 published path; it
-		// is best-effort (.catch in the prebuild branch), so a missing prebuild off-Windows never fails
-		// the local build — Phase 4 ships via the GOOFCORD_WASAPI_LOOPBACK_PATH env override on CI.
+		// doesn't work, with no error). The prebuild copy is best-effort (.catch in the prebuild
+		// branch), so a missing prebuild off-Windows (bun skips the win32-only optionalDependency)
+		// never fails the local build.
 		{
 			name: "wasapi-loopback",
-			envPath: process.env.GOOFCORD_WASAPI_LOOPBACK_PATH,
 			prebuilds: [{ src: ["wasapi-loopback", "prebuilds", "windows-x86_64", "wasapi-loopback-win32-x64.node"], platform: "win32", arch: "x64" }],
 		},
 	];
@@ -257,7 +258,8 @@ async function copyNativeModules() {
 // the addon from this ts-out/native/ path at runtime (NOT via the file-loader). electron-builder's
 // per-platform `files` filters already key off `ts-out/native/*-<plat>-*.node`, so packaging needs
 // no change. Scoped to wasapi-loopback only; venbind keeps the `native-module:` loader for now.
-// PHASE-5 REMOVAL: drops out with the rest of the wasapi env-override scaffolding.
+// Phase 5: the env override is gone, but this host-agnostic copy STAYS — it is the permanent fix
+// for Bun's Windows-host file-loader bug (zero .node emitted), NOT env-override scaffolding.
 async function copyNativeAddonsToOutDir() {
 	const srcDir = path.join(ASSETS_DIR, "native");
 	const destDir = path.join(OUT_DIR, "native");
