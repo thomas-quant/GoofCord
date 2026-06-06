@@ -147,7 +147,30 @@ Plans:
   3. The GoofCord-side change is a surgical, upstream-PR-ready diff: native code ships via the existing prebuilt-`.node` pattern (a separate addon repo publishing per-platform prebuilds, copied by `copyNativeModules()`); the in-repo footprint is the additive `screenshare.ts` gate, `wasapiLoopback.ts`, one build-script entry, one `optionalDependencies` line, and regenerated IPC — with no Linux/macOS regression. [UPST-02]
   4. The separate native addon repo is shaped for publication: clean-room from the public Microsoft sample (MIT notice retained, no Discord symbols), builds its prebuilt `.node` on a `windows-latest` runner in its own CI, and ships per-platform/arch prebuilds named to match the `nativeModulePlugin` glob (`wasapi-loopback-win32-x64.node`). [UPST-02]
 
-**Plans**: TBD
+**Plans**: 7 plans
+
+Plans:
+**Wave 1**
+
+- [ ] 05-01-PLAN.md — Capture the rich (instrumented) two-device verification + the missing Windows build-number line, before any strip (D-14 step 1)
+- [ ] 05-02-PLAN.md — Prepare the ready-to-push standalone addon repo dir (thomas-quant/wasapi-loopback) with its windows-latest prebuild CI (D-09/D-10)
+
+**Wave 2** *(blocked on Wave 1)*
+
+- [ ] 05-03-PLAN.md — Strip all diagnostic scaffolding (relocate-then-delete) + the ECHO-03 silent-fallback guard + regenerated IPC (D-13/D-11)
+- [ ] 05-04-PLAN.md — Flip the addon to one optionalDependencies line, strip the in-CI Rust build/diagnostics, getPlatformString fix as a separate commit (D-08/D-13/D-12)
+
+**Wave 3** *(blocked on Wave 2 — user-identity checkpoint)*
+
+- [ ] 05-05-PLAN.md — USER pushes the addon repo; build + packaging-assert the stripped/dependency-packaged Windows artifact (D-14 step 3 setup)
+
+**Wave 4** *(blocked on Wave 3 — human-verify checkpoint)*
+
+- [ ] 05-06-PLAN.md — Final viewer-side re-confirm on the shipping shape + Linux/macOS non-regression; complete the verification report (D-14/D-15/D-16)
+
+**Wave 5** *(blocked on Wave 4 — user-identity checkpoint)*
+
+- [ ] 05-07-PLAN.md — Shape the clean surgical PR branch off upstream/main + the verification-first description; USER opens the PR closing #46 (D-01..D-07)
 
 ## Progress
 
@@ -160,4 +183,4 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 | 2. Fix Bug B — Windows Loopback Audio Captured | 2/2 | Complete | 2026-05-30 |
 | 3. Delivery-Path Spike — PCM → MediaStream (GO/NO-GO) | 3/3 | Complete    | 2026-06-02 |
 | 4. Native Clean-Room Exclude-Tree Addon + Integration | 2/3 | In Progress|  |
-| 5. Verification + Upstream PR | 0/0 | Not started | - |
+| 5. Verification + Upstream PR | 0/7 | Planned | - |
