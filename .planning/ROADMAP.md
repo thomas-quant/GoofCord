@@ -166,7 +166,7 @@ Plans:
 
 **Wave 4** *(blocked on Wave 3 — human-verify checkpoint)*
 
-- [ ] 05-06-PLAN.md — Final viewer-side re-confirm on the shipping shape + Linux/macOS non-regression; complete the verification report (D-14/D-15/D-16)
+- [x] 05-06-PLAN.md — Final viewer-side re-confirm on the shipping shape + Linux/macOS non-regression; complete the verification report (D-14/D-15/D-16)
 
 **Wave 5** *(blocked on Wave 4 — user-identity checkpoint)*
 
@@ -183,4 +183,4 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 | 2. Fix Bug B — Windows Loopback Audio Captured | 2/2 | Complete | 2026-05-30 |
 | 3. Delivery-Path Spike — PCM → MediaStream (GO/NO-GO) | 3/3 | Complete    | 2026-06-02 |
 | 4. Native Clean-Room Exclude-Tree Addon + Integration | 2/3 | In Progress|  |
-| 5. Verification + Upstream PR | 5/7 | In Progress|  |
+| 5. Verification + Upstream PR | 6/7 | In Progress|  |
