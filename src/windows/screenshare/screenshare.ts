@@ -1,12 +1,12 @@
 import path from "node:path";
 
 import { hasPipewirePulse, patchcordList, patchcordStartApp, patchcordStartSystem } from "@root/src/modules/native/patchcord.ts";
-// Phase 4 — Windows WASAPI EXCLUDE-tree echo fix (the #46 fix). Additive 3-way audio gate:
+// Windows WASAPI EXCLUDE-tree echo fix (the #46 fix). Additive 3-way audio gate:
 // Linux patchcord → win32 native exclude-tree → universal "loopback" fallback.
 import { tryStartWasapiLoopback } from "@root/src/modules/native/wasapiLoopback.ts";
-import { appendScreenshareDebug } from "@root/src/modules/screenshareDebug.ts";
 import { BrowserWindow, desktopCapturer, ipcMain, session } from "electron";
 import type { ShareableNode } from "patchcord";
+import pc from "picocolors";
 
 import { dirname, isWayland, relToAbs } from "../../utils.ts";
 import html from "./renderer/screenshare.html";
@@ -99,7 +99,7 @@ export function registerScreenshareHandler() {
 					console.error("[Screenshare] Failed to start patchcord node:", err);
 				}
 			} else if (process.platform === "win32" && (await tryStartWasapiLoopback())) {
-				// Phase 4 — Windows native WASAPI EXCLUDE-tree capture started (the #46 echo fix).
+				// Windows native WASAPI EXCLUDE-tree capture started (the #46 echo fix).
 				// Do NOT also request Chromium "loopback" here. The addon is already running its OWN
 				// WASAPI loopback capture, and a SECOND concurrent WASAPI loopback (Chromium's) fighting
 				// over the same shared Windows audio session corrupts it → CoreMessaging.dll heap-
@@ -108,10 +108,9 @@ export function registerScreenshareHandler() {
 				// result.audio unset means Chromium captures NO audio; the swap seam adds the
 				// reconstructed exclude-tree track to the (audio-less) stream — the addon is the sole
 				// capturer (and the seam discarded Chromium's loopback track anyway, so nothing is lost).
-				void appendScreenshareDebug(`screenshare wcId=${wcId} audio=none path=win32-wasapi-exclude-tree (addon sole capturer, no chromium loopback)`);
 			} else {
 				result.audio = "loopback";
-				void appendScreenshareDebug(`screenshare wcId=${wcId} audio=loopback path=universal-fallback (platform=${process.platform})`);
+				console.log(pc.cyan("[Screenshare]"), "WASAPI process-loopback unsupported on this build, using loopback fallback");
 			}
 		}
 
