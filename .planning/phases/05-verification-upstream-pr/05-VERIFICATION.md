@@ -1,13 +1,16 @@
 ---
-status: in_progress
+status: complete
 phase: 05-verification-upstream-pr
 requirement: UPST-02
 updated: 2026-06-06
 ci_run_rich: 27053219078
+ci_run_final: 27054703843
 commit_rich: 5882491
 detected_build: 10.0.19045
 viewer_audible: true
 echo_heard: false
+fallback_verified: true
+non_regression: { linux: verified, macos: code-inspection }
 ---
 
 # Phase 05 — Verification Report (#46 echo fix)
@@ -142,19 +145,101 @@ specific cancel timing. It does **not** block the echo fix.
 
 ---
 
-## Final shipping shape (stripped + dependency-packaged) — RE-CONFIRM PENDING ⏳
+## Final shipping shape (stripped + dependency-packaged) — RE-CONFIRMED ✅
 
-*Placeholder — completed in 05-06 (D-14 step 3 + D-15 + D-16).*
+**Artifact under test:** final-shape CI run **27054703843** (`success`) →
+https://github.com/thomas-quant/GoofCord/actions/runs/27054703843
+**Shape:** all diagnostics stripped, addon via `github:thomas-quant/wasapi-loopback`
+optionalDependency (no in-CI Rust build), ECHO-03 fallback guard in place. Same
+code path as the rich build, minus instrumentation.
 
-After 05-03 (strip all diagnostics + ECHO-03 fallback guard) and 05-04/05-05
-(published `optionalDependencies` addon, in-CI Rust build removed), a final
-Windows x64 CI artifact of the **shipping** shape will be re-verified:
+### SC#1 — viewer-side ground truth on the SHIPPING build (human-supplied)
 
-- [ ] SC#1 re-confirm: viewer hears desktop audio + no echo on the **stripped**
-      build (no debug log to lean on — viewer-side ground truth only).
-- [ ] ECHO-03 / D-11: forced native-unavailable / `--no-wasapi` run falls back to
-      Electron `"loopback"` and the viewer still hears audio (graceful fallback,
-      no silence, no crash).
-- [ ] D-15: Linux (patchcord) and macOS paths non-regressed (byte-identical
-      `"loopback"` path when native addon absent).
-- [ ] "Restart once" watch-item re-checked.
+| Run | Launch | Viewer result | Verdict |
+|-----|--------|---------------|---------|
+| 1 — supported (native) | normal | hears desktop audio, **no echo**, no crash | **PASS** — ECHO-01 re-confirmed on the shipping shape ✅ |
+| 2 — fallback | `--no-wasapi` | hears desktop audio, **echo present**, no crash | **PASS (expected)** — forces Electron `"loopback"`, which captures the whole mix incl. the call → echo; graceful, no silence, no crash (D-15) ✅ |
+| 3 — injected-but-unsupported | un-flagged, forced-fail | *skipped* (not reproducible on a supported 19045 box) | covered by code inspection (below) |
+
+**A/B significance:** Run 1 (native exclude-tree) = **no echo**; Run 2 (loopback
+fallback) = **echo**. The only difference is the WASAPI EXCLUDE-tree path, so the
+echo suppression is dispositively attributable to the #46 fix — not to some other
+audio-stack change.
+
+### Runtime strip proof (bonus)
+
+After both shipping-build runs, `screenshare-debug.log` had **zero** new lines
+(still 599 lines, last entry `2026-06-06T05:26:59Z` from the rich build). The
+shipping build writes nothing to the debug log → the strip holds at runtime, not
+just in source.
+
+### ECHO-03 guard (D-11) — Run 3 by code inspection (no faked hardware)
+
+Run 3 (addon loads but activation fails → keep the loopback track, not silence) is
+not naturally reproducible on a *supported* 19045 box (activation succeeds there).
+The guard is verified structurally instead: the getDisplayMedia swap seam is gated
+by `if (!activePort) return stream;` — on activation failure `activePort` is never
+set, so the audible Chromium `"loopback"` track is left in place (audio, not
+silence). Run 2 (`--no-wasapi`, audio heard) independently confirms the fallback
+track stays audible. The dispositive on-hardware un-flagged-unsupported run would
+require a sub-19041 build, which this box is not.
+
+### Build# / PIDs / native-path line
+
+The shipping build is intentionally silent, so these come from the rich build
+(05-01, identical code path): build **10.0.19045**; native activation line
+`screenshare … path=win32-wasapi-exclude-tree`; excluded root PID `19076` with
+Audio Service `12280` in its `app.getAppMetrics()` subtree; chunks 0→4900+. See the
+rich-build section above for the cited log signatures.
+
+### app.asar packaging (V4)
+
+Final artifact `app.asar` contains the fork code (`shouldInjectWasapiTransport`,
+`wasapi:pcm-port`) and the loadable addon at
+`app.asar.unpacked/ts-out/native/wasapi-loopback-win32-x64.node`; 0 diagnostic
+tokens present in the shipped asar.
+
+---
+
+## Non-regression (D-16)
+
+### Linux (patchcord) — verified on this WSL/Linux dev box ✅
+
+The echo fix is **triple-gated** off-Windows, so none of it executes on Linux:
+- `src/windows/screenshare/screenshare.ts:101` — the audio branch is
+  `else if (process.platform === "win32" && (await tryStartWasapiLoopback()))`;
+  on Linux the existing `hasPipewirePulse && process.platform === "linux"` patchcord
+  branch is taken exactly as upstream.
+- `src/modules/native/wasapiLoopback.ts:103` — `tryStartWasapiLoopback()` returns
+  `false` on the first line when `process.platform !== "win32"`.
+- `src/modules/native/wasapiLoopback.ts:79` — `shouldInjectWasapiTransport()` returns
+  `false` off-Windows → the preload injects **no** MSTG seam → renderer byte-identical.
+
+Install/build evidence:
+- `bun install` on Linux → **exit 0** (the win32-only optionalDependency resolves
+  without breaking the install). The win32-x64 prebuild is cloned into
+  `node_modules/wasapi-loopback/prebuilds/windows-x86_64/` but is **inert** on Linux:
+  the runtime path is `wasapi-loopback-${process.platform}-${process.arch}.node` =
+  `wasapi-loopback-linux-x64.node`, which does not exist → `existsSync` false → addon
+  never loads (independent of the win32 gate above).
+- `bun run build` on Linux → **exit 0** (`✅ Build completed successfully`).
+
+The patchcord audio path is byte-identical to upstream — the echo fix adds only
+win32-gated branches and never alters the Linux execution path.
+
+### macOS — verified by code inspection, no Mac hardware (NOT faked)
+
+No Mac hardware was available, so this is a code-level guarantee, stated plainly and
+not represented as a hardware run:
+- The same win32 gates (`screenshare.ts:101`, `wasapiLoopback.ts:103`/`:79`) make
+  every echo-fix branch unreachable on `darwin` — macOS takes the universal
+  `"loopback"` path unchanged.
+- `os: ["win32"]` / `cpu: ["x64"]` in the addon package + electron-builder's
+  platform-scoped packaging keep the win32/linux `.node` out of any macOS build.
+
+---
+
+## Housekeeping
+
+The stale dev-box `screenshare-debug.log` (rich-build run, 599 lines) can be deleted
+manually — no migration needed; the shipping build writes no such file.
