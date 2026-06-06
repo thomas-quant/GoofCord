@@ -1,6 +1,6 @@
 import { execSync } from "node:child_process";
 
-import { Arch, Configuration, Platform } from "electron-builder";
+import { Arch, Configuration } from "electron-builder";
 
 const files = ["!*", "!node_modules/**/*", "ts-out", "package.json", "LICENSE"];
 
@@ -85,7 +85,14 @@ export const config: Configuration = {
 	],
 	beforePack: async (context) => {
 		const currentArch = getArchString(context.arch);
-		const currentPlatform = getPlatformString(context.packager.platform);
+		// Separable build fix (NOT part of the #46 echo change — D-12): resolve the platform via
+		// context.electronPlatformName instead of switching on context.packager.platform. The latter
+		// did not reliably === the imported Platform.WINDOWS singleton in beforePack, so the old
+		// getPlatformString() fell through to "unknown" → the build emitted a misnamed `…-linux-x64.node`
+		// into the Windows package and broke venbind's build-time loader. electronPlatformName is the
+		// reliable signal and is already in process.platform form ("win32"/"linux"/"darwin"), exactly
+		// what build.ts (TARGET_PLATFORM === "win32") expects.
+		const currentPlatform = context.electronPlatformName;
 
 		const output = execSync(`bun run build --skipTypecheck --platform=${currentPlatform} --arch=${currentArch}`, {
 			encoding: "utf-8",
@@ -93,19 +100,6 @@ export const config: Configuration = {
 		console.log(output);
 	},
 };
-
-function getPlatformString(platform: Platform): string {
-	switch (platform) {
-		case Platform.WINDOWS:
-			return "win32";
-		case Platform.LINUX:
-			return "linux";
-		case Platform.MAC:
-			return "darwin";
-		default:
-			return "unknown";
-	}
-}
 
 function getArchString(arch: Arch): string {
 	switch (arch) {
