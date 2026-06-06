@@ -103,6 +103,15 @@ Items acknowledged and carried forward from previous milestone close:
 | Scope | User-side separate-output-device workaround | Out of scope (rejected as deliverable) | v1.1 |
 | Scope | WSTRM-01 — further Windows streaming bugs | Deferred to v2 | v1.0 close |
 
+**Close-time open-artifact audit (2026-06-06):** the `audit-open` query flagged 4 items at v1.1 close, all reviewed as **stale/resolved, not real gaps** (user proceeded):
+
+| Item | Audit flag | Disposition |
+|------|-----------|-------------|
+| `01-HUMAN-UAT.md` | partial (0 pending scenarios) | Bug A human-verified on CI 26673048740; status flag never flipped |
+| `01-VERIFICATION.md` | human_needed | Phase 1 human-verified (STREAM-01..04 all complete); flag stale |
+| `03-CONTEXT.md` | 3 open questions | The spike's own probe questions — resolved by the GO verdict (`03-FINDINGS.md`) |
+| `04-CONTEXT.md` | 3 open questions | Addon-home / transport questions — resolved in Phase 4 (in-repo crate + env override, shipped) |
+
 ## Session Continuity
 
 Last session: 2026-06-06T00:47:45.219Z

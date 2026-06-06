@@ -22,6 +22,8 @@ Entries in reverse chronological order — newest first.
 
 **Git range:** `feat(03-01)` (0708ee7) → `fix(screenshare)` (68bfb05, per-share feeder rebuild)
 
+**Known deferred at close:** 0 real gaps. The close-time `audit-open` flagged 4 items (Phase 01 UAT/verification status flags, Phase 03/04 CONTEXT probe questions) — all reviewed as stale/already-resolved (see STATE.md → Deferred Items). Scope deferrals carried forward: user-side workaround (out of scope) and WSTRM-01 (v2).
+
 **What's next:** No active milestone. Reopen via `/gsd-new-milestone` if further Windows streaming bugs surface (WSTRM-01).
 
 ---
