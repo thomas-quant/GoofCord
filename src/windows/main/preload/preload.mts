@@ -5,11 +5,9 @@ import { ipcRenderer, webFrame } from "electron";
 import { sendSync } from "../../../ipc/client.preload.ts";
 import { error, log } from "../../../modules/logger.preload.ts";
 import { loadScripts, loadStyles } from "./assets.ts";
-// THROWAWAY — Phase 3 delivery-path spike (GOOFCORD_DELIVERY_SPIKE); strip before upstream PR.
-import { spikeMainWorldSource } from "./deliverySpike.ts";
 import { startKeybindWatcher } from "./keybinds.ts";
 import { injectFlashbar } from "./titlebarFlash.ts";
-// THROWAWAY — Phase 4 transport spike (GOOFCORD_TRANSPORT_SPIKE); strip before upstream PR.
+// Windows WASAPI EXCLUDE-tree echo fix (the #46 fix): the main-world PCM feeder + getDisplayMedia swap seam.
 import { wasapiTransportMainWorldSource } from "./wasapiTransport.ts";
 
 const preloadStart = performance.now();
@@ -20,26 +18,12 @@ function init() {
 	loadScripts();
 	loadStyles();
 
-	injectDeliverySpike();
 	injectWasapiTransport();
 
 	measureDiscordStartup();
 	injectFlashbar();
 	startKeybindWatcher();
 	disableAltMenu();
-}
-
-// THROWAWAY — Phase 3 delivery-path spike (GOOFCORD_DELIVERY_SPIKE); strip before upstream PR.
-// Inject the packaged spike into the Discord page MAIN WORLD via webFrame.executeJavaScript
-// (the loadScripts() mechanism) ONLY when the gate is on. Off ⇒ byte-identical to today.
-function injectDeliverySpike() {
-	// Read the gate from main (the sandboxed preload has no process.env). Same sync channel
-	// the goofcord bridge's `deliverySpike` field reads. Off-by-default ⇒ no injection.
-	if (!sendSync("screenshareDebug:isDeliverySpikeEnabled")) return;
-	webFrame
-		.executeJavaScript(spikeMainWorldSource)
-		.then(() => log("Loaded Delivery Spike"))
-		.catch((err) => error(`Failed Delivery Spike: ${err}`));
 }
 
 // Windows WASAPI EXCLUDE-tree echo fix (the #46 fix).
@@ -84,8 +68,8 @@ function injectWasapiTransport() {
 
 	webFrame
 		.executeJavaScript(wasapiTransportMainWorldSource)
-		.then(() => log("Loaded WASAPI Transport spike"))
-		.catch((err) => error(`Failed WASAPI Transport spike: ${err}`));
+		.then(() => log("Loaded WASAPI Transport"))
+		.catch((err) => error(`Failed WASAPI Transport: ${err}`));
 }
 
 function measureDiscordStartup() {

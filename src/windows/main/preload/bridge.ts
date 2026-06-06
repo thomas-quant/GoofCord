@@ -42,15 +42,9 @@ const api = {
 	openSettingsWindow: () => invoke("settings:createSettingsWindow"),
 	setBadgeCount: (count: number) => invoke("dynamicIcon:setBadgeCount", count),
 	stopPatchcord: () => invoke("patchcord:stopPatchcord"),
-	// THROWAWAY — Phase 3 delivery-path spike (GOOFCORD_DELIVERY_SPIKE); strip before upstream PR.
-	deliverySpike: sendSync("screenshareDebug:isDeliverySpikeEnabled"),
-	appendScreenshareDebug: (line: string) => invoke("screenshareDebug:appendScreenshareDebug", line),
-	// THROWAWAY — Phase 4 transport spike (GOOFCORD_TRANSPORT_SPIKE); strip before upstream PR.
-	// Tears the native WASAPI capture down from the main-world STREAM_CLOSE handler (mirror stopPatchcord).
+	// Windows WASAPI EXCLUDE-tree echo fix (#46): tears the native capture down from the main-world
+	// getDisplayMedia teardown handler (mirror stopPatchcord).
 	stopWasapiLoopback: () => invoke("wasapiLoopback:stopWasapiLoopback"),
-	// Hop-2 FALLBACK: if the zero-copy port-forward is not honored into the injected main world,
-	// the preload lands PCM here and the main-world feeder is invoked via this structured-clone path.
-	feedWasapiChunk: (callback: (chunk: ArrayBuffer) => void) => ipcRenderer.on("wasapi:pcm-chunk", (_event, chunk: ArrayBuffer) => callback(chunk)),
 	isVencordPresent: () => isVencordPresent,
 	onInvidiousConfigChanged: (callback: () => void) => ipcRenderer.on("invidiousConfigChanged", callback),
 	openQuickCssWindow: () => invoke("quickCssFix:createQuickCssWindow"),
