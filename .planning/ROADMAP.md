@@ -153,7 +153,7 @@ Plans:
 **Wave 1**
 
 - [ ] 05-01-PLAN.md — Capture the rich (instrumented) two-device verification + the missing Windows build-number line, before any strip (D-14 step 1)
-- [ ] 05-02-PLAN.md — Prepare the ready-to-push standalone addon repo dir (thomas-quant/wasapi-loopback) with its windows-latest prebuild CI (D-09/D-10)
+- [x] 05-02-PLAN.md — Prepare the ready-to-push standalone addon repo dir (thomas-quant/wasapi-loopback) with its windows-latest prebuild CI (D-09/D-10)
 
 **Wave 2** *(blocked on Wave 1)*
 
@@ -183,4 +183,4 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 | 2. Fix Bug B — Windows Loopback Audio Captured | 2/2 | Complete | 2026-05-30 |
 | 3. Delivery-Path Spike — PCM → MediaStream (GO/NO-GO) | 3/3 | Complete    | 2026-06-02 |
 | 4. Native Clean-Room Exclude-Tree Addon + Integration | 2/3 | In Progress|  |
-| 5. Verification + Upstream PR | 0/7 | Planned | - |
+| 5. Verification + Upstream PR | 1/7 | In Progress|  |
