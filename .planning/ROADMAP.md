@@ -25,7 +25,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 ### Milestone v1.1 — Windows Screenshare Echo Fix
 
 - [x] **Phase 3: Delivery-Path Spike — PCM → MediaStream (GO/NO-GO)** - Prove, on a real Windows CI build, that a stub/synthetic audio source can be driven through Electron 41.3.0 into Discord's `getDisplayMedia` MediaStream viewer-side — the GO/NO-GO gate before any native investment (completed 2026-06-02)
-- [ ] **Phase 4: Native Clean-Room Exclude-Tree Addon + Integration** - Build the clean-room WASAPI process-tree EXCLUDE loopback `.node` addon and wire it into the Windows audio branch via the proven delivery path, with graceful fallback and no Linux/macOS regression
+- [x] **Phase 4: Native Clean-Room Exclude-Tree Addon + Integration** - Build the clean-room WASAPI process-tree EXCLUDE loopback `.node` addon and wire it into the Windows audio branch via the proven delivery path, with graceful fallback and no Linux/macOS regression (completed 2026-06-06)
 - [x] **Phase 5: Verification + Upstream PR** - Verify the fix end-to-end viewer-side on a real Windows build with audio playing, strip instrumentation, and shape the surgical upstream-PR-ready diff plus the separate addon repo (completed 2026-06-06)
 
 ## Phase Details

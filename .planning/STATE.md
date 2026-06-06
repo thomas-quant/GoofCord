@@ -4,13 +4,13 @@ milestone: v1.1
 milestone_name: Windows Screenshare Echo Fix
 status: milestone_complete
 last_updated: 2026-06-06T07:02:54.530Z
-last_activity: 2026-06-06 -- Phase 05 execution started
+last_activity: 2026-06-06 -- Milestone complete; post-completion 2nd-share regression fixed + shipped upstream
 progress:
   total_phases: 5
-  completed_phases: 4
+  completed_phases: 5
   total_plans: 17
   completed_plans: 17
-  percent: 80
+  percent: 100
 stopped_at: Milestone complete (Phase 05 was final phase)
 ---
 
@@ -30,7 +30,7 @@ Plan: Not started
 Status: Milestone complete
 Last activity: 2026-06-06
 
-Progress: [███████░░░] 67% (v1.1 phases: 2/3 — Phases 03-04 done, Phase 05 (PR prep) remains)
+Progress: [██████████] 100% (v1.1 phases: 3/3 — Phases 03-05 complete)
 
 ## Performance Metrics
 
@@ -47,6 +47,7 @@ Progress: [███████░░░] 67% (v1.1 phases: 2/3 — Phases 03-0
 | 01 | 2 | - | - |
 | 02 | 2 | - | - |
 | 03 | 3 | - | - |
+| 04 | 3 | - | - |
 | 05 | 7 | - | - |
 
 **Recent Trend:**
