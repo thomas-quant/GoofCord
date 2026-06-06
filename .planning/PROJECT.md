@@ -8,17 +8,34 @@ A fork of GoofCord (an Electron-based custom Discord client that wraps Vencord) 
 
 On Windows, a user can start a screenshare, cancel the source picker, and start again — and the stream works — without the app getting stuck or requiring a restart. If everything else fails, restarting a stream after cancelling must work.
 
-## Current Milestone: v1.1 — Windows Screenshare Echo Fix
+## Current State
+
+**Shipped v1.1 — Windows Screenshare Echo Fix (2026-06-06).** Both milestones are complete and contributed back upstream:
+
+- **v1.0 — Windows Streaming Fixes** (Phases 1–2): Bug A (cancel-the-picker-then-restart wedge) fixed via an exactly-once `finishRequest(wcId, result)` teardown consolidation plus the kept `NotAllowedError` cancellation re-throw. Bug B was retargeted to a recon-only investigation that identified Discord's Windows per-process audio mechanism — the public WASAPI Application Loopback API, EXCLUDE process-tree, dynamically loaded (`02-FINDINGS.md`).
+- **v1.1 — Windows Screenshare Echo Fix** (Phases 3–5): the #46 echo fix shipped. A clean-room Rust + napi-rs WASAPI EXCLUDE-process-tree `.node` addon (captures the whole endpoint mix *except* GoofCord's own Electron process tree) is wired into `screenshare.ts`'s Windows audio branch behind a proven main→renderer `MediaStreamTrackGenerator` transport, with graceful fallback to today's `"loopback"` where the API is unavailable. Verified viewer-side on a Windows x64 CI build (build 19045): the viewer hears shared desktop audio with **no** call echo; `--no-wasapi` A/B confirms the suppression is attributable to the EXCLUDE-tree path.
+
+**Upstream PRs open:** #211 (Windows echo fix, Closes #46) and #210 (Wayland xdg-portal-cancel re-open). The native addon ships as a separate prebuilt-`.node` repo (`thomas-quant/wasapi-loopback`, MIT, clean-room) consumed via one `optionalDependencies` line — the venbind/patchcord pattern.
+
+## Next Milestone Goals
+
+No active milestone. This is a focused bug-fix fork; it stays dormant between bug reports rather than chasing features. The one acknowledged candidate is **WSTRM-01** (further Windows screenshare/streaming bugs beyond cancel/restart + audio) — open a new milestone via `/gsd-new-milestone` if/when more bugs surface.
+
+<details>
+<summary>Archived: v1.1 milestone goal (in progress)</summary>
 
 **Goal:** On Windows, a user can screenshare system/app audio without remote viewers hearing the call echoed back to them (Bug B / upstream #46).
 
 **Target features (approach decided by research):**
 - Remove GoofCord's own call playback from the captured loopback audio (per-process / process-tree EXCLUDE), so viewers stop hearing themselves.
-- The implementation path is chosen from evidence during research: a native WASAPI exclude-tree `.node` addon, a user-side separate-output-device workaround, or a hybrid (native where Windows build ≥ 20348, documented fallback below it).
-- Graceful behavior on Windows builds < 20348 (the public process-loopback API's minimum).
+- The implementation path is chosen from evidence during research: a native WASAPI exclude-tree `.node` addon, a user-side separate-output-device workaround, or a hybrid.
+- Graceful behavior on Windows builds where the public process-loopback API is unavailable.
 - A verification path that does not depend on the maintainer's Win10 19045 dev box (Windows CI build + second device, verified viewer-side with audio actively playing).
 
-**Builds on:** Phase 2 recon — `02-FINDINGS.md §3` (clean-room GO, conditional on build ≥ 20348) is the go/no-go input. Clean-room boundary is LOCKED: public Microsoft `ApplicationLoopback` API only, never copied Discord code.
+**Builds on:** Phase 2 recon — `02-FINDINGS.md §3` (clean-room GO). Clean-room boundary was LOCKED: public Microsoft `ApplicationLoopback` API only, never copied Discord code.
+
+**Outcome:** Native exclude-tree addon chosen and shipped; the "20348" minimum proved over-stated (the API works on the 19041/2004 floor — verified on the 19045 dev box). User-side workaround was explicitly rejected as a deliverable (native-only).
+</details>
 
 ## Requirements
 
@@ -37,13 +54,16 @@ On Windows, a user can start a screenshare, cancel the source picker, and start 
 - ✓ Windows echo mechanism identified (recon): Discord uses the public WASAPI Application Loopback API (EXCLUDE process-tree, dynamically loaded), not a virtual-device driver; clean-room replication is viable from the public Microsoft `ApplicationLoopback` sample, conditional on build ≥ 20348 (Validated in Phase 2: Bug B recon; see `02-FINDINGS.md`)
 - ✓ Delivery path proven — GO (de-risk spike): a renderer-reconstructed non-Discord audio track (`MediaStreamTrackGenerator`, confirmed working on Electron 41.3.0 / Chrome 146) swapped into `getDisplayMedia` at the `screensharePatch.ts` seam is heard by a remote viewer on a Windows x64 CI build (run 26740748142). This is the make-or-break for the native echo fix; the remaining main→renderer PCM transport (chunked transferables, never per-frame `ipcRenderer.send`) is the named Phase 4 residual risk (Validated in Phase 3: Delivery-Path Spike; see `03-FINDINGS.md`)
 
+- ✓ On Windows, screensharing system/app audio does NOT echo the call back to viewers (Bug B / #46) — v1.1 (native WASAPI EXCLUDE-process-tree `.node` addon replacing whole-mix `"loopback"`; verified viewer-side on Windows x64 CI build 19045, runs 27053219078 + 27054703843 — viewer hears desktop audio, no call echo) [ECHO-01/ECHO-02]
+- ✓ Graceful behavior on Windows builds where the per-process API is unavailable — v1.1 (falls back to today's `"loopback"`; `--no-wasapi` A/B confirmed the fallback track stays audible — no crash, no silence) [ECHO-03]
+- ✓ Native capability is clean-room from the public Microsoft `ApplicationLoopback` sample (MIT notice retained, no Discord symbols) — v1.1 [ECHO-04]
+- ✓ Fixes kept minimal and conventional enough to submit upstream, no Linux/macOS regression — v1.1 (surgical additive 3-way `screenshare.ts` gate + `wasapiLoopback.ts` + one `optionalDependencies` line + regenerated IPC; native ships via the prebuilt-`.node` pattern like venbind/patchcord; PR #211 Closes #46) [UPST-02]
+
 ### Active
 
-<!-- This fork's goals for this milestone (v1.1). Hypotheses until shipped and verified on Windows. -->
+<!-- No active milestone. This is a bug-fix fork; Active stays empty between milestones. -->
 
-- [ ] On Windows, screensharing system/app audio does NOT echo the call back to viewers (Bug B / #46) — v1.1 echo fix; approach (native exclude-tree addon vs. user-side workaround vs. hybrid) decided by research
-- [ ] Graceful behavior on Windows builds < 20348 (below the public process-loopback API minimum)
-- [ ] All fixes are kept minimal and conventional enough to submit as upstream PRs (no Linux/macOS regressions)
+(None — v1.1 shipped 2026-06-06. Reopen via `/gsd-new-milestone` if new Windows streaming bugs surface; see WSTRM-01 below.)
 
 ### Out of Scope
 
@@ -56,6 +76,7 @@ On Windows, a user can start a screenshare, cancel the source picker, and start 
 ## Context
 
 - **Brownfield fork.** Upstream is `io.github.milkshiift.GoofCord`. A codebase map already exists in `.planning/codebase/` (ARCHITECTURE, STACK, CONCERNS, etc., mapped 2026-05-28).
+- **Shipped state (after v1.1):** the streaming-fix surface is `screenshare.ts` (exactly-once `finishRequest` teardown + additive 3-way Linux→win32-native→`"loopback"` audio gate), `src/modules/native/wasapiLoopback.ts` (Windows EXCLUDE-tree addon loader + per-share MessageChannel transport), `screensharePatch.ts` (the `getDisplayMedia` swap seam), and one `optionalDependencies` entry for the prebuilt `wasapi-loopback` `.node`. v1.1 added ~558 net source LOC across 11 files. All diagnostic instrumentation was stripped before the PR; the shipped build writes nothing to `screenshare-debug.log`.
 - **Relevant code paths:**
   - `src/windows/screenshare/screenshare.ts` — main-process display-media handler, picker `BrowserWindow`, `activeRequests` map, `selectScreenshareSource` / `refreshScreenshareSources` IPC, cancel path calls `callback({})`.
   - `src/windows/main/renderer/postVencord/screensharePatch.ts` — renderer monkeypatch of `navigator.mediaDevices.getDisplayMedia`; now re-throws cancellation as `NotAllowedError`.
@@ -73,13 +94,16 @@ On Windows, a user can start a screenshare, cancel the source picker, and start 
 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
-| Scope = cancel/re-click bug + Windows audio capture only | Keep the milestone tight and shippable; avoid an open-ended bug campaign | — Pending |
-| Fixes must be upstream-able (PR-ready for main repo) | This fork exists to feed fixes back upstream, not to diverge | — Pending |
-| Verify via Windows x64 CI artifact + manual test | No reliable automated screenshare repro on Windows | — Pending |
-| Build the cancellation-error fix as `NotAllowedError` (already shipped in `710cfde`) | Matches the standard browsers raise on cancellation so Discord ignores it | ⚠️ Revisit — stopped the crash but introduced/exposed the re-click failure |
-| [v1.1] Echo-fix approach (D-06) decided by research, not pre-committed | Genuine native-addon-vs-workaround uncertainty + a verification constraint (dev box is build 19045, below the API minimum) — decide from evidence | — Pending (research-first) |
-| [v1.1] Native exclude-tree path cannot be verified on the maintainer's box | Public process-loopback API needs build ≥ 20348; dev box is Win10 19045 — verification must use Windows CI + a second device, viewer-side, audio playing | — Pending |
-| [v1.1] Delivery-path spike verdict = GO (Phase 3) | Prove PCM → renderer track → `getDisplayMedia` → viewer before any native investment | ✓ GO — `MediaStreamTrackGenerator` works on Chrome 146; renderer swap-seam delivery confirmed viewer-side on Windows CI; Phase 4 owns the main→renderer transport |
+| Scope = cancel/re-click bug + Windows audio capture only | Keep the milestone tight and shippable; avoid an open-ended bug campaign | ✓ Good — both bugs fixed and shipped upstream (#210/#211); milestone stayed tight |
+| Fixes must be upstream-able (PR-ready for main repo) | This fork exists to feed fixes back upstream, not to diverge | ✓ Good — surgical diffs; PRs #210 + #211 opened upstream |
+| Verify via Windows x64 CI artifact + manual test | No reliable automated screenshare repro on Windows | ✓ Good — every fix verified on Windows CI artifacts; echo fix verified viewer-side with a second device |
+| Build the cancellation-error fix as `NotAllowedError` (already shipped in `710cfde`) | Matches the standard browsers raise on cancellation so Discord ignores it | ✓ Good — kept; the re-click failure was a *separate* `finishRequest` teardown race, fixed in Phase 1. `NotAllowedError` itself is correct |
+| [v1.1] Echo-fix approach (D-06) decided by research, not pre-committed | Genuine native-addon-vs-workaround uncertainty + a verification constraint (dev box is build 19045, below the assumed API minimum) — decide from evidence | ✓ Good — native exclude-tree addon chosen; user-side workaround rejected; shipped |
+| [v1.1] Native exclude-tree path cannot be verified on the maintainer's box | Public process-loopback API was assumed to need build ≥ 20348; dev box is Win10 19045 | ✓ Resolved — the 20348 floor was over-stated; the API works on 19041/2004, so the 19045 dev box DID verify it (Windows CI + second device, viewer-side) |
+| [v1.1] Delivery-path spike verdict = GO (Phase 3) | Prove PCM → renderer track → `getDisplayMedia` → viewer before any native investment | ✓ Good — `MediaStreamTrackGenerator` works on Chrome 146; renderer swap-seam delivery confirmed viewer-side on Windows CI; Phase 4 wired the real transport |
+| [v1.1] Native-only scope; user-side separate-output-device workaround NOT a deliverable | User explicitly rejected the workaround for this milestone | ✓ Good — native fix shipped; no workaround needed |
+| [v1.1] Ship the addon as a separate prebuilt-`.node` repo via one `optionalDependencies` line (venbind/patchcord pattern) | Keep the GoofCord-side diff surgical; match the existing native-module convention | ✓ Good — `thomas-quant/wasapi-loopback` (clean-room MIT) with its own windows-latest prebuild CI |
+| [v1.1] Rebuild the WASAPI feeder/transport per share, not reuse it (post-PR fix) | 2nd-share-no-audio regression: a reused feeder went silent on the second share | ✓ Good — fixed (commit `68bfb05`); per-share rebuild restores audio on every share |
 
 ## Evolution
 
@@ -99,4 +123,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-06-02 — Phase 3 (Delivery-Path Spike) complete: GO verdict — MSTG → `getDisplayMedia` → viewer delivery proven on Windows x64 CI (run 26740748142, Chrome 146). Next: Phase 4 (native clean-room exclude-tree addon + integration); main→renderer PCM transport is the carried residual risk.*
+*Last updated: 2026-06-06 after v1.1 milestone — Windows Screenshare Echo Fix SHIPPED. Native WASAPI EXCLUDE-process-tree `.node` addon replaces whole-mix `"loopback"`; verified viewer-side on Windows CI build 19045 (no call echo). Upstream PRs #210 (Wayland) + #211 (Closes #46) open. No active milestone; reopen via `/gsd-new-milestone`.*

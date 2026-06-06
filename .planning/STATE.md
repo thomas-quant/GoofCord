@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Windows Screenshare Echo Fix
 status: milestone_complete
-last_updated: 2026-06-06T07:02:54.530Z
-last_activity: 2026-06-06 -- Milestone complete; post-completion 2nd-share regression fixed + shipped upstream
+last_updated: 2026-06-06T11:00:00.000Z
+last_activity: 2026-06-06 -- v1.1 milestone formally archived (ROADMAP + REQUIREMENTS archived to milestones/, MILESTONES.md + RETROSPECTIVE.md created, tagged v1.1)
 progress:
   total_phases: 5
   completed_phases: 5
@@ -18,10 +18,10 @@ stopped_at: Milestone complete (Phase 05 was final phase)
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-05-30)
+See: .planning/PROJECT.md (updated 2026-06-06)
 
 **Core value:** On Windows, a user can start a screenshare, cancel the source picker, and start again — and the stream works — without the app getting stuck or requiring a restart.
-**Current focus:** Milestone complete
+**Current focus:** No active milestone — v1.0 + v1.1 both shipped (echo fix #46 in PR #211). Reopen with `/gsd-new-milestone` if new Windows streaming bugs surface (WSTRM-01).
 
 ## Current Position
 
@@ -87,10 +87,12 @@ None yet.
 
 [Issues that affect future work]
 
-- ~~The single genuine unknown gates Phase 4: getting natively-captured PCM into Discord's web-client `getDisplayMedia` MediaStream in Electron 41.3.0.~~ **RESOLVED by Phase 3 (GO, 03-03):** the renderer-side delivery path (MSTG reconstruction → getDisplayMedia swap seam → viewer) is proven on the Windows x64 CI artifact. The REMAINING half — the main→renderer PCM transport — is now the explicit Phase 4 residual risk: use chunked ArrayBuffer/transferable (MessagePort) transport, NEVER per-frame `ipcRenderer.send` of raw PCM (ARCHITECTURE.md:250-253).
-- Verification is MANUAL on a Windows x64 CI artifact (`.github/workflows/testBuild.yml`) — no automated screenshare repro. The echo check needs a SECOND device/account as viewer, with non-call audio actively playing (WASAPI loopback yields silence on idle; streamer cannot self-verify — Electron mutes local echo). Diagnostics go to userData `screenshare-debug.log`, not DevTools (60% keyboard, no F12).
-- Exclude target = GoofCord/Electron root PID (`process.pid`) via `app.getAppMetrics()` so the separate Audio Service child is covered; confirm the parent/child relationship on Electron 41.3.0 from logged metrics on the first CI artifact.
-- Clean-room boundary LOCKED (D-05): public Microsoft ApplicationLoopback sample only (MIT, retain notice), never Discord code/symbols. Hardcode fixed WAVEFORMATEX (no GetMixFormat on the loopback device); dynamic LoadLibrary/GetProcAddress load (not static link) so the `.node` loads everywhere and activates selectively.
+All v1.1 blockers resolved at milestone close — none carried forward:
+
+- ~~PCM → `getDisplayMedia` MediaStream delivery in Electron 41.3.0~~ — RESOLVED (Phase 3 GO; per-share MessageChannel transport + MSTG, verified viewer-side).
+- ~~Exclude target = root Electron PID covers the Audio Service child~~ — CONFIRMED on hardware (root 19076, Audio Service 12280 in its `app.getAppMetrics()` subtree; `05-VERIFICATION.md`).
+- ~~Clean-room boundary~~ — HELD (public Microsoft `ApplicationLoopback` sample only, MIT notice retained, zero Discord symbols).
+- Verification remains MANUAL on a Windows x64 CI artifact (no automated screenshare repro; echo check needs a second device, audio playing) — relevant again only if a future milestone touches streaming.
 
 ## Deferred Items
 
