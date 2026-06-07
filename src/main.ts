@@ -64,7 +64,7 @@ function setFlags() {
 		// Prevent app unloading when backgrounded
 		switches.set("disable-renderer-backgrounding", null);
 		switches.set("disable-background-timer-throttling", null);
-		switches.set("disable-disable-backgrounding-occluded-windows", null);
+		switches.set("disable-backgrounding-occluded-windows", null);
 	}
 
 	if (getConfig("performanceFlags")) {
