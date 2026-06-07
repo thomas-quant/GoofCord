@@ -71,12 +71,14 @@ On Windows, a user can start a screenshare, cancel the source picker, and start 
 
 ### Active
 
-<!-- v1.2 investigation milestone — these are satisfied by a FINDINGS verdict, not an implementation. -->
+<!-- v1.2 investigation milestone — all four verdicts landed 2026-06-07. Satisfied by FINDINGS docs, not implementations. -->
 
-- [ ] **INV-01**: Encryption-hardening viability assessment — Phase 6 (`06-FINDINGS.md`)
-- [ ] **INV-02**: Keybinds non-alphanumeric viability assessment — Phase 7 (`07-FINDINGS.md`)
-- [ ] **INV-03**: Deafen/mute mechanism recon — Phase 8 (`08-FINDINGS.md`)
-- [ ] **INV-04**: Resource-usage / Electron-optimization viability assessment — Phase 9 (`09-FINDINGS.md`)
+- [x] **INV-01**: Encryption-hardening viability assessment — **NO-GO** (crypto already sound; secrets are safeStorage/DPAPI ciphertext, not plaintext). Optional S micro-PR: `cloudToken`→`encrypted:true`. Phase 6 (`06-FINDINGS.md`).
+- [x] **INV-02**: Keybinds non-alphanumeric viability assessment — **GO (S)**. Root cause = `String.fromCharCode(domKeyCode)` in `preload/keybinds.ts:53` (not venbind); ~15-line pure-TS map. Phase 7 (`07-FINDINGS.md`).
+- [x] **INV-03**: Deafen/mute mechanism recon — **NO-GO** (inherited Discord-web/Chromium ducking; GoofCord touches no audio graph). Phase 8 (`08-FINDINGS.md`).
+- [x] **INV-04**: Resource-usage / Electron-optimization viability assessment — **DEFER/AVOID** (thin shell; renderer dominates; Windows spends resources by design). Safe win: measure-first baseline (S). Byproduct bug: `main.ts:67` flag typo (S, streaming-correctness). Phase 9 (`09-FINDINGS.md`).
+
+**v1.2 outcome:** 2 surgical upstream-able fixes (INV-02 keybinds, INV-04 `main.ts` typo) + 1 optional micro-PR (INV-01 `cloudToken`) → candidates for a small **v1.3** build milestone. INV-01-main and INV-03 are closed (nothing to build).
 
 ### Out of Scope
 
@@ -117,6 +119,10 @@ On Windows, a user can start a screenshare, cancel the source picker, and start 
 | [v1.1] Native-only scope; user-side separate-output-device workaround NOT a deliverable | User explicitly rejected the workaround for this milestone | ✓ Good — native fix shipped; no workaround needed |
 | [v1.1] Ship the addon as a separate prebuilt-`.node` repo via one `optionalDependencies` line (venbind/patchcord pattern) | Keep the GoofCord-side diff surgical; match the existing native-module convention | ✓ Good — `thomas-quant/wasapi-loopback` (clean-room MIT) with its own windows-latest prebuild CI |
 | [v1.1] Rebuild the WASAPI feeder/transport per share, not reuse it (post-PR fix) | 2nd-share-no-audio regression: a reused feeder went silent on the second share | ✓ Good — fixed (commit `68bfb05`); per-share rebuild restores audio on every share |
+| [v1.2] Run the 4 candidate ideas as parallel investigate-only spikes (lean shell, no plan/execute loops) | User wanted viability triage with minimal ceremony; ideas are independent | ✓ Good — 4 verdicts landed in one parallel pass; surfaced 2 actionable upstream fixes + killed 2 non-starters cheaply |
+| [v1.2/INV-02] Keybinds bug is GoofCord's `String.fromCharCode(domKeyCode)`, NOT venbind | Investigation traced the full path; venbind correctly Unicode-matches the physical key | ✓ Fix is a ~15-line pure-TS keyCode→char map in `preload/keybinds.ts` — most upstream-able item |
+| [v1.2/INV-01] No encryption-hardening milestone | Secrets already safeStorage/DPAPI-encrypted at rest (verified on real config); crypto is correct | ✓ NO-GO; only `cloudToken`→`encrypted:true` is a defensible 1-line PR |
+| [v1.2/INV-04] No general "optimize Electron" milestone | Thin shell over Discord web; renderer dominates; Windows un-throttles on purpose for streaming | ✓ DEFER; but found a real `main.ts:67` flag typo (silent no-op) worth a streaming-correctness fix |
 
 ## Evolution
 
@@ -136,4 +142,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-06-07 — opened milestone **v1.2 Feature Viability Investigations** (investigate-only triage of 4 candidate improvements: encryption hardening, keybinds non-alphanumeric, deafen/mute recon, resource usage). Phases 6-9 run as parallel spikes, each producing a FINDINGS verdict; no feature code ships. v1.0 + v1.1 remain shipped (PRs #210/#211).*
+*Last updated: 2026-06-07 — **v1.2 Feature Viability Investigations COMPLETE.** 4 parallel spikes landed verdicts: INV-02 keybinds **GO** (preload `String.fromCharCode` bug, ~15-line pure-TS fix, most upstream-able), INV-04 **DEFER** but found a `main.ts:67` flag-typo streaming fix, INV-01 **NO-GO** (crypto already sound; optional `cloudToken` micro-PR), INV-03 **NO-GO** (inherited web behaviour). Next: decide v1.3 build scope from the GO/byproduct items. v1.0 + v1.1 remain shipped (PRs #210/#211).*

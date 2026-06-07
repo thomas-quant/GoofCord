@@ -11,11 +11,13 @@
 
 ## v1.2 Requirements
 
-### Investigations
-- [ ] **INV-01**: Viability assessment — **encryption hardening**. Audit message-encryption password handling + config-at-rest storage (`safeStorage`, StegCloak, cloud encryption); identify any effectively-plaintext exposure (or rule it out); survey a more-secure path. Verdict + tech-debt estimate.
-- [ ] **INV-02**: Viability assessment — **keybinds, non-alphanumeric keys**. Root-cause why `venbind` 0.1.7 fails on keys like `]` `;` on Windows; compare patch-venbind vs. alternative-library vs. accept. Verdict + tech-debt estimate. *(Most upstream-able.)*
-- [ ] **INV-03**: Mechanism recon — **deafen/mute**. Explain why GoofCord shows speaker attenuation when deafened (differs from native); locate the responsible layer across GoofCord / Vencord / Discord-web. Findings + whether anything is actionable. *(Curiosity / lightest.)*
-- [ ] **INV-04**: Viability assessment — **resource usage / Electron optimization**. Survey realistic memory/CPU/process-model/V8/throttling optimizations for this Electron app; label safe vs. risky. Prioritized verdict + tech-debt estimate.
+### Investigations — all complete (verdicts landed 2026-06-07)
+- [x] **INV-01** — encryption hardening → **NO-GO**. Secrets are already `safeStorage`/DPAPI ciphertext at rest (verified on the real on-disk config), not plaintext; StegCloak path uses Argon2 + AEAD, cloud uses scrypt+AES-256-GCM. Only optional item: one **S** micro-PR marking `cloudToken` `encrypted: true` (the sole cleartext secret, guards an already-E2E blob). See `06-FINDINGS.md`.
+- [x] **INV-02** — keybinds non-alphanumeric → **GO (S)**. Root cause is **GoofCord's own preload glue, not venbind**: `src/windows/main/preload/keybinds.ts:53` builds the shortcut with `String.fromCharCode(domKeyCode)`, which yields Latin-1 garbage for OEM keys (`]`221→`ý`, `;`186→`º`). Fix = ~15-line DOM-keyCode→char map, pure-TS, no native fork, most upstream-able. See `07-FINDINGS.md`.
+- [x] **INV-03** — deafen/mute recon → **NO-GO**. Inherited Discord-web-in-Chromium behaviour (Windows "communications" auto-ducking that native Discord's C++ engine bypasses + web gain-ramp); GoofCord touches **zero** audio-graph code. Curiosity satisfied; nothing to build. See `08-FINDINGS.md`.
+- [x] **INV-04** — resource usage / Electron optimization → **mostly DEFER/AVOID**. Thin shell; renderer dominates; Windows deliberately spends resources to keep streams alive (mission). Only safe win: **measure-first** Windows RAM/CPU baseline (**S**). **Byproduct bug found:** `src/main.ts:67` flag typo `disable-disable-backgrounding-occluded-windows` (should be `disable-backgrounding-occluded-windows`) — a silent no-op; fixing it is a streaming-stability correctness fix (**S**, upstream-able). See `09-FINDINGS.md`.
+
+**Milestone outcome:** 2 surgical upstream-able fixes surfaced (INV-02 keybinds + INV-04's `main.ts` typo), 1 optional micro-PR (INV-01 `cloudToken`), 2 clean "nothing to build" closes (INV-01 main, INV-03). Greenlit items → v1.3 build milestone.
 
 ## Future Requirements
 - Build milestones for whichever INV-* return GO (v1.3+). Scope TBD by the findings.

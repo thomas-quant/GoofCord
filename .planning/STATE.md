@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: Feature Viability Investigations
-status: planning
+status: milestone_complete
 last_updated: "2026-06-07T05:07:45.060Z"
-last_activity: 2026-06-07
+last_activity: 2026-06-07 — v1.2 investigations complete; 4 verdicts landed (2 GO/byproduct fixes, 2 NO-GO)
 progress:
   total_phases: 4
-  completed_phases: 0
+  completed_phases: 4
   total_plans: 0
   completed_plans: 0
-  percent: 0
+  percent: 100
 ---
 
 # Project State
@@ -24,10 +24,12 @@ See: .planning/PROJECT.md (updated 2026-06-06)
 
 ## Current Position
 
-Phase: Not started (defining requirements)
+Phase: 06-09 (all complete)
 Plan: —
-Status: Defining requirements
-Last activity: 2026-06-07 — Milestone v1.2 started
+Status: v1.2 investigations complete — 4/4 verdicts landed; awaiting v1.3 greenlight decision
+Last activity: 2026-06-07 — 4 parallel spikes ran; FINDINGS docs written for INV-01..04
+
+Progress: [██████████] 100% (v1.2 phases 6-9: 4/4 investigation verdicts landed)
 
 ## Performance Metrics
 
@@ -69,6 +71,12 @@ Last activity: 2026-06-07 — Milestone v1.2 started
 Decisions are logged in PROJECT.md Key Decisions table.
 Recent decisions affecting current work:
 
+- [v1.2 verdicts, 2026-06-07] Four parallel investigation spikes landed:
+  - **INV-01 encryption → NO-GO.** Secrets are safeStorage/DPAPI ciphertext at rest (verified on real `%APPDATA%/goofcord/.../settings.json`); StegCloak = Argon2+AEAD; cloud = scrypt+AES-256-GCM. Only `cloudToken` is plaintext (guards an already-E2E blob) → optional S micro-PR `encrypted:true`. (`06-FINDINGS.md`)
+  - **INV-02 keybinds → GO (S).** Root cause is GoofCord's own `String.fromCharCode(domKeyCode)` at `src/windows/main/preload/keybinds.ts:53` (OEM keyCodes 186-222 → Latin-1 garbage, e.g. `]`221→`ý`), NOT venbind (which Unicode-matches the physical key correctly). Fix = ~15-line keyCode→char map, pure-TS, ships via ts-out preload (confirmed not a fetched bundle), most upstream-able. (`07-FINDINGS.md`)
+  - **INV-03 deafen/mute → NO-GO.** Inherited Discord-web-in-Chromium behaviour: Windows "communications" auto-ducking (native Discord's C++ engine bypasses it; the Electron WebRTC path can't) + web gain-ramp. GoofCord touches zero audio-graph code. Nothing to build. (`08-FINDINGS.md`)
+  - **INV-04 resource usage → DEFER/AVOID.** Thin shell; renderer dominates; Windows deliberately un-throttles for streaming. Safe win = measure-first baseline (S). **Byproduct bug:** `src/main.ts:67` `disable-disable-backgrounding-occluded-windows` is a typo (real flag drops one `disable-`) → silent no-op; fixing it is a streaming-stability correctness fix (S, upstream-able; Vesktop has the correct name). (`09-FINDINGS.md`)
+  - **v1.3 candidates:** INV-02 keybinds fix + INV-04 `main.ts` typo fix (both surgical, upstream-able, streaming-adjacent) + optional INV-01 `cloudToken`.
 - [Roadmap v1.1]: Phase shape = spike (3) → native addon + integration (4) → verification + upstream PR (5). Spike gates the native investment.
 - [Roadmap v1.1]: ECHO-01..04 owned by Phase 4; UPST-02 owned by Phase 5; Phase 3 owns no requirement (de-risk gate).
 - [03-03]: **Phase 3 delivery-path spike verdict = GO** (03-FINDINGS.md). `MediaStreamTrackGenerator` (Insertable Streams) is CONFIRMED present + working on Electron 41.3.0 / Chrome 146 (resolves A1/A2); a renderer-reconstructed synthetic audio track swapped at `screensharePatch.ts:79-84` was heard by a second-device viewer on Windows x64 CI artifact (run 26740748142). Proven path: renderer MSTG reconstruction → getDisplayMedia swap seam → RTCPeerConnection → viewer. KEEP the MSTG/Web-Audio reconstruction + swap seam as the Phase 4 seed; THROW AWAY the synthetic beep generator + getStats poll. The main→renderer PCM transport is the named Phase 4 residual risk (chunked transferables, NEVER per-frame ipcRenderer.send — ARCHITECTURE.md:250-253). `getStats` showed audioSenders=0 (Pitfall 4: Discord uses replaceTrack on a pre-created transceiver, not addTrack) — an instrumentation blind spot, NOT a delivery failure; viewer-audible is the dispositive ground truth.
