@@ -1,6 +1,6 @@
 # KEY-01 Handoff — Non-Alphanumeric Global Keybinds (Windows)
 
-> **Status:** fix committed (`7103149`), map **confirmed correct vs. ground truth**, but **NOT yet validated end-to-end**. The first Windows test used the wrong build base and produced a misleading result. This doc is the continuation brief for the next agent.
+> **Status:** fix committed (`7103149`), map **confirmed correct vs. ground truth**, and the **primary win is user-CONFIRMED**: with the fix, non-alphanumeric keybinds (e.g. `]`, Ctrl-combos) **now register and fire when GoofCord is focused** — they did **not** before. **This is the success and must be preserved (do not regress it).** Still **un**validated: the **out-of-focus / global** firing path (broke on the wrong test base). This doc is the continuation brief for the next agent.
 >
 > **CLEAN-ROOM (hard rule):** the fix's keyCode→char map is grounded in the **public DOM `KeyboardEvent.keyCode` standard** (Chromium legacy values) that Discord-web rides on. Discord's own source / keycode tables were **NOT** consulted or copied — only the user's own persisted `localStorage["keybinds"]` values were *observed* as confirmation (standard DOM integers, not Discord IP). **Keep all Discord-internals investigation OUT of the repo / commits / PRs.**
 
@@ -10,9 +10,11 @@
 
 **File:** `src/windows/main/preload/keybinds.ts` (ships via `preload.mts` → `ts-out/`; it is NOT one of the upstream-fetched renderer bundles, so it runs in packaged builds).
 
-**Pre-fix defect** (`getActiveKeybinds`): the shortcut string registered with venbind was built with `String.fromCharCode(domKeyCode)`. That is an *accidental identity* for ASCII-aligned keyCodes (digits 48–57, letters 65–90) but produces **Latin-1 garbage** for OEM/punctuation keyCodes 186–222 (e.g. `221 "]" → "Ý"`, `188 "," → "¼"`). venbind matches the **physical key's character** (libuiohook `keycode_to_unicode`, lowercased), so a punctuation bind registered as `ý`/`¼` never matched the pressed `]`/`,` → **silently never fired** (global path only — see §3).
+**Pre-fix defect** (`getActiveKeybinds`): the shortcut string registered with venbind was built with `String.fromCharCode(domKeyCode)`. That is an *accidental identity* for ASCII-aligned keyCodes (digits 48–57, letters 65–90) but produces **Latin-1 garbage** for OEM/punctuation keyCodes 186–222 (e.g. `221 "]" → "Ý"`, `188 "," → "¼"`). venbind matches the **physical key's character** (libuiohook `keycode_to_unicode`, lowercased), so a punctuation bind registered as `ý`/`¼` never matched the pressed `]`/`,` → **silently never fired** (affects focused keybinds too — see §3).
 
 **Fix (commit `7103149`):** added an `OEM_KEYCODE_CHARS` map (186–222 → literal char) + `keyCodeToChar()`, and swapped the `String.fromCharCode` call. Alphanumerics keep the `String.fromCharCode` fallback unchanged.
+
+**User-confirmed result:** with the fix, non-alphanumeric keybinds (`]`, Ctrl-combos) **register and fire when GoofCord is focused** — previously they did not. So the fix's registration string feeds the path that fires keybinds *even when focused* (see §3 — Discord runs in desktop/embedded mode and relies on venbind, not its own browser listeners). **Preserve this.**
 
 ## 2. Ground truth (clean-room) — the map is CORRECT
 
@@ -30,23 +32,25 @@
 - The public DOM keyCode table (verified, CSS-Tricks / standard Chromium values) matches the fix's `OEM_KEYCODE_CHARS` **exactly** for 186–222: `186;` `187=` `188,` `189-` `190.` `191/` `192\`` `219[` `220\` `221]` `222'`.
 - **So the fix's map is right** for printable punctuation on a US layout.
 
-## 3. Why the first Windows test was MISLEADING (read this before re-testing)
+## 3. Corrected model — focused vs out-of-focus (SUPERSEDES an earlier wrong claim)
 
-The fix **only** affects the **out-of-focus / global (venbind)** registration string. Path facts:
-- `src/modules/native/venbind.ts:38` — the venbind callback **returns early when `mainWindow.isFocused()`** (non-Wayland). So **when GoofCord is focused, Discord handles the real keypress natively** — venbind, and therefore this fix, is *not involved*.
-- venbind parser `tuxinal/venbind` `src/structs.rs::from_string` **splits only on `+`**; every non-modifier piece goes into a key set. A punctuation bind (`,`, `]`) therefore **cannot** corrupt the batch or collide with a delimiter (only a literal `+` key could).
+> An earlier draft claimed "focused keybinds are Discord-native, so the fix doesn't touch them." **That was WRONG.** The user confirmed the fix changes focused behavior. Corrected model below — do not revert to the old framing.
 
-Mapping the user's observations onto these facts:
-- **"Focused: `]` works, `,`/`.` fail"** → that's **Discord-native** behavior; the fix doesn't touch the focused path, so this says nothing about the fix.
-- **"Global keybinds completely broke, incl. alphanumeric"** → **cannot be caused by the fix**: alphanumeric strings are byte-identical to before, and the parser can't be corrupted by a punctuation bind. This is a **build-base / runtime artifact** of the isolated test build (see below), not the fix.
+- `preVencord/patches/keybinds.ts` forces Discord into **desktop/embedded mode** (`isPlatformEmbedded`/`isDesktop → true`). In that mode Discord does **not** run its own browser keybind listeners — it expects the "native client" to capture global keybinds and feed them in. Here that client is **venbind**, dispatched into Discord via `keybinds:trigger` → synthetic `KeyboardEvent` (`keybinds.ts:117`).
+- **Therefore the registration string this fix corrects is on the firing path even for *focused* keybinds** — which is exactly why fixing it made `]` / Ctrl-combos register and fire while focused. This is the **confirmed win — preserve it.**
+- venbind parser (`tuxinal/venbind` `src/structs.rs::from_string`) **splits only on `+`**; a punctuation key (`,`, `]`) cannot corrupt the batch (only a literal `+` key could).
 
-**Test base mistake:** the isolated build was branched off **`origin/main`** (cancel-fix base) — `test/win-keybind-flag-fixes`, CI run `27084274815` (success). Global venbind capture appears **non-functional on that base** for a still-unknown reason → the fix got **no valid end-to-end test**.
+Re-reading the user's observations correctly:
+- **Focused, with fix: `]` and Ctrl-combos now register/fire (didn't before)** → ✅ the fix working as intended. **Preserve.** *(The earlier "`,`/`.` failed focused" needs per-key re-verification — likely a test artifact or a key-specific quirk, NOT a refutation; the map values for 188=`,` / 190=`.` are confirmed correct vs ground truth.)*
+- **Out-of-focus / global: "broke, incl. alphanumeric"** → this is the **still-unvalidated path**, and it **cannot be the map** (alphanumeric strings are byte-identical to pre-fix; the parser can't be corrupted by punctuation). Most likely the focus-gate at `venbind.ts:38` and/or the wrong build base.
 
-### ⚠️ OPEN QUESTION (resolve first)
-Why did **global** keybind capture fail (for *all* keys) on the `origin/main`-based build? Hypotheses to check on the **dev/release base**:
-1. venbind `.node` didn't load/capture on that base (check the `[Venbind] Loaded venbind` log / `defineErrorHandle` output).
-2. The reverse `keybinds:trigger` → synthetic `KeyboardEvent` path (keybinds.ts:117) — note it dispatches with `keyCode` only, not `key`/`code`; modern Discord may key off `key`/`code`.
-3. Test methodology (binds not actually saved, app instance/lock, etc.).
+**Wrong test base:** the isolated build was off **`origin/main`** (`test/win-keybind-flag-fixes`, CI run `27084274815`). Re-validate the **global/out-of-focus** path on the **dev/release base**.
+
+### ⚠️ OPEN QUESTION (resolve next, without regressing the focused win)
+Confirm out-of-focus firing works with the fix, and pin the mechanism:
+1. `venbind.ts:38` focus-gate (`if (!isWayland && mainWindow.isFocused()) return;`) — does `isFocused()` reflect real focus? Does the synthetic path run when genuinely unfocused? (This gate is the prime suspect for "global broke.")
+2. venbind `.node` load/capture (`[Venbind] Loaded venbind` log / `defineErrorHandle` output).
+3. Reverse `keybinds:trigger` synthetic `KeyboardEvent` (`keybinds.ts:117`) dispatches `keyCode` only (no `key`/`code`) — verify Discord still matches modern builds.
 
 ## 4. Known remaining gaps (document, don't silently ship)
 
@@ -58,7 +62,7 @@ Why did **global** keybind capture fail (for *all* keys) on the `origin/main`-ba
 
 1. **Automated tests (assigned to you).** Use Bun's built-in runner (`bun test`, **no new deps**). Extract the pure logic out of `getActiveKeybinds` into a testable module (suggested `src/windows/main/preload/keybindShortcut.ts`) exporting e.g. `parseDiscordShortcut(shortcut: number[][]): { shortcut: string; mainKeyCode: number | undefined; ctrl: boolean; alt: boolean; shift: boolean }` plus `keyCodeToChar`. Refactor `keybinds.ts` to consume it (keep `eventSettings.keyCode = mainKeyCode`). Drive tests from the **real ground-truth cases in §2** (e.g. `[[0,190,4]]→"."`, `[[0,188,4]]→","`, `[[0,17,4],[0,192,4]]→"ctrl+\`"`, `[[0,18,4],[0,67,4]]→"alt+c"`, `[[0,221,4]]→"]"`). Add the named-key cases as `expect.fail`/TODO until §4 is implemented.
 2. **Extend the map to named keys** (§4) — keyCode→venbind-name; verify names against venbind `windows.rs`.
-3. **Validate on the DEV/RELEASE base** (not `origin/main`): build via `testBuild.yml` on a branch off the dev branch (where the user's real release works), user binds **one** punctuation key + tests it **unfocused**. Resolve the §3 open question. (Minimize tedium: one key, one global press.)
+3. **Validate on the DEV/RELEASE base** (not `origin/main`): build via `testBuild.yml` on a branch off the dev branch (where the user's real release works). **Two success criteria:** (a) **REGRESSION GUARD** — non-alpha keybinds (`]`, Ctrl-combos) still register/fire when **focused** (the confirmed win — must not break); (b) the same keybinds now also fire **out-of-focus** (the §3 open question). Minimize tedium: one punctuation key, test once focused + once unfocused.
 4. Only then decide release inclusion.
 
 ## 6. State / pointers
