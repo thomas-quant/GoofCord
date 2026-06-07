@@ -1,49 +1,39 @@
 # Roadmap: GoofCord — Windows Streaming Fixes (Fork)
 
-## Shipped Milestones
+## Shipped / Completed Milestones
 - ✅ **v1.0 Windows Streaming Fixes** — Phases 1-2 (2026-05-30)
 - ✅ **v1.1 Windows Screenshare Echo Fix (#46)** — Phases 3-5 (2026-06-06) → [archive](milestones/v1.1-ROADMAP.md)
+- ✅ **v1.2 Feature Viability Investigations** — Phases 6-9 (2026-06-07), investigate-only triage → [archive](milestones/v1.2-ROADMAP.md). 4 verdicts: INV-02 keybinds GO, INV-04 found a `main.ts` flag typo, INV-01 + INV-03 NO-GO.
 
 Upstream PRs: #210 (Wayland xdg-portal-cancel re-open) · #211 (Windows echo fix, Closes #46).
 
-## Active Milestone: v1.2 — Feature Viability Investigations
+## Active Milestone: v1.3 — Small Upstream-able Fixes
 
-**Type:** Investigation / triage — **no feature code ships.** Each phase is an independent spike that produces a `FINDINGS.md` with a GO / NO-GO / DEFER verdict + tech-debt estimate. Greenlit ideas become their own build milestones (v1.3+).
+**Type:** Build. Two surgical, upstream-able fixes promoted from the v1.2 investigations, plus one optional stretch. Independent files (no inter-phase dependency). Keybinds + flag-typo verification is manual on a Windows x64 CI artifact.
 
-**Parallelism:** Phases 6-9 have no inter-dependencies and are run concurrently (one spike agent each).
+| # | Phase | REQ | Touches |
+|---|-------|-----|---------|
+| 10 | Keybinds Non-Alphanumeric Fix | KEY-01 | `src/windows/main/preload/keybinds.ts` |
+| 11 | Occluded-Window Flag Typo Fix | STREAM-05 | `src/main.ts` |
+| 12 | cloudToken Encryption *(stretch, optional)* | SEC-01 | `src/settingsSchema.ts` |
 
-| # | Phase | REQ | Deliverable |
-|---|-------|-----|-------------|
-| 6 | Encryption Hardening Investigation | INV-01 | `06-FINDINGS.md` |
-| 7 | Keybinds Non-Alphanumeric Investigation | INV-02 | `07-FINDINGS.md` |
-| 8 | Deafen/Mute Mechanism Recon | INV-03 | `08-FINDINGS.md` |
-| 9 | Resource Usage / Electron Optimization Investigation | INV-04 | `09-FINDINGS.md` |
-
-### Phase 6 — Encryption Hardening Investigation (INV-01)
-**Goal:** Determine whether GoofCord's encryption / secret handling has a meaningful weakness worth fixing, and whether a stronger approach is viable without unupstreamable divergence.
+### Phase 10 — Keybinds Non-Alphanumeric Fix (KEY-01)
+**Goal:** Global keybinds bound to OEM/punctuation keys register and fire on Windows.
 **Success criteria:**
-1. Current message-encryption password + config-at-rest mechanism documented (files + flow).
-2. Any effectively-plaintext exposure identified — or ruled out — with evidence.
-3. Stronger-path options surveyed with tech-debt cost + upstream-ability.
-4. GO / NO-GO / DEFER verdict + recommended next step.
+1. `keybinds.ts` feeds venbind the literal key char (e.g. `]`, `;`) instead of `String.fromCharCode(keyCode)` garbage.
+2. Existing alphanumeric binds still work (no regression).
+3. `bun run check` passes; manual Windows CI verification of a `Ctrl+]` / `;` bind firing.
 
-### Phase 7 — Keybinds Non-Alphanumeric Investigation (INV-02)
-**Goal:** Find the root cause of `venbind` failing on non-alphanumeric keys on Windows and decide patch-vs-replace-vs-accept.
+### Phase 11 — Occluded-Window Flag Typo Fix (STREAM-05)
+**Goal:** The intended `disable-backgrounding-occluded-windows` Chromium switch is actually applied on Windows.
 **Success criteria:**
-1. Root cause located (venbind native layer vs. GoofCord glue vs. Discord-web layer).
-2. Patch-venbind, alternative-library, and accept-as-is options compared with tech-debt + upstream-ability.
-3. GO / NO-GO / DEFER verdict + recommended next step.
+1. `src/main.ts:67` uses the correct flag name (single `disable-`).
+2. No change to the other two Windows anti-backgrounding switches.
+3. `bun run check` passes; flag verified present in the launched switch set.
 
-### Phase 8 — Deafen/Mute Mechanism Recon (INV-03)
-**Goal:** Explain the speaker-attenuation-when-deafened behavior and locate the responsible layer.
+### Phase 12 — cloudToken Encryption (SEC-01) *(stretch / optional)*
+**Goal:** The only cleartext secret (`cloudToken`) is encrypted at rest.
 **Success criteria:**
-1. Mechanism traced across GoofCord / Vencord / Discord-web.
-2. Whether the behavior is GoofCord-caused or inherited is settled with evidence.
-3. Whether anything is actionable (and if so, where) stated clearly.
-
-### Phase 9 — Resource Usage / Electron Optimization Investigation (INV-04)
-**Goal:** Produce a realistic, prioritized list of resource optimizations for this Electron app with safe-vs-risky labeling.
-**Success criteria:**
-1. Current resource posture characterized (process model, Chromium flags, known costs).
-2. Concrete optimization opportunities surveyed (memory / CPU / V8 / throttling / process model) with tech-debt + regression risk.
-3. Prioritized GO / DEFER list + recommended next step.
+1. `cloudToken` carries `encrypted: true` and round-trips through the existing `ENC:`/`PLAIN:` machinery.
+2. Verified the token is not read before `decryptSettings()`; existing-plaintext-token migration is graceful.
+3. Only proceeds with explicit user go-ahead (deferred by default).

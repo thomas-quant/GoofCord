@@ -1,16 +1,16 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.2
-milestone_name: Feature Viability Investigations
-status: milestone_complete
-last_updated: "2026-06-07T05:07:45.060Z"
-last_activity: 2026-06-07 — v1.2 investigations complete; 4 verdicts landed (2 GO/byproduct fixes, 2 NO-GO)
+milestone: v1.3
+milestone_name: Small Upstream-able Fixes
+status: in_progress
+last_updated: "2026-06-07T05:31:59.115Z"
+last_activity: 2026-06-07 — v1.3 opened (build) from v1.2 GO/byproduct items; implementing KEY-01 + STREAM-05
 progress:
-  total_phases: 4
-  completed_phases: 4
+  total_phases: 3
+  completed_phases: 0
   total_plans: 0
   completed_plans: 0
-  percent: 100
+  percent: 0
 ---
 
 # Project State
@@ -20,16 +20,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-06-06)
 
 **Core value:** On Windows, a user can start a screenshare, cancel the source picker, and start again — and the stream works — without the app getting stuck or requiring a restart.
-**Current focus:** v1.2 — Feature Viability Investigations (investigate-only). Four parallel spikes (Phases 6-9) assess encryption hardening, keybinds non-alphanumeric, deafen/mute, and resource usage; each lands a GO/NO-GO/DEFER verdict. No feature code ships.
+**Current focus:** v1.3 — Small Upstream-able Fixes (build). KEY-01 keybinds non-alphanumeric fix (`preload/keybinds.ts:53`) + STREAM-05 occluded-window flag typo (`main.ts:67`), promoted from the v1.2 investigations. SEC-01 `cloudToken` is an optional deferred stretch. Keybind/flag verification is manual on a Windows x64 CI artifact.
 
 ## Current Position
 
-Phase: 06-09 (all complete)
+Phase: 10-11 (implementing)
 Plan: —
-Status: v1.2 investigations complete — 4/4 verdicts landed; awaiting v1.3 greenlight decision
-Last activity: 2026-06-07 — 4 parallel spikes ran; FINDINGS docs written for INV-01..04
-
-Progress: [██████████] 100% (v1.2 phases 6-9: 4/4 investigation verdicts landed)
+Status: v1.3 build — applying KEY-01 + STREAM-05 fixes
+Last activity: 2026-06-07 — v1.3 shell opened; implementing the two surgical fixes
 
 ## Performance Metrics
 

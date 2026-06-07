@@ -2,6 +2,24 @@
 
 Entries in reverse chronological order — newest first.
 
+## v1.2 Feature Viability Investigations (Completed: 2026-06-07)
+
+**Delivered:** A four-idea viability triage — investigate-only, no feature code. Four independent spikes ran in parallel, each producing a `FINDINGS.md` with a GO/NO-GO/DEFER verdict + tech-debt estimate. Lean shell by design (no roadmapper/research agents, no plan/execute/verify loops).
+
+**Phases completed:** 6-9 (4 investigation spikes, 0 plans — investigation milestone).
+
+**Verdicts:**
+- **INV-01 Encryption hardening → NO-GO.** Verified against the real on-disk config: secrets are `safeStorage`/DPAPI ciphertext, not plaintext; StegCloak = Argon2+AEAD; cloud = scrypt+AES-256-GCM. Only `cloudToken` is cleartext (guards an already-E2E blob) → optional 1-line micro-PR.
+- **INV-02 Keybinds non-alphanumeric → GO (S).** Root cause is GoofCord's own `String.fromCharCode(domKeyCode)` at `preload/keybinds.ts:53` (not venbind). ~15-line pure-TS fix, most upstream-able. → **v1.3 KEY-01.**
+- **INV-03 Deafen/mute → NO-GO.** Inherited Discord-web-in-Chromium behaviour (Windows comms auto-ducking + web gain-ramp); GoofCord touches no audio-graph code.
+- **INV-04 Resource usage → DEFER/AVOID.** Thin shell; renderer dominates; Windows un-throttles by design for streaming. **Byproduct bug found:** `main.ts:67` flag typo `disable-disable-backgrounding-occluded-windows` (silent no-op). → **v1.3 STREAM-05.**
+
+**Outcome:** 2 surgical upstream-able fixes promoted to v1.3 + 1 optional micro-PR; 2 clean "nothing to build" closes. Cost: one parallel spike pass.
+
+**What's next:** v1.3 — Small Upstream-able Fixes (KEY-01 keybinds + STREAM-05 flag typo).
+
+---
+
 ## v1.1 Windows Screenshare Echo Fix (Shipped: 2026-06-06)
 
 **Delivered:** The Windows screenshare echo fix (upstream #46) — native WASAPI per-process-tree EXCLUDE loopback that captures the whole endpoint mix except GoofCord's own Electron process tree, replacing Chromium's whole-mix `"loopback"` so remote viewers no longer hear the call echoed back.

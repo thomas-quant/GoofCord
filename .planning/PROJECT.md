@@ -19,17 +19,16 @@ On Windows, a user can start a screenshare, cancel the source picker, and start 
 
 **Upstream PRs open:** #211 (Windows echo fix, Closes #46) and #210 (Wayland xdg-portal-cancel re-open). The native addon ships as a separate prebuilt-`.node` repo (`thomas-quant/wasapi-loopback`, MIT, clean-room) consumed via one `optionalDependencies` line — the venbind/patchcord pattern.
 
-## Current Milestone: v1.2 — Feature Viability Investigations
+## Current Milestone: v1.3 — Small Upstream-able Fixes
 
-**Goal:** For four candidate improvements, determine whether each is worth building — via codebase analysis + a survey of maintained libraries/OSS/upstream options + a tech-debt cost estimate — and land a GO / NO-GO / DEFER verdict. **No feature code ships this milestone** (investigate-only, user decision 2026-06-07). Greenlit ideas become their own build milestones (v1.3+).
+**Goal:** Ship the two surgical, upstream-able fixes surfaced by the v1.2 investigations, plus one optional security one-liner. Each is small, self-contained, and PR-ready for upstream.
 
-**Investigations (parallel, independent — Phases 6-9):**
-- **INV-01 — Encryption hardening:** audit message-encryption password handling + config-at-rest (`safeStorage` / StegCloak / cloud); is anything effectively plaintext? Is a stronger path viable?
-- **INV-02 — Keybinds non-alphanumeric:** root-cause why `venbind` 0.1.7 fails on `]` `;` on Windows; patch vs. replace vs. accept. *(Most upstream-able.)*
-- **INV-03 — Deafen/mute recon:** why speaker attenuation shows when deafened; GoofCord vs. Vencord vs. Discord-web. *(Curiosity / lightest.)*
-- **INV-04 — Resource usage / Electron optimization:** survey realistic memory/CPU/process-model/V8/throttling wins; safe vs. risky.
+**Fixes (Phases 10-12):**
+- **KEY-01 — Keybinds non-alphanumeric (Phase 10):** replace `String.fromCharCode(domKeyCode)` at `preload/keybinds.ts:53` with a DOM-keyCode→char map so OEM/punctuation binds (`]` `;` etc.) register and fire on Windows. Pure-TS, no native work. *(From INV-02.)*
+- **STREAM-05 — Occluded-window flag typo (Phase 11):** fix `main.ts:67` `disable-disable-backgrounding-occluded-windows` → `disable-backgrounding-occluded-windows` so the intended anti-throttling switch actually applies on Windows (stream stability). *(From INV-04 byproduct.)*
+- **SEC-01 — cloudToken encryption (Phase 12, optional/stretch):** mark `cloudToken` `encrypted: true` (the only cleartext secret). Deferred pending read-timing verification + user go-ahead. *(From INV-01.)*
 
-> Earlier candidate **WSTRM-01** (further Windows streaming bugs) remains deferred — reopen if new streaming bugs surface.
+> v1.2 (Feature Viability Investigations) completed 2026-06-07 — 4 verdicts; see MILESTONES.md + Key Decisions. Earlier candidate **WSTRM-01** (further Windows streaming bugs) remains deferred.
 
 <details>
 <summary>Archived: v1.1 milestone goal (in progress)</summary>
@@ -71,8 +70,14 @@ On Windows, a user can start a screenshare, cancel the source picker, and start 
 
 ### Active
 
-<!-- v1.2 investigation milestone — all four verdicts landed 2026-06-07. Satisfied by FINDINGS docs, not implementations. -->
+<!-- v1.3 build milestone (open). v1.2 investigation outcomes retained below for traceability. -->
 
+**v1.3 — Small Upstream-able Fixes (Phases 10-12):**
+- [ ] **KEY-01**: Non-alphanumeric (OEM/punctuation) global keybinds register and fire on Windows — Phase 10 (`preload/keybinds.ts:53`).
+- [ ] **STREAM-05**: The Windows occluded-window anti-backgrounding switch is actually applied (flag-name typo) — Phase 11 (`main.ts:67`).
+- [ ] **SEC-01** *(stretch, deferred)*: `cloudToken` encrypted at rest — Phase 12 (pending read-timing check + go-ahead).
+
+**v1.2 — Feature Viability Investigations (complete 2026-06-07 — verdicts, not implementations):**
 - [x] **INV-01**: Encryption-hardening viability assessment — **NO-GO** (crypto already sound; secrets are safeStorage/DPAPI ciphertext, not plaintext). Optional S micro-PR: `cloudToken`→`encrypted:true`. Phase 6 (`06-FINDINGS.md`).
 - [x] **INV-02**: Keybinds non-alphanumeric viability assessment — **GO (S)**. Root cause = `String.fromCharCode(domKeyCode)` in `preload/keybinds.ts:53` (not venbind); ~15-line pure-TS map. Phase 7 (`07-FINDINGS.md`).
 - [x] **INV-03**: Deafen/mute mechanism recon — **NO-GO** (inherited Discord-web/Chromium ducking; GoofCord touches no audio graph). Phase 8 (`08-FINDINGS.md`).
@@ -142,4 +147,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-06-07 — **v1.2 Feature Viability Investigations COMPLETE.** 4 parallel spikes landed verdicts: INV-02 keybinds **GO** (preload `String.fromCharCode` bug, ~15-line pure-TS fix, most upstream-able), INV-04 **DEFER** but found a `main.ts:67` flag-typo streaming fix, INV-01 **NO-GO** (crypto already sound; optional `cloudToken` micro-PR), INV-03 **NO-GO** (inherited web behaviour). Next: decide v1.3 build scope from the GO/byproduct items. v1.0 + v1.1 remain shipped (PRs #210/#211).*
+*Last updated: 2026-06-07 — v1.2 investigations complete; opened **v1.3 Small Upstream-able Fixes** (build) from the GO/byproduct items: KEY-01 keybinds non-alphanumeric (`preload/keybinds.ts:53`), STREAM-05 occluded-window flag typo (`main.ts:67`), + optional SEC-01 `cloudToken`. v1.0 + v1.1 shipped (PRs #210/#211).*
