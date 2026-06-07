@@ -1,6 +1,6 @@
 # KEY-01 Handoff — Non-Alphanumeric Global Keybinds (Windows)
 
-> **Status:** fix committed (`7103149`), map **confirmed correct vs. ground truth**, and the **primary win is user-CONFIRMED**: with the fix, non-alphanumeric keybinds (e.g. `]`, Ctrl-combos) **now register and fire when GoofCord is focused** — they did **not** before. **This is the success and must be preserved (do not regress it).** Still **un**validated: the **out-of-focus / global** firing path (broke on the wrong test base). This doc is the continuation brief for the next agent.
+> **Status:** fix committed (`7103149`), map **confirmed correct vs. ground truth**, and the **primary win is user-CONFIRMED**: with the fix, non-alphanumeric keybinds (e.g. `]`, Ctrl-combos) **now register and fire when GoofCord is focused** — they did **not** before. **This is the success and must be preserved (do not regress it).** Still **un**validated: the **out-of-focus / global** firing path (broke on the wrong test base). **Targets upstream issue #179** (non-alphanumeric global keybinds, OPEN — maintainer blamed venbind; we found it's GoofCord's `String.fromCharCode` glue) → see §7. This doc is the continuation brief for the next agent.
 >
 > **CLEAN-ROOM (hard rule):** the fix's keyCode→char map is grounded in the **public DOM `KeyboardEvent.keyCode` standard** (Chromium legacy values) that Discord-web rides on. Discord's own source / keycode tables were **NOT** consulted or copied — only the user's own persisted `localStorage["keybinds"]` values were *observed* as confirmation (standard DOM integers, not Discord IP). **Keep all Discord-internals investigation OUT of the repo / commits / PRs.**
 
@@ -74,5 +74,24 @@ Confirm out-of-focus firing works with the fix, and pin the mechanism:
 - **Diagnostic source of truth:** `…/goofcord/Local Storage/leveldb/` `keybinds` entry (WSL-readable).
 - **Release context:** user's fork release is `v2.2.1-winfix` (GH release, tag at `2bd8808`, cut from the dev branch — bundles cancel + echo fixes). v1.3 would add KEY-01 + STREAM-05 once validated.
 
-## 7. Clean-room reminder
-Map = **public DOM keyCode standard** only. Do **not** copy Discord's keycode tables/source into the fix, commits, or any PR. Observing the user's own config (`localStorage`) is fine; ingesting Discord code is not.
+## 7. Upstream issue #179 — KEY-01's real-world target (investigate)
+
+**`Milkshiift/GoofCord` #179 — "[BUG] Global keybinds don't work with non-alphanumeric shortcuts"** (OPEN). The canonical upstream report for exactly what KEY-01 fixes. KEY-01 likely **Closes #179**.
+
+**Why it matters / PR angle:**
+- The maintainer tried twice and **concluded "I will likely need to make changes to venbind itself."** Our investigation found the root cause is GoofCord's own `String.fromCharCode(domKeyCode)` glue (`keybinds.ts`), **not** venbind — so the minimal GoofCord-side fix may resolve #179 where his attempts didn't. **Tactful framing required** (AI-averse maintainer who already invested here): lead with the concrete mechanism (keyCode 221 → `String.fromCharCode` → `Ý` ≠ `]`, with the ground-truth localStorage evidence) + a real Windows repro. Do **not** frame it as "venbind was a red herring."
+- **Regression history corroborates the glue theory:** a reporter says `[` and `\` toggle-mute/deafen binds **worked in older versions** and broke (~2.2.1) — "now only A–z & 0–9 are compatible." Something regressed punctuation; `String.fromCharCode` is the prime suspect.
+
+**Maintainer's prior attempts (study before PRing):**
+- `f5eec78` "Fix native modules on Windows" (bun.lock, electron-builder.ts, package.json, messageEncryption.ts) — venbind **native-module loading** on Windows. **Relevant to the §3 global-capture question:** venbind `.node` loading is historically fragile on Windows → a candidate cause for "global broke incl. alphanumeric" on the wrong base.
+- `3f9096e` "Improve keybinds.ts and fix special keys" (+161/−67, keybinds.ts only) — a big special-key rewrite the maintainer concluded **didn't work**. **Appears reverted: `upstream/main` keybinds.ts STILL has the simple `String.fromCharCode(mainKeys.at(-1))` line (identical to our base).** Read `3f9096e` to understand his rejected approach and avoid re-proposing it.
+
+**#179 scope is broader than KEY-01's punctuation:**
+- **Named keys** (PAGEUP/PAGEDOWN) → overlaps the §4 named-key gap (venbind names, not chars).
+- **Mouse buttons** (mouse5) → a NEW dimension; check whether venbind supports mouse-button binds at all.
+- Maintainer **can't reproduce in a VM**; we have a **real repro + ground truth** — a key PR asset.
+
+**Investigation tasks:** (1) confirm KEY-01 resolves #179's punctuation cases on the dev base; (2) read `3f9096e`; (3) decide whether to also cover named keys / mouse buttons or scope the PR to punctuation and note the rest; (4) draft the PR around mechanism + repro, `Closes #179`.
+
+## 8. Clean-room reminder
+Map = **public DOM keyCode standard** only. Do **not** copy Discord's keycode tables/source into the fix, commits, or any PR. Observing the user's own config (`localStorage`) is fine; ingesting Discord code is not. *(Note: #179 + the maintainer's own commits are GoofCord/upstream material — fine to study and reference; the clean-room rule is specifically about Discord's code.)*
