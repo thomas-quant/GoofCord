@@ -2,7 +2,9 @@
 
 ## What This Is
 
-A fork of GoofCord (an Electron-based custom Discord client that wraps Vencord) whose purpose is to fix **Windows screenshare/streaming bugs** that affect the upstream project. Fixes are intended to be clean and minimal so they can be **submitted back upstream** to the main GoofCord repo. This milestone targets one in-flight bug plus a closely-related Windows audio issue — it is a focused bug-fix fork, not a feature fork.
+A fork of GoofCord (an Electron-based custom Discord client that wraps Vencord) whose purpose is to fix **Windows screenshare/streaming bugs** that affect the upstream project. Fixes are intended to be clean and minimal so they can be **submitted back upstream** to the main GoofCord repo. v1.0–v1.1 were a focused bug-fix fork (cancel/restart + Windows audio echo), not a feature fork.
+
+As of **v1.2**, the fork also runs occasional **viability-investigation milestones** — exploratory triage that assesses candidate improvements against the codebase and existing options *before* any build commitment. This does not commit the fork to becoming a feature fork; it decides, with evidence, which (if any) ideas earn a build milestone.
 
 ## Core Value
 
@@ -17,9 +19,17 @@ On Windows, a user can start a screenshare, cancel the source picker, and start 
 
 **Upstream PRs open:** #211 (Windows echo fix, Closes #46) and #210 (Wayland xdg-portal-cancel re-open). The native addon ships as a separate prebuilt-`.node` repo (`thomas-quant/wasapi-loopback`, MIT, clean-room) consumed via one `optionalDependencies` line — the venbind/patchcord pattern.
 
-## Next Milestone Goals
+## Current Milestone: v1.2 — Feature Viability Investigations
 
-No active milestone. This is a focused bug-fix fork; it stays dormant between bug reports rather than chasing features. The one acknowledged candidate is **WSTRM-01** (further Windows screenshare/streaming bugs beyond cancel/restart + audio) — open a new milestone via `/gsd-new-milestone` if/when more bugs surface.
+**Goal:** For four candidate improvements, determine whether each is worth building — via codebase analysis + a survey of maintained libraries/OSS/upstream options + a tech-debt cost estimate — and land a GO / NO-GO / DEFER verdict. **No feature code ships this milestone** (investigate-only, user decision 2026-06-07). Greenlit ideas become their own build milestones (v1.3+).
+
+**Investigations (parallel, independent — Phases 6-9):**
+- **INV-01 — Encryption hardening:** audit message-encryption password handling + config-at-rest (`safeStorage` / StegCloak / cloud); is anything effectively plaintext? Is a stronger path viable?
+- **INV-02 — Keybinds non-alphanumeric:** root-cause why `venbind` 0.1.7 fails on `]` `;` on Windows; patch vs. replace vs. accept. *(Most upstream-able.)*
+- **INV-03 — Deafen/mute recon:** why speaker attenuation shows when deafened; GoofCord vs. Vencord vs. Discord-web. *(Curiosity / lightest.)*
+- **INV-04 — Resource usage / Electron optimization:** survey realistic memory/CPU/process-model/V8/throttling wins; safe vs. risky.
+
+> Earlier candidate **WSTRM-01** (further Windows streaming bugs) remains deferred — reopen if new streaming bugs surface.
 
 <details>
 <summary>Archived: v1.1 milestone goal (in progress)</summary>
@@ -61,9 +71,12 @@ No active milestone. This is a focused bug-fix fork; it stays dormant between bu
 
 ### Active
 
-<!-- No active milestone. This is a bug-fix fork; Active stays empty between milestones. -->
+<!-- v1.2 investigation milestone — these are satisfied by a FINDINGS verdict, not an implementation. -->
 
-(None — v1.1 shipped 2026-06-06. Reopen via `/gsd-new-milestone` if new Windows streaming bugs surface; see WSTRM-01 below.)
+- [ ] **INV-01**: Encryption-hardening viability assessment — Phase 6 (`06-FINDINGS.md`)
+- [ ] **INV-02**: Keybinds non-alphanumeric viability assessment — Phase 7 (`07-FINDINGS.md`)
+- [ ] **INV-03**: Deafen/mute mechanism recon — Phase 8 (`08-FINDINGS.md`)
+- [ ] **INV-04**: Resource-usage / Electron-optimization viability assessment — Phase 9 (`09-FINDINGS.md`)
 
 ### Out of Scope
 
@@ -123,4 +136,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-06-06 after v1.1 milestone — Windows Screenshare Echo Fix SHIPPED. Native WASAPI EXCLUDE-process-tree `.node` addon replaces whole-mix `"loopback"`; verified viewer-side on Windows CI build 19045 (no call echo). Upstream PRs #210 (Wayland) + #211 (Closes #46) open. No active milestone; reopen via `/gsd-new-milestone`.*
+*Last updated: 2026-06-07 — opened milestone **v1.2 Feature Viability Investigations** (investigate-only triage of 4 candidate improvements: encryption hardening, keybinds non-alphanumeric, deafen/mute recon, resource usage). Phases 6-9 run as parallel spikes, each producing a FINDINGS verdict; no feature code ships. v1.0 + v1.1 remain shipped (PRs #210/#211).*
