@@ -13,6 +13,27 @@ interface Keybind {
 	};
 }
 
+// venbind matches a key by its physical character (libuiohook keycode_to_unicode, lowercased),
+// so the shortcut we register must contain that character. String.fromCharCode is only an
+// accidental identity for ASCII-aligned keyCodes (digits 48-57, letters 65-90); OEM/punctuation
+// keyCodes (186-222) map to Latin-1 garbage (e.g. 221 "]" -> "Ý"), which never matched the
+// pressed key, so those binds silently never fired. Map the OEM keys explicitly.
+const OEM_KEYCODE_CHARS: Record<number, string> = {
+	186: ";",
+	187: "=",
+	188: ",",
+	189: "-",
+	190: ".",
+	191: "/",
+	192: "`",
+	219: "[",
+	220: "\\",
+	221: "]",
+	222: "'",
+};
+
+const keyCodeToChar = (keyCode: number): string => OEM_KEYCODE_CHARS[keyCode] ?? String.fromCharCode(keyCode);
+
 const getActiveKeybinds = (): Map<string, Keybind> => {
 	const activeKeybinds = new Map<string, Keybind>();
 	const keybindsRaw = window.localStorage.getItem("keybinds");
@@ -50,7 +71,7 @@ const getActiveKeybinds = (): Map<string, Keybind> => {
 		if (modifiers.alt) keyParts.push("alt");
 		if (modifiers.shift) keyParts.push("shift");
 
-		const mainKey = mainKeys.length > 0 ? String.fromCharCode(mainKeys.at(-1)) : "";
+		const mainKey = mainKeys.length > 0 ? keyCodeToChar(mainKeys.at(-1)) : "";
 		keyParts.push(mainKey);
 
 		if (!mainKey) continue;
