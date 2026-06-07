@@ -4,7 +4,7 @@ milestone: v1.3
 milestone_name: Small Upstream-able Fixes
 status: in_progress
 last_updated: "2026-06-07T05:31:59.115Z"
-last_activity: 2026-06-07 — KEY-01 + STREAM-05 implemented & committed (type-check/lint green); manual Windows CI verification pending
+last_activity: 2026-06-07 — KEY-01 first Windows test inconclusive (wrong build base); map CONFIRMED correct vs ground truth; handoff written (10-HANDOFF.md)
 progress:
   total_phases: 3
   completed_phases: 0
@@ -24,10 +24,12 @@ See: .planning/PROJECT.md (updated 2026-06-06)
 
 ## Current Position
 
-Phase: 10-11 (implemented; verification pending) · 12 (deferred stretch)
+Phase: 10 (KEY-01 in-debug — map correct, end-to-end unvalidated) · 11 (STREAM-05 committed, unvalidated) · 12 (deferred stretch)
 Plan: —
-Status: KEY-01 (`7103149`) + STREAM-05 (`c988872`) committed; type-check + lint green. **Manual Windows x64 CI verification is the remaining gate** (bind `Ctrl+]`/`;` fires; occluded-window flag applies). SEC-01 deferred pending go-ahead.
-Last activity: 2026-06-07 — two surgical fixes implemented & committed
+Status: KEY-01 (`7103149`) keyCode→char map **confirmed correct vs ground truth** (Discord persists standard DOM keyCodes — observed in localStorage: 188=`,`, 190=`.`, 192=`` ` ``). First Windows test (run `27084274815`) was **inconclusive — wrong base** (`origin/main`; global venbind capture non-functional there, unrelated to the fix). **Next agent:** see `phases/10-keybinds-non-alphanumeric-fix/10-HANDOFF.md` — (1) build bun:test automated tests on the pure mapping, (2) extend to named keys (F-keys/space gap), (3) re-validate on the **dev/release base**. STREAM-05 (`c988872`) separate/low-risk, unvalidated. SEC-01 deferred.
+
+**⚠ Clean-room:** the keybind map is grounded in the PUBLIC DOM keyCode standard; Discord internals were not copied — keep Discord-mapping investigation OUT of repo/commits/PRs.
+Last activity: 2026-06-07 — KEY-01 debugged to ground truth; handoff written for next agent
 
 ## Performance Metrics
 
