@@ -73,8 +73,8 @@ On Windows, a user can start a screenshare, cancel the source picker, and start 
 <!-- v1.3 build milestone (open). v1.2 investigation outcomes retained below for traceability. -->
 
 **v1.3 — Small Upstream-able Fixes (Phases 10-12):**
-- [ ] **KEY-01**: Non-alphanumeric (OEM/punctuation) global keybinds register and fire on Windows — Phase 10 (`preload/keybinds.ts:53`).
-- [ ] **STREAM-05**: The Windows occluded-window anti-backgrounding switch is actually applied (flag-name typo) — Phase 11 (`main.ts:67`).
+- [x] **KEY-01**: Non-alphanumeric (OEM/punctuation) global keybinds register and fire on Windows — Phase 10 (`preload/keybinds.ts`, `OEM_KEYCODE_CHARS` map; commit `7103149`). *Implemented; type-check + lint green; manual Windows CI verification pending.*
+- [x] **STREAM-05**: The Windows occluded-window anti-backgrounding switch is actually applied (flag-name typo) — Phase 11 (`main.ts:67`; commit `c988872`). *Implemented; manual Windows CI verification pending.*
 - [ ] **SEC-01** *(stretch, deferred)*: `cloudToken` encrypted at rest — Phase 12 (pending read-timing check + go-ahead).
 
 **v1.2 — Feature Viability Investigations (complete 2026-06-07 — verdicts, not implementations):**

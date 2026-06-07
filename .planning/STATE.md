@@ -4,7 +4,7 @@ milestone: v1.3
 milestone_name: Small Upstream-able Fixes
 status: in_progress
 last_updated: "2026-06-07T05:31:59.115Z"
-last_activity: 2026-06-07 — v1.3 opened (build) from v1.2 GO/byproduct items; implementing KEY-01 + STREAM-05
+last_activity: 2026-06-07 — KEY-01 + STREAM-05 implemented & committed (type-check/lint green); manual Windows CI verification pending
 progress:
   total_phases: 3
   completed_phases: 0
@@ -24,10 +24,10 @@ See: .planning/PROJECT.md (updated 2026-06-06)
 
 ## Current Position
 
-Phase: 10-11 (implementing)
+Phase: 10-11 (implemented; verification pending) · 12 (deferred stretch)
 Plan: —
-Status: v1.3 build — applying KEY-01 + STREAM-05 fixes
-Last activity: 2026-06-07 — v1.3 shell opened; implementing the two surgical fixes
+Status: KEY-01 (`7103149`) + STREAM-05 (`c988872`) committed; type-check + lint green. **Manual Windows x64 CI verification is the remaining gate** (bind `Ctrl+]`/`;` fires; occluded-window flag applies). SEC-01 deferred pending go-ahead.
+Last activity: 2026-06-07 — two surgical fixes implemented & committed
 
 ## Performance Metrics
 
