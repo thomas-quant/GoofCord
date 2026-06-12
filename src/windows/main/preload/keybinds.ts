@@ -13,6 +13,78 @@ interface Keybind {
 	};
 }
 
+// Named/control keys (Enter, Space, F-keys, arrows, numpad…) have no meaningful character, so
+// venbind's press side matches them by a canonical lowercase token, not a char. String.fromCharCode
+// would turn these keyCodes into control/garbage chars (13 -> "\r", 32 -> " ", 123 -> "{",
+// 33 -> "!"), which never matched a token, so those binds silently never fired. Map them to the
+// exact venbind tokens (thomas-quant/venbind src/structs.rs::tokens) and consult this FIRST.
+// SPEC NOTE: keyCode 13 -> "enter" only (no "numpadenter"). venbind emits "numpadenter" for the
+// physical numpad Enter, but Discord's stored shortcut carries only DOM keyCode 13 with no numpad
+// location, so GoofCord can only ever register "enter" — a numpadenter entry would be unreachable.
+// Net effect: numpad Enter no longer triggers an Enter bind, now consistent with the Linux backend.
+const NAMED_KEYCODE_TOKENS: Record<number, string> = {
+	8: "backspace",
+	9: "tab",
+	13: "enter",
+	27: "escape",
+	32: "space",
+	33: "pageup",
+	34: "pagedown",
+	35: "end",
+	36: "home",
+	45: "insert",
+	46: "delete",
+	37: "left",
+	38: "up",
+	39: "right",
+	40: "down",
+	20: "capslock",
+	144: "numlock",
+	145: "scrolllock",
+	44: "printscreen",
+	19: "pause",
+	93: "menu",
+	112: "f1",
+	113: "f2",
+	114: "f3",
+	115: "f4",
+	116: "f5",
+	117: "f6",
+	118: "f7",
+	119: "f8",
+	120: "f9",
+	121: "f10",
+	122: "f11",
+	123: "f12",
+	124: "f13",
+	125: "f14",
+	126: "f15",
+	127: "f16",
+	128: "f17",
+	129: "f18",
+	130: "f19",
+	131: "f20",
+	132: "f21",
+	133: "f22",
+	134: "f23",
+	135: "f24",
+	96: "numpad0",
+	97: "numpad1",
+	98: "numpad2",
+	99: "numpad3",
+	100: "numpad4",
+	101: "numpad5",
+	102: "numpad6",
+	103: "numpad7",
+	104: "numpad8",
+	105: "numpad9",
+	107: "numpadadd",
+	109: "numpadsubtract",
+	106: "numpadmultiply",
+	111: "numpaddivide",
+	110: "numpaddecimal",
+};
+
 // venbind matches a key by its physical character (libuiohook keycode_to_unicode, lowercased),
 // so the shortcut we register must contain that character. String.fromCharCode is only an
 // accidental identity for ASCII-aligned keyCodes (digits 48-57, letters 65-90); OEM/punctuation
@@ -32,7 +104,7 @@ const OEM_KEYCODE_CHARS: Record<number, string> = {
 	222: "'",
 };
 
-const keyCodeToChar = (keyCode: number): string => OEM_KEYCODE_CHARS[keyCode] ?? String.fromCharCode(keyCode);
+const keyCodeToChar = (keyCode: number): string => NAMED_KEYCODE_TOKENS[keyCode] ?? OEM_KEYCODE_CHARS[keyCode] ?? String.fromCharCode(keyCode);
 
 const getActiveKeybinds = (): Map<string, Keybind> => {
 	const activeKeybinds = new Map<string, Keybind>();
