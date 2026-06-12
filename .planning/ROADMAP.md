@@ -27,7 +27,8 @@ Upstream PRs: #210 (Wayland xdg-portal-cancel re-open) · #211 (Windows echo fix
 **Plans:** 2 plans
 Plans:
 - [x] 10-01-PLAN.md — Add NAMED_KEYCODE_TOKENS + extract pure keybindShortcut module with bun:test coverage (autonomous) — done (8 tests green, `bun run check` ✓)
-- [x] 10-02-PLAN.md — Point GoofCord at the fixed venbind (decision: github-ref) — done; **manual Windows CI verification still pending** (success criterion 3)
+- [x] 10-02-PLAN.md — Point GoofCord at the fixed venbind (decision: github-ref) — done
+- ⚠️ **Manual Windows test FAILED for navigation/editing keys** (PageUp/PageDown/Insert/Delete fail focused+global; OEM `]`/`.` work). Root cause is NOT the keyCode→token map (verified correct via leveldb dump) — it's Discord's matcher / event delivery for non-character keys. Phase 10 is **NOT complete**. See `10-RUNTIME-FINDINGS-HANDOFF.md` for the ranked hypotheses + diagnostic plan.
 
 ### Phase 11 — Occluded-Window Flag Typo Fix (STREAM-05)
 **Goal:** The intended `disable-backgrounding-occluded-windows` Chromium switch is actually applied on Windows.
