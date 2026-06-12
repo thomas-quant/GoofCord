@@ -18,11 +18,16 @@ Upstream PRs: #210 (Wayland xdg-portal-cancel re-open) · #211 (Windows echo fix
 | 12 | cloudToken Encryption *(stretch, optional)* | SEC-01 | `src/settingsSchema.ts` |
 
 ### Phase 10 — Keybinds Non-Alphanumeric Fix (KEY-01)
-**Goal:** Global keybinds bound to OEM/punctuation keys register and fire on Windows.
+**Goal:** Global keybinds bound to OEM/punctuation AND named/non-printable keys (Page Up, F-keys, arrows, Space, Enter) register and fire on Windows, finishing the named-key half of KEY-01 / upstream #179.
 **Success criteria:**
-1. `keybinds.ts` feeds venbind the literal key char (e.g. `]`, `;`) instead of `String.fromCharCode(keyCode)` garbage.
-2. Existing alphanumeric binds still work (no regression).
-3. `bun run check` passes; manual Windows CI verification of a `Ctrl+]` / `;` bind firing.
+1. `keybinds.ts` feeds venbind the literal key char (e.g. `]`, `;`) for OEM keys and the canonical venbind token (e.g. `pageup`, `f12`, `space`) for named keys instead of `String.fromCharCode(keyCode)` garbage.
+2. Existing alphanumeric + punctuation binds still work (no regression) — proven by `bun test`.
+3. `bun run check` passes; manual Windows CI verification of a named-key bind (e.g. Page Up) firing out-of-focus and focused.
+
+**Plans:** 2 plans
+Plans:
+- [x] 10-01-PLAN.md — Add NAMED_KEYCODE_TOKENS + extract pure keybindShortcut module with bun:test coverage (autonomous) — done (8 tests green, `bun run check` ✓)
+- [x] 10-02-PLAN.md — Point GoofCord at the fixed venbind (decision: github-ref) — done; **manual Windows CI verification still pending** (success criterion 3)
 
 ### Phase 11 — Occluded-Window Flag Typo Fix (STREAM-05)
 **Goal:** The intended `disable-backgrounding-occluded-windows` Chromium switch is actually applied on Windows.
@@ -58,10 +63,3 @@ Upstream PRs: #210 (Wayland xdg-portal-cancel re-open) · #211 (Windows echo fix
 **Constraints / known limits (record so we don't re-discover):**
 - Multi-EXCLUDE (system minus self minus arbitrary app X) is **not expressible** — `AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS` takes one `TargetProcessId` + one mode. Multi-INCLUDE is the path.
 - **Never** run endpoint loopback (Chromium `"loopback"`) alongside process loopback — that combination caused the CoreMessaging hard-crash (OBS independently warns to disable Desktop Audio when using per-app capture). Already avoided at `screenshare.ts:101-110`.
-- Per-app capture has occasional app-specific gaps (OBS cites Valorant / CoD in-game voice).
-- OS floor: Win10 2004/20348+ (addon already degrades gracefully via dynamic entrypoint resolution).
-
-**References:** OBS Application Audio Capture guide; MS `AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS` + `ActivateAudioInterfaceAsync` docs; PR #211 maintainer comment.
-
-Plans:
-- [ ] TBD (promote with /gsd-review-backlog when ready)
