@@ -13,6 +13,8 @@ A fork of GoofCord (an Electron-based custom Discord client that wraps Vencord) 
 - **Compatibility / Upstream**: Fixes must be **PR-ready for the main GoofCord repo** — follow existing conventions, minimize divergence, keep diffs surgical. Avoid fork-only hacks that couldn't be upstreamed.
 - **Platform**: Bug is **Windows-specific** behaviour (`desktopCapturer`, `setDisplayMediaRequestHandler`, `"loopback"` audio). Must not regress Linux (patchcord) or macOS paths.
 - **Verification**: No automated repro for screenshare on Windows. Verification is **manual**: trigger the Windows x64 CI build (`.github/workflows/testBuild.yml`) and test the picker/cancel/re-click flow by hand.
+- **CI / builds**: **Always build via GitHub Actions (CI) — NEVER build or run CI locally.** This applies to GoofCord and to native/Rust deps (e.g. venbind, wasapi-loopback): make the change, let the repo's GH Actions workflow produce the prebuilt artifact, then consume it. Do not run `cargo build`/`bun run build`/local compiles to "verify" — push and let CI build.
+- **Triggering CI**: Claude triggers CI itself via the GitHub CLI — `testBuild.yml` is `workflow_dispatch`-only. Push the branch to `origin` (the fork) first (CI builds the remote ref, not the local working tree), then run: `gh workflow run testBuild.yml --repo thomas-quant/GoofCord --ref <branch>`. The `--repo thomas-quant/GoofCord` flag is **required** — `gh` defaults to the `upstream` (Milkshiift) repo and will otherwise 403/mis-target. The run produces the `win-artifacts` portable zip.
 <!-- GSD:project-end -->
 
 <!-- GSD:stack-start source:codebase/STACK.md -->
