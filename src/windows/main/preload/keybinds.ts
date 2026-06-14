@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from "electron";
+import { contextBridge, ipcRenderer, webFrame } from "electron";
 
 import { invoke } from "../../../ipc/client.preload.ts";
 import { warn } from "../../../modules/logger.preload.ts";
@@ -37,9 +37,12 @@ const getActiveKeybinds = (): Map<string, Keybind> => {
 
 		// Non-printable keys (PageUp/Insert/F-keys/…) only match Discord's keybind handler when the
 		// synthetic event carries a DOM `code`/`key`; printable keys leave these unset (matched by keyCode).
+		// (eventSettings is now only a fallback — the primary path is direct action dispatch below.)
 		const domCode = keyCodeToDomCode(mainKeyCode);
 
-		activeKeybinds.set(macroCaseToTitleCase(binding.action), {
+		// Key by the raw SCREAMING_SNAKE action (e.g. PUSH_TO_MUTE) so venbind's fired id IS the
+		// action type, which the main-world dispatcher uses to invoke Discord's onTrigger directly.
+		activeKeybinds.set(binding.action, {
 			shortcut,
 			eventSettings: {
 				keyCode: mainKeyCode,
@@ -106,9 +109,20 @@ ipcRenderer.on("keybinds:trigger", (_, id, keyup) => {
 		return;
 	}
 
-	const event = new KeyboardEvent(keyup ? "keyup" : "keydown", keybind.eventSettings);
+	const dispatchSynthetic = () => {
+		document.dispatchEvent(new KeyboardEvent(keyup ? "keyup" : "keydown", keybind.eventSettings));
+	};
 
-	document.dispatchEvent(event);
+	// Primary path: invoke Discord's keybind action directly in the main world (Vesktop-style),
+	// bypassing the DOM matcher that ignores non-printable keys. id is the raw action type.
+	// Fall back to the synthetic DOM event if the action wasn't captured (e.g. KeybindStore patch
+	// shape drifted) so printable keys can never regress.
+	webFrame
+		.executeJavaScript(`(globalThis.__goofcordTriggerKeybind ? globalThis.__goofcordTriggerKeybind(${JSON.stringify(id)}, ${keyup ? "true" : "false"}) : { handled: false })`)
+		.then((result: { handled?: boolean } | undefined) => {
+			if (!result?.handled) dispatchSynthetic();
+		})
+		.catch(() => dispatchSynthetic());
 });
 
 function debounce<T extends (...args: Parameters<T>) => void>(func: T, timeout = 300) {

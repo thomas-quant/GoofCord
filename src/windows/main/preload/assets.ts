@@ -4,6 +4,7 @@ import { ipcRenderer, webFrame } from "electron";
 import { sendSync } from "../../../ipc/client.preload.ts";
 import { error, log } from "../../../modules/logger.preload.ts";
 import { setVencordPresent } from "./bridge.ts";
+import { keybindDispatchMainWorldSource } from "./keybindDispatch.ts";
 import { patchVencord } from "./vencordPatcher.ts";
 
 // @ts-expect-error
@@ -26,6 +27,13 @@ export function loadScripts() {
 
 	if (vencord) {
 		const [name, content] = vencord;
+
+		// TEMP DIAGNOSTIC: register the KeybindStore direct-dispatch patch into __GOOFCORD_PATCHES__
+		// BEFORE Vencord processes modules (this executeJavaScript is queued before the Vencord one).
+		webFrame
+			.executeJavaScript(keybindDispatchMainWorldSource)
+			.then(() => log("Loaded Keybind Dispatch"))
+			.catch((err) => error(`Failed Keybind Dispatch: ${err}`));
 
 		try {
 			const patchedContent = patchVencord(content);
