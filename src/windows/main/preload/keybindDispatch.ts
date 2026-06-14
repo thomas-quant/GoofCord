@@ -3,14 +3,12 @@
 // (which ignores non-printable keys like PageUp/Insert) by capturing each keybind action's
 // onTrigger/keyEvents from Discord's KeybindStore and invoking it directly when venbind fires.
 //
-// This source string runs in the page MAIN WORLD (injected via webFrame.executeJavaScript from the
-// preload in assets.ts, BEFORE Vencord loads) so it can (a) register a Vencord patch into
-// window.__GOOFCORD_PATCHES__ and (b) hold live Discord action closures across the
-// preload<->renderer boundary. The patch is pushed fully-formed (plugin + pre-expanded \i +
-// globalThis. helper instead of $self) because we bypass patchManager's processPatch.
-//
-// Diagnostics go to localStorage["goofcord-kb-diag"] — the main world has no fs, and localStorage is
-// WSL-readable via the Local Storage leveldb (same channel used for keybind recon).
+// v2 adds a PROBE: the first build proved the KeybindStore patch never applied (no "ADD captured"
+// line), so this version uses Vencord's own Webpack.search to test the find-string and dump the real
+// module source (the keybinds destructure + onTrigger shape) so the patch can be corrected. All
+// output goes to localStorage (no fs in the main world; WSL-readable via the Local Storage leveldb):
+//   - "goofcord-kb-diag": ADD/TRIGGER/PATCH lines (capped)
+//   - "gcp0".."gcpN":     probe findings (one short value per key, easy to grep out of leveldb)
 export const keybindDispatchMainWorldSource = `
 (() => {
 	const DIAG = "goofcord-kb-diag";
@@ -20,10 +18,13 @@ export const keybindDispatchMainWorldSource = `
 			localStorage.setItem(DIAG, (prev + "[" + new Date().toISOString() + "] " + m + "\\n").slice(-8000));
 		} catch (e) {}
 	}
+	let _gcpN = 0;
+	function gcp(m) {
+		try { localStorage.setItem("gcp" + (_gcpN++), String(m).slice(0, 480)); } catch (e) {}
+	}
 
 	globalThis.__goofcordKeybindActions = globalThis.__goofcordKeybindActions || {};
 
-	// Called from inside Discord's KeybindStore (via the patch below) with the live actions map.
 	globalThis.__goofcordAddKeybindActions = function (actions) {
 		try {
 			let n = 0;
@@ -39,7 +40,6 @@ export const keybindDispatchMainWorldSource = `
 		}
 	};
 
-	// Called by the preload (keybinds.ts) when venbind fires. action = raw SCREAMING_SNAKE action type.
 	globalThis.__goofcordTriggerKeybind = function (action, keyup) {
 		try {
 			const cb = globalThis.__goofcordKeybindActions[action];
@@ -73,5 +73,57 @@ export const keybindDispatchMainWorldSource = `
 	} catch (e) {
 		kbDiag("PATCH register error: " + e);
 	}
+
+	// ---- PROBE: find Discord's keybind store + dump its real source so the patch can be fixed ----
+	function dumpSnippet(label, src, needle, before, after) {
+		const i = src.indexOf(needle);
+		if (i < 0) { gcp(label + " (no '" + needle + "')"); return; }
+		gcp(label + ":" + src.slice(Math.max(0, i - before), i + after));
+	}
+	let scanned = false;
+	function runProbe() {
+		const VC = window.Vencord;
+		const W = VC && VC.Webpack;
+		if (!W) return false;
+
+		// Method 1: Vencord's own search by the find-string (the exact matcher the patch uses).
+		let hits = null;
+		try { if (typeof W.search === "function") hits = W.search("[kb store] KeybindStore"); } catch (e) { gcp("search err:" + e); }
+		const hitIds = hits ? Object.keys(hits) : [];
+
+		// Method 2: raw factory scan for the keybind-action registry (onTrigger + keybinds).
+		let kbId = null, kbSrc = "";
+		try {
+			const m = W.wreq && W.wreq.m;
+			if (m) {
+				if (!scanned) { gcp("wreq.m modules=" + Object.keys(m).length); scanned = true; }
+				for (const id in m) {
+					let s; try { s = Function.prototype.toString.call(m[id]); } catch (e) { continue; }
+					if (s.indexOf("onTrigger") !== -1 && s.indexOf("keybinds") !== -1) { kbId = id; kbSrc = s; break; }
+				}
+			}
+		} catch (e) { gcp("scan err:" + e); }
+
+		if (!hitIds.length && !kbId) return false; // keep polling until the module loads
+
+		gcp("FOUND search-ids=" + JSON.stringify(hitIds) + " scan-id=" + kbId);
+		// Prefer the search hit's source if available, else the scan hit.
+		let src = kbSrc;
+		try { if (hitIds.length) src = Function.prototype.toString.call(hits[hitIds[0]]); } catch (e) {}
+		if (src) {
+			gcp("srcLen=" + src.length);
+			dumpSnippet("KBDESTR", src, "keybinds:", 80, 160);
+			dumpSnippet("ONTRIG", src, "onTrigger", 60, 120);
+			dumpSnippet("KBSTORE", src, "kb store", 10, 80);
+		}
+		return true;
+	}
+	let tries = 0;
+	const iv = setInterval(() => {
+		tries++;
+		let done = false;
+		try { done = runProbe(); } catch (e) { gcp("probe-loop err:" + e); done = true; }
+		if (done || tries > 40) { clearInterval(iv); if (tries > 40) gcp("PROBE timeout (no module found)"); }
+	}, 1500);
 })();
 `;
