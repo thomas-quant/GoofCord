@@ -96,6 +96,28 @@ export function startKeybindWatcher() {
 
 	// See postVencord/keybinds.ts
 	contextBridge.exposeInMainWorld("keybinds", KeybindApi);
+
+	startKeybindProbe();
+}
+
+// TEMP DIAGNOSTIC — drive the main-world __goofcordProbe from the preload (reliable timers + return
+// value) and log findings to keybind-debug.log via IPC. Reveals whether the KeybindStore patch
+// find/match matches this Discord build, and dumps the real source so the patch can be corrected.
+function startKeybindProbe() {
+	let n = 0;
+	const poll = () => {
+		webFrame
+			.executeJavaScript("(typeof window.__goofcordProbe === 'function' ? window.__goofcordProbe() : { ready: false, stage: 'no-probe-fn' })")
+			.then((r: { found?: boolean } | undefined) => {
+				void invoke("venbind:keybindDebugLog", "PROBE " + JSON.stringify(r));
+				if (!r?.found && n++ < 20) setTimeout(poll, 3000);
+			})
+			.catch((e) => {
+				void invoke("venbind:keybindDebugLog", "PROBE exec-err " + String(e));
+				if (n++ < 20) setTimeout(poll, 3000);
+			});
+	};
+	setTimeout(poll, 6000);
 }
 
 ipcRenderer.on("keybinds:getAll", () => {

@@ -72,3 +72,9 @@ export async function setKeybinds<IPCHandle>(keybinds: { id: string; name?: stri
 export async function isVenbindLoaded<IPCHandle>() {
 	return (await obtainVenbind()) !== undefined;
 }
+
+// TEMP DIAGNOSTIC — reliable main-world -> file logging channel (appendFileSync flushes immediately,
+// unlike localStorage). The preload forwards probe/dispatch findings here.
+export async function keybindDebugLog<IPCHandle>(msg: string) {
+	kbLog(msg);
+}

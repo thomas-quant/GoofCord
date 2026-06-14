@@ -8,7 +8,7 @@ import type { clearCache as ___modules_cacheManager_clearCache } from "../module
 import type { setBadgeCount as ___modules_dynamicIcon_setBadgeCount } from "../modules/dynamicIcon";
 import type { cycleThroughPasswords as ___modules_messageEncryption_cycleThroughPasswords, decryptMessage as ___modules_messageEncryption_decryptMessage, encryptMessage as ___modules_messageEncryption_encryptMessage } from "../modules/messageEncryption";
 import type { stopPatchcord as ___modules_native_patchcord_stopPatchcord } from "../modules/native/patchcord";
-import type { isVenbindLoaded as ___modules_native_venbind_isVenbindLoaded, setKeybinds as ___modules_native_venbind_setKeybinds } from "../modules/native/venbind";
+import type { isVenbindLoaded as ___modules_native_venbind_isVenbindLoaded, keybindDebugLog as ___modules_native_venbind_keybindDebugLog, setKeybinds as ___modules_native_venbind_setKeybinds } from "../modules/native/venbind";
 import type { shouldInjectWasapiTransport as ___modules_native_wasapiLoopback_shouldInjectWasapiTransport, stopWasapiLoopback as ___modules_native_wasapiLoopback_stopWasapiLoopback } from "../modules/native/wasapiLoopback";
 import type { getDisplayVersion as ___utils_getDisplayVersion, getVersion as ___utils_getVersion, isEncryptionAvailable as ___utils_isEncryptionAvailable, saveFileToGCFolder as ___utils_saveFileToGCFolder } from "../utils";
 import type { createQuickCssWindow as ___windows_main_quickCssFix_createQuickCssWindow } from "../windows/main/quickCssFix";
@@ -34,6 +34,7 @@ export interface IpcHandleChannels {
   "settings:reloadWindow": typeof ___windows_settings_settings_reloadWindow;
   "utils:saveFileToGCFolder": typeof ___utils_saveFileToGCFolder;
   "venbind:isVenbindLoaded": typeof ___modules_native_venbind_isVenbindLoaded;
+  "venbind:keybindDebugLog": typeof ___modules_native_venbind_keybindDebugLog;
   "venbind:setKeybinds": typeof ___modules_native_venbind_setKeybinds;
   "wasapiLoopback:stopWasapiLoopback": typeof ___modules_native_wasapiLoopback_stopWasapiLoopback;
 }
