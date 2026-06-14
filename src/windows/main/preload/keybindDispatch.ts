@@ -20,9 +20,13 @@ export const keybindDispatchMainWorldSource = `
 	// silently no-ops any onTrigger that uses 'this' (the FIRE-but-no-transmit failure we saw).
 	globalThis.__goofcordAddKeybindActions = function (actions) {
 		try {
+			globalThis.__goofcordActionSrc = globalThis.__goofcordActionSrc || {};
 			for (const key in actions) {
 				const v = actions[key];
 				if (v && typeof v.onTrigger === "function") {
+					// TEMP DIAGNOSTIC: stash the ORIGINAL onTrigger source so we can see exactly what
+					// each action does (and which arg/edge actually activates it) without DevTools.
+					try { globalThis.__goofcordActionSrc[key] = Function.prototype.toString.call(v.onTrigger).slice(0, 1200); } catch (e) {}
 					globalThis.__goofcordKeybindActions[key] = {
 						onTrigger: (keyState) => v.onTrigger(keyState, { context: undefined }),
 						keyEvents: v.keyEvents,
@@ -97,6 +101,11 @@ export const keybindDispatchMainWorldSource = `
 			out.kbSnip = kbSnip;
 			out.otSnip = otSnip;
 			out.found = ids.length > 0 || scanId !== null;
+			// TEMP DIAGNOSTIC: dump the real onTrigger bodies so we can see what actually activates them.
+			const src = globalThis.__goofcordActionSrc || {};
+			out.muteSrc = src.TOGGLE_MUTE;
+			out.pttSrc = src.PUSH_TO_TALK;
+			out.pushMuteSrc = src.PUSH_TO_MUTE;
 			return out;
 		} catch (e) {
 			return { ready: true, fatal: String(e) };

@@ -124,14 +124,7 @@ ipcRenderer.on("keybinds:getAll", () => {
 	return activeKeybinds;
 });
 
-ipcRenderer.on("keybinds:trigger", (_, id, keyup) => {
-	const keybind = activeKeybinds.get(id);
-	if (!keybind) {
-		warn("Keybind not found: " + id);
-		void invoke("venbind:keybindDebugLog", `TRIGGER no-keybind id=${id}`);
-		return;
-	}
-
+function dispatchKeybind(id: string, keyup: boolean, keybind: Keybind) {
 	const dispatchSynthetic = () => {
 		document.dispatchEvent(new KeyboardEvent(keyup ? "keyup" : "keydown", keybind.eventSettings));
 	};
@@ -152,6 +145,50 @@ ipcRenderer.on("keybinds:trigger", (_, id, keyup) => {
 			void invoke("venbind:keybindDebugLog", `TRIGGER exec-err id=${id} ${String(e)}`);
 			dispatchSynthetic();
 		});
+}
+
+// TEMP DIAGNOSTIC: coalesce venbind key auto-repeat. While a key is HELD, venbind emits repeated
+// down/up/down/up pairs (~10/sec), which re-fires onTrigger over and over — toggles cancel out and
+// hold-actions (PTT) stutter. Collapse the burst into ONE logical press (first down) + ONE release
+// (debounced after the last up): a down cancels any pending release (it was just a repeat), and a
+// release only "counts" if no down arrives within the coalesce window.
+const keyRepeatState = new Map<string, { held: boolean; releaseTimer: ReturnType<typeof setTimeout> | null }>();
+const REPEAT_COALESCE_MS = 220;
+
+ipcRenderer.on("keybinds:trigger", (_, id, keyup) => {
+	const keybind = activeKeybinds.get(id);
+	if (!keybind) {
+		warn("Keybind not found: " + id);
+		void invoke("venbind:keybindDebugLog", `TRIGGER no-keybind id=${id}`);
+		return;
+	}
+
+	let state = keyRepeatState.get(id);
+	if (!state) {
+		state = { held: false, releaseTimer: null };
+		keyRepeatState.set(id, state);
+	}
+	const st = state;
+
+	if (!keyup) {
+		// raw key-down: cancel a pending release (auto-repeat), emit one logical press on first down
+		if (st.releaseTimer) {
+			clearTimeout(st.releaseTimer);
+			st.releaseTimer = null;
+		}
+		if (!st.held) {
+			st.held = true;
+			dispatchKeybind(id, false, keybind);
+		}
+	} else {
+		// raw key-up: debounce — a real release only counts if no key-down arrives within the window
+		if (st.releaseTimer) clearTimeout(st.releaseTimer);
+		st.releaseTimer = setTimeout(() => {
+			st.held = false;
+			st.releaseTimer = null;
+			dispatchKeybind(id, true, keybind);
+		}, REPEAT_COALESCE_MS);
+	}
 });
 
 function debounce<T extends (...args: Parameters<T>) => void>(func: T, timeout = 300) {
