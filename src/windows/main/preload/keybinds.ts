@@ -2,7 +2,7 @@ import { contextBridge, ipcRenderer } from "electron";
 
 import { invoke } from "../../../ipc/client.preload.ts";
 import { warn } from "../../../modules/logger.preload.ts";
-import { parseDiscordShortcut } from "./keybindShortcut.ts";
+import { keyCodeToDomCode, parseDiscordShortcut } from "./keybindShortcut.ts";
 
 interface Keybind {
 	shortcut: string;
@@ -11,6 +11,8 @@ interface Keybind {
 		ctrlKey: boolean;
 		altKey: boolean;
 		shiftKey: boolean;
+		code?: string;
+		key?: string;
 	};
 }
 
@@ -33,6 +35,10 @@ const getActiveKeybinds = (): Map<string, Keybind> => {
 
 		if (!shortcut || mainKeyCode === undefined) continue;
 
+		// Non-printable keys (PageUp/Insert/F-keys/…) only match Discord's keybind handler when the
+		// synthetic event carries a DOM `code`/`key`; printable keys leave these unset (matched by keyCode).
+		const domCode = keyCodeToDomCode(mainKeyCode);
+
 		activeKeybinds.set(macroCaseToTitleCase(binding.action), {
 			shortcut,
 			eventSettings: {
@@ -40,6 +46,7 @@ const getActiveKeybinds = (): Map<string, Keybind> => {
 				ctrlKey: ctrl,
 				altKey: alt,
 				shiftKey: shift,
+				...(domCode ? { code: domCode, key: domCode } : {}),
 			},
 		});
 	}

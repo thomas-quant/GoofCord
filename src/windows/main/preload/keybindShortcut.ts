@@ -95,6 +95,67 @@ const OEM_KEYCODE_CHARS: Record<number, string> = {
 
 export const keyCodeToChar = (keyCode: number): string => NAMED_KEYCODE_TOKENS[keyCode] ?? OEM_KEYCODE_CHARS[keyCode] ?? String.fromCharCode(keyCode);
 
+// Discord's keybind matcher is branched by key class: PRINTABLE keys (letters/digits/OEM
+// punctuation/space) are matched by their numeric keyCode, but NON-PRINTABLE keys (navigation,
+// editing, function) are matched by their DOM KeyboardEvent.code/key string. The global-keybind
+// path dispatches a synthetic KeyboardEvent that only carried `keyCode`, so non-printable keys had
+// no `code` for Discord to read and silently never fired — while `]`/`.`/Space worked. Supplying the
+// DOM code lets the matcher resolve them. For every key here the DOM `key` equals the DOM `code`, so
+// one map serves both fields. Printable keys (Space 32, numpad 96-111, letters/digits/OEM) are
+// intentionally excluded: they already match via the keyCode branch, and adding a `code` could flip
+// Discord onto the other branch and regress them.
+const NAMED_KEYCODE_DOMCODE: Record<number, string> = {
+	8: "Backspace",
+	9: "Tab",
+	13: "Enter",
+	27: "Escape",
+	33: "PageUp",
+	34: "PageDown",
+	35: "End",
+	36: "Home",
+	45: "Insert",
+	46: "Delete",
+	37: "ArrowLeft",
+	38: "ArrowUp",
+	39: "ArrowRight",
+	40: "ArrowDown",
+	20: "CapsLock",
+	144: "NumLock",
+	145: "ScrollLock",
+	44: "PrintScreen",
+	19: "Pause",
+	93: "ContextMenu",
+	112: "F1",
+	113: "F2",
+	114: "F3",
+	115: "F4",
+	116: "F5",
+	117: "F6",
+	118: "F7",
+	119: "F8",
+	120: "F9",
+	121: "F10",
+	122: "F11",
+	123: "F12",
+	124: "F13",
+	125: "F14",
+	126: "F15",
+	127: "F16",
+	128: "F17",
+	129: "F18",
+	130: "F19",
+	131: "F20",
+	132: "F21",
+	133: "F22",
+	134: "F23",
+	135: "F24",
+};
+
+// DOM `KeyboardEvent.code`/`key` for a non-printable named key, or undefined for printable keys
+// (which Discord matches by keyCode and must be left untouched). Consumed by keybinds.ts to enrich
+// the synthetic event so global non-printable keybinds match Discord's matcher.
+export const keyCodeToDomCode = (keyCode: number): string | undefined => NAMED_KEYCODE_DOMCODE[keyCode];
+
 const MODIFIERS = {
 	CTRL: 17,
 	ALT: 18,

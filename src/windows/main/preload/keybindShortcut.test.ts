@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { keyCodeToChar, parseDiscordShortcut } from "./keybindShortcut.ts";
+import { keyCodeToChar, keyCodeToDomCode, parseDiscordShortcut } from "./keybindShortcut.ts";
 
 describe("keyCodeToChar", () => {
 	test("OEM punctuation keyCodes resolve to their literal char", () => {
@@ -22,6 +22,25 @@ describe("keyCodeToChar", () => {
 	test("alphanumeric keyCodes resolve via String.fromCharCode", () => {
 		expect(keyCodeToChar(65)).toBe("A");
 		expect(keyCodeToChar(49)).toBe("1");
+	});
+});
+
+describe("keyCodeToDomCode", () => {
+	test("non-printable named keys resolve to their DOM code string", () => {
+		expect(keyCodeToDomCode(33)).toBe("PageUp");
+		expect(keyCodeToDomCode(34)).toBe("PageDown");
+		expect(keyCodeToDomCode(45)).toBe("Insert");
+		expect(keyCodeToDomCode(46)).toBe("Delete");
+		expect(keyCodeToDomCode(38)).toBe("ArrowUp");
+		expect(keyCodeToDomCode(123)).toBe("F12");
+	});
+
+	test("printable keys are excluded so Discord keeps matching them by keyCode", () => {
+		expect(keyCodeToDomCode(32)).toBeUndefined(); // Space
+		expect(keyCodeToDomCode(221)).toBeUndefined(); // ]
+		expect(keyCodeToDomCode(190)).toBeUndefined(); // .
+		expect(keyCodeToDomCode(65)).toBeUndefined(); // A
+		expect(keyCodeToDomCode(96)).toBeUndefined(); // numpad0
 	});
 });
 
