@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: v1.3
 milestone_name: Small Upstream-able Fixes
 status: in_progress
-last_updated: "2026-06-07T05:31:59.115Z"
-last_activity: 2026-06-07 — KEY-01 first Windows test inconclusive (wrong build base); map CONFIRMED correct vs ground truth; handoff written (10-HANDOFF.md)
+last_updated: "2026-06-10T23:00:00.000Z"
+last_activity: 2026-06-10 — #179 investigated (punctuation=client-fixable / named keys=venbind-blocked / mouse5=unsupported); venbind named-key fix written + pushed to fork thomas-quant/venbind (CI run 27311623130 building); GoofCord wiring spec written (10-GOOFCORD-WIRING.md)
 progress:
   total_phases: 3
   completed_phases: 0
@@ -28,8 +28,10 @@ Phase: 10 (KEY-01 in-debug — map correct, end-to-end unvalidated) · 11 (STREA
 Plan: —
 Status: KEY-01 (`7103149`) map **confirmed correct vs ground truth** (Discord persists standard DOM keyCodes — localStorage: 188=`,`, 190=`.`, 192=`` ` ``). **WIN (user-confirmed):** with the fix, non-alpha keybinds (`]`, Ctrl-combos) **register/fire when FOCUSED** — they didn't before (Discord runs desktop/embedded → relies on venbind, so the fix's registration string is on the focused firing path too; earlier "focused=Discord-native" model was WRONG). **PRESERVE this — it's the success.** Remaining gap: **out-of-focus/global** firing unvalidated (broke on wrong `origin/main` base; suspect the `venbind.ts:38` focus-gate). **Next agent:** see `phases/10-keybinds-non-alphanumeric-fix/10-HANDOFF.md` — bun:test on the pure map, named-key gap (F-keys/space), re-validate on the **dev/release base** with a focused-regression guard. **Targets upstream #179** (non-alpha global keybinds, OPEN — maintainer blamed venbind, we found it's GoofCord's `String.fromCharCode` glue; KEY-01 likely Closes #179; study his reverted `3f9096e` before PRing). STREAM-05 (`c988872`) separate/low-risk, unvalidated. SEC-01 deferred.
 
+**2026-06-10 PIVOT (supersedes the named-key framing above):** #179 fully investigated — KEY-01 (punctuation, `7103149`) is the ONLY client-side-fixable part and does **NOT** Close #179; it addresses the `[`/`\` punctuation regression only. **Named keys (PageUp/PageDown, F-keys, etc.) were venbind-blocked**, not a `String.fromCharCode` issue: venbind's matcher lowercases registrations but compares case-sensitively against capitalized/locale-dependent press-side names (`GetKeyNameTextW` on Win, keysym Debug on Linux) — broken on **both** backends. **mouse5 unsupported** (venbind has no mouse events). venbind is dormant (last code 2025-05-27) with no maintained fork → **fixed venbind itself**: fork `thomas-quant/venbind`, branch `fix/uiohook-named-key-matching` (`b8d9c82`, canonical lowercase token map on both backends) + `fork-ci` (build-only CI + MS API docs), build run `27311623130`. **GoofCord-side wiring + the keybindShortcut.ts refactor/bun-tests are spec'd in `10-GOOFCORD-WIRING.md`** — do via GSD once CI is green and the prebuilt `.node` is in hand. Memory: `venbind-fix-branch-wip`, `venbind-dormant-no-maintained-fork`. Upstream PR to tuxinal/venbind still gated.
+
 **⚠ Clean-room:** the keybind map is grounded in the PUBLIC DOM keyCode standard; Discord internals were not copied — keep Discord-mapping investigation OUT of repo/commits/PRs.
-Last activity: 2026-06-07 — KEY-01 debugged to ground truth; handoff written for next agent
+Last activity: 2026-06-14 — Completed quick task 260614-2rn: DOM code/key on synthetic global-keybind events (non-printable keys); global PageUp runtime test pending
 
 ## Performance Metrics
 
@@ -117,6 +119,13 @@ Items acknowledged and carried forward from previous milestone close:
 | `01-VERIFICATION.md` | human_needed | Phase 1 human-verified (STREAM-01..04 all complete); flag stale |
 | `03-CONTEXT.md` | 3 open questions | The spike's own probe questions — resolved by the GO verdict (`03-FINDINGS.md`) |
 | `04-CONTEXT.md` | 3 open questions | Addon-home / transport questions — resolved in Phase 4 (in-repo crate + env override, shipped) |
+
+## Quick Tasks Completed
+
+| Date | Slug | Summary | Result |
+|------|------|---------|--------|
+| 2026-06-11 | [fix-venbind-windows-keybind-bugs-from-my](quick/260611-0ko-fix-venbind-windows-keybind-bugs-from-my/SUMMARY.md) | venbind mythos-review fixes: media-key→letter alias (#3), numpad-Enter parity (#4), FFI-unwind UB (#6a), doc correction; + fixed the never-green Linux CI (wayland/xkbfile deps + libclang detection) | venbind `fork-ci` `07006cf`+`fab3d35`+`dc855f0`, pushed. CI **green both targets** (run 27314521855). Runtime test on Windows still pending. #1/#2 deferred. |
+| 2026-06-14 | [global-keybind-domcode](quick/260614-2rn-global-keybind-domcode/260614-2rn-SUMMARY.md) | Global non-printable keybinds (PageUp/PageDown/Insert/Delete, arrows, F-keys) silently never fired — root-caused to Discord's matcher reading DOM `code`/`key` for non-printable keys while our synthetic event carried only `keyCode`. Added `keyCodeToDomCode` map + populated `code`/`key` on the synthetic event (printable keys excluded, unchanged). | `893e4f7`. `bun test` 10/10, `bun run check` clean. **Global PageUp Windows runtime test pending** (CI build → manual). Focused path out of scope (separate `venbind.ts:38` delivery issue). |
 
 ## Session Continuity
 
