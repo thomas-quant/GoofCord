@@ -14,11 +14,20 @@ export const keybindDispatchMainWorldSource = `
 	globalThis.__goofcordKeybindActions = globalThis.__goofcordKeybindActions || {};
 
 	// Called from inside Discord's KeybindStore (via the patch below) with the live actions map.
+	// Mirror Vesktop EXACTLY: wrap onTrigger so it is invoked AS A METHOD on the original action
+	// object (this === the action) and bake the context arg into the wrapper. diag4 stored the bare
+	// function reference on a new object, so calling it later had this === our wrapper object — which
+	// silently no-ops any onTrigger that uses 'this' (the FIRE-but-no-transmit failure we saw).
 	globalThis.__goofcordAddKeybindActions = function (actions) {
 		try {
 			for (const key in actions) {
 				const v = actions[key];
-				if (v) globalThis.__goofcordKeybindActions[key] = { onTrigger: v.onTrigger, keyEvents: v.keyEvents };
+				if (v && typeof v.onTrigger === "function") {
+					globalThis.__goofcordKeybindActions[key] = {
+						onTrigger: (keyState) => v.onTrigger(keyState, { context: undefined }),
+						keyEvents: v.keyEvents,
+					};
+				}
 			}
 		} catch (e) {}
 	};
@@ -28,10 +37,11 @@ export const keybindDispatchMainWorldSource = `
 		try {
 			const cb = globalThis.__goofcordKeybindActions[action];
 			if (!cb || typeof cb.onTrigger !== "function") return { handled: false, reason: "not-captured", available: Object.keys(globalThis.__goofcordKeybindActions) };
-			const ke = cb.keyEvents || { keydown: true, keyup: true };
-			if (ke.keyup && keyup) { cb.onTrigger(false, { context: undefined }); return { handled: true, called: "release" }; }
-			if (ke.keydown && !keyup) { cb.onTrigger(true, { context: undefined }); return { handled: true, called: "press" }; }
-			return { handled: false, reason: "edge-skip", keyEvents: ke };
+			const ke = cb.keyEvents || {};
+			const keInfo = { keyup: !!ke.keyup, keydown: !!ke.keydown };
+			if (ke.keyup && keyup) { cb.onTrigger(false); return { handled: true, called: "release", keInfo }; }
+			if (ke.keydown && !keyup) { cb.onTrigger(true); return { handled: true, called: "press", keInfo }; }
+			return { handled: false, reason: "edge-skip", keInfo };
 		} catch (e) {
 			return { handled: false, reason: String(e) };
 		}

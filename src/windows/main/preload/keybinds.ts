@@ -128,6 +128,7 @@ ipcRenderer.on("keybinds:trigger", (_, id, keyup) => {
 	const keybind = activeKeybinds.get(id);
 	if (!keybind) {
 		warn("Keybind not found: " + id);
+		void invoke("venbind:keybindDebugLog", `TRIGGER no-keybind id=${id}`);
 		return;
 	}
 
@@ -139,12 +140,18 @@ ipcRenderer.on("keybinds:trigger", (_, id, keyup) => {
 	// bypassing the DOM matcher that ignores non-printable keys. id is the raw action type.
 	// Fall back to the synthetic DOM event if the action wasn't captured (e.g. KeybindStore patch
 	// shape drifted) so printable keys can never regress.
+	// TEMP DIAGNOSTIC: log the dispatch result so we can tell (no DevTools) whether onTrigger was
+	// actually called (handled/called/keInfo) vs skipped/not-captured — the diag4 gap.
 	webFrame
-		.executeJavaScript(`(globalThis.__goofcordTriggerKeybind ? globalThis.__goofcordTriggerKeybind(${JSON.stringify(id)}, ${keyup ? "true" : "false"}) : { handled: false })`)
+		.executeJavaScript(`(globalThis.__goofcordTriggerKeybind ? globalThis.__goofcordTriggerKeybind(${JSON.stringify(id)}, ${keyup ? "true" : "false"}) : { handled: false, reason: "no-fn" })`)
 		.then((result: { handled?: boolean } | undefined) => {
+			void invoke("venbind:keybindDebugLog", `TRIGGER id=${id} keyup=${keyup} result=${JSON.stringify(result)}`);
 			if (!result?.handled) dispatchSynthetic();
 		})
-		.catch(() => dispatchSynthetic());
+		.catch((e) => {
+			void invoke("venbind:keybindDebugLog", `TRIGGER exec-err id=${id} ${String(e)}`);
+			dispatchSynthetic();
+		});
 });
 
 function debounce<T extends (...args: Parameters<T>) => void>(func: T, timeout = 300) {
