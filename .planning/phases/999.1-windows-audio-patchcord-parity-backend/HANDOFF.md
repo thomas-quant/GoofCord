@@ -1,8 +1,41 @@
 # HANDOFF — 999.1 Windows audio: patchcord-parity capture backend
 
-**Status:** Not started. Scope captured, public commitment made, work not yet begun.
+**Status:** IN PROGRESS — subtractive AEC direction explored and REJECTED (dead end); pivoting to per-app INCLUDE. See DECISION LOG below.
 **Created:** 2026-06-14
 **Backlog:** ROADMAP.md → Phase 999.1 (commit `f03b1b0`)
+
+---
+
+## DECISION LOG — 2026-07-03: subtractive self-echo AEC is a DEAD END → pivot to per-app INCLUDE
+
+A mid-milestone detour tried to make a **default endpoint-loopback capture also self-free** (capture the in-use output device, minus GoofCord's own voice, so a Discord call doesn't echo AND virtual-audio-cables don't leak). It was built as `startEndpointMinusSelf` = endpoint-loopback (A) − process-loopback-INCLUDE-of-self reference (B), cancelled by an adaptive filter. **ABANDONED.**
+
+**Why AEC is dead (user decision, firm):** Any subtractive canceller must *estimate* the echo path → a convergence/calibration ramp (echo leaks until it locks) + alignment/buffering latency. "No delay, no calibration" is a hard requirement → the entire subtractive family (our NLMS, WebRTC AEC3, Windows CWMAudioAEC) is out.
+
+**Evidence (branch `spike/999.1-endpoint-minus-self-aec`, 3 CI builds + 3 on-box runs):**
+- Run 1: concurrency PROVEN — endpoint-loopback + process-INCLUDE-self run together, no CoreMessaging crash; endpoint loopback excludes VAC. AEC was a no-op (unaligned).
+- Run 2: alignment bounded; **30 dB cancellation WHEN locked**, but the per-block correlation delay-lock held only ~10% of the time.
+- Run 3 (calibrate-once/lock/hold + reference-RMS instrumentation): **proved process-INCLUDE DOES capture Discord's voice** (reference_rms hit −10 dB, aligned ±2.8 ms) — but calibration NEVER locked: it resets on every speech gap (`reason=reference_inactive`), and voice is bursty → never converges. Confirmed subtractive cancellation is inseparable from calibration+delay → rejected.
+
+**Reusable wins (KEEP — do not re-derive):**
+- Concurrent endpoint-loopback + process-loopback INCLUDE is stable inside Electron (no crash) → de-risks multi-app INCLUDE mixing.
+- Process-loopback INCLUDE rooted at the Electron **main** `process.pid` captures the audio-service child's render (proven run 3) — so INCLUDE of a target app's tree will capture its audio.
+- CI wiring works: `testBuild.yml` compiles the addon in-workflow (`bun install` + `bun x napi build --release --target x86_64-pc-windows-msvc` in `native/wasapi-loopback`, then overwrite the prebuilt `.node` before `bun run build`). Reusable for any addon change.
+
+**SURVIVING DIRECTION — per-app INCLUDE (echo-free / VAC-free / delay-free / NO AEC):**
+Capture only the chosen app(s) via `PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE`, mix N. GoofCord's own voice is never captured → no echo, no VAC, zero latency, no calibration. This IS the patchcord-parity feature (Tier 1/2 below); the AEC was a detour off it.
+- Implement: Windows app enumerator (`IAudioSessionManager2`/`IAudioSessionEnumerator` → `{name, pid}`) → fill `audioNodes` in `fetchScreenshareData` (`screenshare.ts:44`, currently `[]` on win32) → the **existing** picker app-checklist lights up automatically.
+- Make `tryStartWasapiLoopback(audioConfig)` honor `mode:"app"` → INCLUDE the chosen pid tree(s).
+- Tradeoffs (accepted): user PICKS the app(s) (not blanket "system audio"); some games/anti-cheat don't capture cleanly (WASAPI gap).
+- "Share everything minus me" stays as the shipped **EXCLUDE-self** fix (#211) with its known VAC-leak limitation. There is NO way to get "everything on my speakers" AND "self-free" without AEC (dead) or a virtual driver (ruled out).
+
+**Artifacts / resume pointers:**
+- Fork branch `spike/999.1-endpoint-minus-self-aec` — AEC lineage + research. Commits: `08db393` spike, `5b234f0` alignment, `38c60b7` borrow-fix, `5baa1e6` deterministic-delay, `78c8b6f` research.
+- Research (on that branch): `.planning/phases/999.1-windows-audio-patchcord-parity-backend/research/` = APPROACH-3 (WebRTC AEC3), APPROACH-5 (Windows AEC), SYNTHESIS.md; plus SPIKE-RUN1/RUN2-FINDINGS.md. /tmp worktree was `/tmp/gc-spike-9991` (volatile — rebuild via `git worktree add`).
+- On-box test logs: `%APPDATA%/goofcord/wasapi-aec-spike.run1.log`, `.run2.log`, and the run-3 `.log`.
+- **NEXT STEP when resumed:** build per-app INCLUDE (enumerator → `audioNodes` → INCLUDE-mix in the addon). Do NOT resurrect the AEC.
+
+---
 
 ---
 
@@ -76,7 +109,9 @@ So the parity work is mostly: (a) a Windows enumerator to populate `audioNodes`,
 
 ### Also wanted (from the user, beyond the maintainer's ask)
 - **Dedicated window capture** (à la OBS window capture).
-- **Selectable audio capture source/device.** Fixes a **real current bug**: if a user routes audio through a **virtual audio cable**, exclude-self still echoes (the VAC loop isn't in GoofCord's process tree, so it re-enters the captured mix). Letting the user pick/exclude the source resolves it. *(Candidate to split into its own bug ticket — it's a present defect, not just future polish.)*
+- **Default = capture ONLY the active audio output (render) endpoint** *(firm requirement, 2026-07-03)*. The default capture mode must bind to whatever render device the system/Discord is actually outputting to (e.g. speakers), and capture *exclusively* from that endpoint. Rationale: if capture is broad (all endpoints / process-loopback that sweeps in extra render devices), a **virtual audio cable** endpoint gets pulled into the mix → **echo or unintended audio capture** (the VAC loop isn't in GoofCord's process tree, so exclude-self doesn't stop it re-entering). Binding to the single in-use output endpoint by default sidesteps this entirely.
+  - **Reference implementation to study: OBS.** OBS's per-endpoint / WASAPI output capture picks a specific render device and loopback-captures only that — mirror how it (a) enumerates render endpoints, (b) identifies the default/in-use one, and (c) does endpoint (device) loopback rather than blanket process loopback for this default path. Contrast with the process-loopback path (Tiers 1–2) and keep them distinct capture modes.
+- **Selectable audio capture source/device.** The user-facing counterpart to the default above: let the user pick/exclude the render endpoint explicitly. Same root bug (VAC echo); the default handles the common case, the selector handles the rest. *(Candidate to split into its own bug ticket — it's a present defect, not just future polish.)*
 
 ---
 
