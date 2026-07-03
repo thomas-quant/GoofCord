@@ -116,11 +116,18 @@ const STOP_JOIN_TIMEOUT_MS: u64 = 1500;
 
 // Throwaway milestone 999.1 AEC spike knobs. Keep deliberately small: the goal is to
 // measure whether endpoint-minus-self has a usable residual, not ship production DSP.
-const AEC_MAX_DELAY_CHUNKS: usize = 8;
+const QPC_100NS_PER_SEC: u64 = 10_000_000;
+const AEC_MIN_DELAY_CHUNKS: usize = 1; // 10 ms; avoid the run-1 lock-at-zero failure.
+const AEC_MAX_DELAY_CHUNKS: usize = 14; // 140 ms render -> endpoint residual search.
 const AEC_FILTER_TAPS: usize = 128;
 const AEC_MU: f32 = 0.18;
 const AEC_EPSILON: f32 = 1.0e-6;
-const AEC_MAX_BUFFER_SAMPLES: usize = CHUNK_SAMPLES * 200; // ~2 seconds.
+const AEC_ALIGNMENT_MAX_BUFFER_CHUNKS: usize = 18; // ~180 ms cap per capture stream.
+const AEC_ALIGNMENT_TOLERANCE_100NS: i128 = 150_000; // 15 ms timestamp match window.
+const AEC_DELAY_LOCK_MIN_SCORE: f32 = 0.08;
+const AEC_DELAY_UNLOCK_SCORE: f32 = 0.03;
+const AEC_DELAY_RESCAN_BLOCKS: usize = 50;
+const AEC_DELAY_UNLOCK_CHECKS: usize = 3;
 
 /// Build the hardcoded 48k/stereo/f32 WAVEFORMATEXTENSIBLE.
 fn build_wave_format() -> WAVEFORMATEXTENSIBLE {
@@ -520,6 +527,45 @@ fn join_all_with_timeout(joins: Vec<JoinHandle<()>>) {
 // (SetEventHandle -> GetService(IAudioCaptureClient) -> Start -> wait-on-event ->
 // GetNextPacketSize / GetBuffer / ReleaseBuffer). Re-expressed via windows-rs.
 
+#[derive(Clone, Copy)]
+struct CaptureTimestamp {
+    device_position: u64,
+    qpc_position_100ns: u64,
+}
+
+impl CaptureTimestamp {
+    fn offset_frames(self, frames: u64) -> Self {
+        Self {
+            device_position: self.device_position.saturating_add(frames),
+            qpc_position_100ns: self
+                .qpc_position_100ns
+                .saturating_add(frames_to_qpc_100ns(frames)),
+        }
+    }
+}
+
+struct CapturedChunk {
+    bytes: Vec<u8>,
+    timestamp: CaptureTimestamp,
+}
+
+fn frames_to_qpc_100ns(frames: u64) -> u64 {
+    ((frames as u128 * QPC_100NS_PER_SEC as u128 + (SAMPLE_RATE as u128 / 2))
+        / SAMPLE_RATE as u128) as u64
+}
+
+fn qpc_delta_100ns(a: u64, b: u64) -> i128 {
+    a as i128 - b as i128
+}
+
+fn abs_i128(value: i128) -> i128 {
+    if value < 0 {
+        -value
+    } else {
+        value
+    }
+}
+
 /// The capture loop. Owns `audio_client` (already Initialize()'d to 48k/stereo/f32).
 /// Batches the device's interleaved-stereo f32 frames into 3840-byte chunks and passes
 /// each to `on_chunk`. Exits when `stop_event` fires.
@@ -528,7 +574,7 @@ unsafe fn run_capture_loop_with_sink<F>(
     stop_event: HANDLE,
     mut on_chunk: F,
 ) where
-    F: FnMut(Vec<u8>),
+    F: FnMut(CapturedChunk),
 {
     // Event the engine signals each period (EVENTCALLBACK mode). Auto-reset, unsignaled.
     let audio_event = match CreateEventW(None, false, false, PCWSTR::null()) {
@@ -554,8 +600,10 @@ unsafe fn run_capture_loop_with_sink<F>(
     }
 
     // Accumulator: fill to exactly CHUNK_BYTES (3840), flush, repeat. WASAPI packets do
-    // not align to 480 frames, so we re-chunk across packet boundaries.
+    // not align to 480 frames, so we re-chunk across packet boundaries while carrying
+    // the timestamp of the first frame in each emitted chunk.
     let mut acc: Vec<u8> = Vec::with_capacity(CHUNK_BYTES * 2);
+    let mut acc_start: Option<CaptureTimestamp> = None;
 
     // Wait on BOTH the audio event and the stop event; WaitForMultipleObjects would be
     // ideal, but a short timed wait on the audio event + a stop-event poll keeps the
@@ -582,8 +630,18 @@ unsafe fn run_capture_loop_with_sink<F>(
             let mut data_ptr: *mut u8 = std::ptr::null_mut();
             let mut num_frames: u32 = 0;
             let mut flags: u32 = 0;
+            let mut device_position: u64 = 0;
+            let mut qpc_position_100ns: u64 = 0;
             if capture
-                .GetBuffer(&mut data_ptr, &mut num_frames, &mut flags, None, None)
+                .GetBuffer(
+                    &mut data_ptr,
+                    &mut num_frames,
+                    &mut flags,
+                    // TODO verify in CI: windows-rs 0.62 GetBuffer optional timestamp
+                    // out-params accept Some(&mut u64) for these WASAPI positions.
+                    Some(&mut device_position),
+                    Some(&mut qpc_position_100ns),
+                )
                 .is_err()
             {
                 break;
@@ -591,22 +649,54 @@ unsafe fn run_capture_loop_with_sink<F>(
 
             let frame_count = num_frames as usize;
             let byte_count = frame_count * BYTES_PER_FRAME;
-            if (flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32) != 0 || data_ptr.is_null() {
-                // Silent packet: the engine says "treat as silence" — append zeros so the
-                // timeline stays monotonic (the renderer expects continuous f32 frames).
-                acc.resize(acc.len() + byte_count, 0u8);
-            } else {
-                let slice = std::slice::from_raw_parts(data_ptr, byte_count);
-                acc.extend_from_slice(slice);
+            let packet_timestamp = CaptureTimestamp {
+                device_position,
+                qpc_position_100ns,
+            };
+            let packet_bytes =
+                if (flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32) != 0 || data_ptr.is_null() {
+                    None
+                } else {
+                    Some(std::slice::from_raw_parts(data_ptr, byte_count))
+                };
+
+            let mut packet_frame_offset = 0usize;
+            while packet_frame_offset < frame_count {
+                if acc.is_empty() {
+                    acc_start =
+                        Some(packet_timestamp.offset_frames(packet_frame_offset as u64));
+                }
+
+                let frames_in_acc = acc.len() / BYTES_PER_FRAME;
+                let frames_needed = FRAMES_PER_CHUNK.saturating_sub(frames_in_acc);
+                let frames_available = frame_count - packet_frame_offset;
+                let frames_to_copy = frames_needed.min(frames_available);
+                let bytes_to_copy = frames_to_copy * BYTES_PER_FRAME;
+
+                if let Some(slice) = packet_bytes {
+                    let start = packet_frame_offset * BYTES_PER_FRAME;
+                    let end = start + bytes_to_copy;
+                    acc.extend_from_slice(&slice[start..end]);
+                } else {
+                    // Silent packet: the engine says "treat as silence" — append zeros so
+                    // the timeline stays monotonic (the renderer expects continuous f32).
+                    acc.resize(acc.len() + bytes_to_copy, 0u8);
+                }
+
+                packet_frame_offset += frames_to_copy;
+
+                if acc.len() == CHUNK_BYTES {
+                    let timestamp = acc_start.unwrap_or(packet_timestamp);
+                    let chunk = std::mem::replace(&mut acc, Vec::with_capacity(CHUNK_BYTES * 2));
+                    on_chunk(CapturedChunk {
+                        bytes: chunk,
+                        timestamp,
+                    });
+                    acc_start = None;
+                }
             }
 
             let _ = capture.ReleaseBuffer(num_frames);
-
-            // Flush as many full 3840-byte chunks as we now have.
-            while acc.len() >= CHUNK_BYTES {
-                let chunk: Vec<u8> = acc.drain(..CHUNK_BYTES).collect();
-                on_chunk(chunk);
-            }
         }
     }
 
@@ -620,7 +710,10 @@ unsafe fn run_capture_loop_with_sink<F>(
 /// (drop-oldest at the FFI boundary). Bounded latency wins over perfect fidelity.
 unsafe fn run_capture_loop(audio_client: IAudioClient, on_chunk: ChunkTsfn, stop_event: HANDLE) {
     run_capture_loop_with_sink(audio_client, stop_event, |chunk| {
-        on_chunk.call(Ok(chunk.into()), ThreadsafeFunctionCallMode::NonBlocking);
+        on_chunk.call(
+            Ok(chunk.bytes.into()),
+            ThreadsafeFunctionCallMode::NonBlocking,
+        );
     });
 }
 
@@ -635,9 +728,28 @@ enum SpikeCaptureSource {
     IncludeProcessTree(u32),
 }
 
+struct TimestampedAudioBlock {
+    samples: Vec<f32>,
+    timestamp: CaptureTimestamp,
+}
+
 struct StreamBuffers {
-    endpoint: VecDeque<f32>,
-    reference: VecDeque<f32>,
+    endpoint: VecDeque<TimestampedAudioBlock>,
+    reference: VecDeque<TimestampedAudioBlock>,
+    dropped_endpoint_chunks: u64,
+    dropped_reference_chunks: u64,
+}
+
+struct AlignedCaptureBlock {
+    endpoint: Vec<f32>,
+    reference: Vec<f32>,
+    endpoint_buffered_samples: usize,
+    reference_buffered_samples: usize,
+    aligned: bool,
+    alignment_delta_100ns: i128,
+    device_delta_frames: i128,
+    dropped_endpoint_chunks: u64,
+    dropped_reference_chunks: u64,
 }
 
 struct SharedCaptureBuffers {
@@ -651,49 +763,133 @@ impl SharedCaptureBuffers {
             inner: Mutex::new(StreamBuffers {
                 endpoint: VecDeque::new(),
                 reference: VecDeque::new(),
+                dropped_endpoint_chunks: 0,
+                dropped_reference_chunks: 0,
             }),
             ready: Condvar::new(),
         }
     }
 
-    fn push_bytes(&self, stream: SpikeStream, chunk: &[u8]) {
-        let mut guard = self.inner.lock().unwrap_or_else(|p| p.into_inner());
-        let target = match stream {
-            SpikeStream::Endpoint => &mut guard.endpoint,
-            SpikeStream::Reference => &mut guard.reference,
-        };
-
-        for sample in chunk.chunks_exact(4) {
-            target.push_back(f32::from_le_bytes([sample[0], sample[1], sample[2], sample[3]]));
+    fn push_chunk(&self, stream: SpikeStream, chunk: CapturedChunk) {
+        let mut samples = Vec::with_capacity(CHUNK_SAMPLES);
+        for sample in chunk.bytes.chunks_exact(4).take(CHUNK_SAMPLES) {
+            samples.push(f32::from_le_bytes([sample[0], sample[1], sample[2], sample[3]]));
+        }
+        while samples.len() < CHUNK_SAMPLES {
+            samples.push(0.0);
         }
 
-        while target.len() > AEC_MAX_BUFFER_SAMPLES {
-            let _ = target.pop_front();
+        let block = TimestampedAudioBlock {
+            samples,
+            timestamp: chunk.timestamp,
+        };
+
+        let mut guard = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+        match stream {
+            SpikeStream::Endpoint => {
+                guard.endpoint.push_back(block);
+                Self::trim_queue(&mut guard.endpoint, &mut guard.dropped_endpoint_chunks);
+            }
+            SpikeStream::Reference => {
+                guard.reference.push_back(block);
+                Self::trim_queue(&mut guard.reference, &mut guard.dropped_reference_chunks);
+            }
         }
         self.ready.notify_one();
     }
 
-    fn wait_pop_block(&self, stop_event: HANDLE) -> Option<(Vec<f32>, Vec<f32>, usize, usize)> {
+    fn trim_queue(queue: &mut VecDeque<TimestampedAudioBlock>, dropped_chunks: &mut u64) {
+        while queue.len() > AEC_ALIGNMENT_MAX_BUFFER_CHUNKS {
+            let _ = queue.pop_front();
+            *dropped_chunks = dropped_chunks.saturating_add(1);
+        }
+    }
+
+    fn drop_endpoint_front(guard: &mut StreamBuffers) {
+        let _ = guard.endpoint.pop_front();
+        guard.dropped_endpoint_chunks = guard.dropped_endpoint_chunks.saturating_add(1);
+    }
+
+    fn drop_reference_front(guard: &mut StreamBuffers) {
+        let _ = guard.reference.pop_front();
+        guard.dropped_reference_chunks = guard.dropped_reference_chunks.saturating_add(1);
+    }
+
+    fn try_pop_aligned(guard: &mut StreamBuffers) -> Option<AlignedCaptureBlock> {
+        loop {
+            let endpoint_qpc = guard.endpoint.front()?.timestamp.qpc_position_100ns;
+
+            while let Some(reference) = guard.reference.front() {
+                let delta = qpc_delta_100ns(reference.timestamp.qpc_position_100ns, endpoint_qpc);
+                if delta < -AEC_ALIGNMENT_TOLERANCE_100NS {
+                    Self::drop_reference_front(guard);
+                } else {
+                    break;
+                }
+            }
+
+            let Some(reference) = guard.reference.front() else {
+                return None;
+            };
+            if qpc_delta_100ns(reference.timestamp.qpc_position_100ns, endpoint_qpc)
+                > AEC_ALIGNMENT_TOLERANCE_100NS
+            {
+                Self::drop_endpoint_front(guard);
+                continue;
+            }
+
+            let mut best_idx = None;
+            let mut best_abs_delta = AEC_ALIGNMENT_TOLERANCE_100NS + 1;
+            for (idx, reference) in guard.reference.iter().enumerate() {
+                let delta = qpc_delta_100ns(reference.timestamp.qpc_position_100ns, endpoint_qpc);
+                if delta > AEC_ALIGNMENT_TOLERANCE_100NS {
+                    break;
+                }
+
+                let abs_delta = abs_i128(delta);
+                if abs_delta <= AEC_ALIGNMENT_TOLERANCE_100NS && abs_delta < best_abs_delta {
+                    best_idx = Some(idx);
+                    best_abs_delta = abs_delta;
+                }
+            }
+
+            let reference_idx = best_idx?;
+            for _ in 0..reference_idx {
+                Self::drop_reference_front(guard);
+            }
+
+            let endpoint = guard.endpoint.pop_front().unwrap();
+            let reference = guard.reference.pop_front().unwrap();
+            let alignment_delta_100ns = qpc_delta_100ns(
+                reference.timestamp.qpc_position_100ns,
+                endpoint.timestamp.qpc_position_100ns,
+            );
+            let device_delta_frames = reference.timestamp.device_position as i128
+                - endpoint.timestamp.device_position as i128;
+
+            return Some(AlignedCaptureBlock {
+                endpoint: endpoint.samples,
+                reference: reference.samples,
+                endpoint_buffered_samples: guard.endpoint.len() * CHUNK_SAMPLES,
+                reference_buffered_samples: guard.reference.len() * CHUNK_SAMPLES,
+                aligned: true,
+                alignment_delta_100ns,
+                device_delta_frames,
+                dropped_endpoint_chunks: guard.dropped_endpoint_chunks,
+                dropped_reference_chunks: guard.dropped_reference_chunks,
+            });
+        }
+    }
+
+    fn wait_pop_block(&self, stop_event: HANDLE) -> Option<AlignedCaptureBlock> {
         let mut guard = self.inner.lock().unwrap_or_else(|p| p.into_inner());
         loop {
             if unsafe { WaitForSingleObject(stop_event, 0) } == WAIT_OBJECT_0 {
                 return None;
             }
 
-            if guard.endpoint.len() >= CHUNK_SAMPLES {
-                let mut endpoint = Vec::with_capacity(CHUNK_SAMPLES);
-                for _ in 0..CHUNK_SAMPLES {
-                    endpoint.push(guard.endpoint.pop_front().unwrap_or(0.0));
-                }
-
-                let mut reference = Vec::with_capacity(CHUNK_SAMPLES);
-                for _ in 0..CHUNK_SAMPLES {
-                    reference.push(guard.reference.pop_front().unwrap_or(0.0));
-                }
-
-                let endpoint_buffered = guard.endpoint.len();
-                let reference_buffered = guard.reference.len();
-                return Some((endpoint, reference, endpoint_buffered, reference_buffered));
+            if let Some(block) = Self::try_pop_aligned(&mut guard) {
+                return Some(block);
             }
 
             guard = match self.ready.wait_timeout(guard, Duration::from_millis(50)) {
@@ -709,7 +905,15 @@ struct NlmsCanceller {
     x_history: VecDeque<f32>,
     reference_history: VecDeque<f32>,
     estimated_delay_samples: usize,
+    delay_locked: bool,
+    delay_score: f32,
+    poor_delay_checks: usize,
     blocks_until_delay_scan: usize,
+}
+
+struct DelayEstimate {
+    delay_samples: usize,
+    score: f32,
 }
 
 impl NlmsCanceller {
@@ -718,7 +922,10 @@ impl NlmsCanceller {
             weights: vec![0.0; AEC_FILTER_TAPS],
             x_history: VecDeque::from(vec![0.0; AEC_FILTER_TAPS]),
             reference_history: VecDeque::new(),
-            estimated_delay_samples: 0,
+            estimated_delay_samples: AEC_MIN_DELAY_CHUNKS * CHUNK_SAMPLES,
+            delay_locked: false,
+            delay_score: 0.0,
+            poor_delay_checks: 0,
             blocks_until_delay_scan: 0,
         }
     }
@@ -733,12 +940,7 @@ impl NlmsCanceller {
             let _ = self.reference_history.pop_front();
         }
 
-        if self.blocks_until_delay_scan == 0 {
-            self.estimated_delay_samples = self.estimate_delay(near);
-            self.blocks_until_delay_scan = 50;
-        } else {
-            self.blocks_until_delay_scan -= 1;
-        }
+        self.update_delay_lock(near);
 
         let reference = self.delayed_reference_block(near.len());
         let mut output = Vec::with_capacity(near.len());
@@ -772,38 +974,115 @@ impl NlmsCanceller {
         output
     }
 
-    fn estimate_delay(&self, near: &[f32]) -> usize {
-        if self.reference_history.len() < near.len() {
-            return 0;
+    fn update_delay_lock(&mut self, near: &[f32]) {
+        if self.reference_history.len()
+            < near.len() + AEC_MIN_DELAY_CHUNKS * CHUNK_SAMPLES
+        {
+            return;
+        }
+
+        if self.blocks_until_delay_scan > 0 {
+            self.blocks_until_delay_scan -= 1;
+            return;
+        }
+
+        if !self.delay_locked {
+            let estimate = self.estimate_delay(near);
+            self.apply_delay_estimate(estimate);
+            if self.delay_score >= AEC_DELAY_LOCK_MIN_SCORE {
+                self.delay_locked = true;
+                self.poor_delay_checks = 0;
+                self.blocks_until_delay_scan = AEC_DELAY_RESCAN_BLOCKS;
+            } else {
+                self.blocks_until_delay_scan = 5;
+            }
+            return;
+        }
+
+        self.delay_score = self.score_delay(near, self.estimated_delay_samples);
+        if self.delay_score < AEC_DELAY_UNLOCK_SCORE {
+            self.poor_delay_checks = self.poor_delay_checks.saturating_add(1);
+        } else {
+            self.poor_delay_checks = 0;
+        }
+
+        if self.poor_delay_checks >= AEC_DELAY_UNLOCK_CHECKS {
+            self.delay_locked = false;
+            self.poor_delay_checks = 0;
+            let estimate = self.estimate_delay(near);
+            self.apply_delay_estimate(estimate);
+            if self.delay_score >= AEC_DELAY_LOCK_MIN_SCORE {
+                self.delay_locked = true;
+                self.blocks_until_delay_scan = AEC_DELAY_RESCAN_BLOCKS;
+            }
+        } else {
+            self.blocks_until_delay_scan = AEC_DELAY_RESCAN_BLOCKS;
+        }
+    }
+
+    fn apply_delay_estimate(&mut self, estimate: DelayEstimate) {
+        if self.estimated_delay_samples.abs_diff(estimate.delay_samples) >= CHUNK_SAMPLES {
+            self.weights.fill(0.0);
+            self.x_history = VecDeque::from(vec![0.0; AEC_FILTER_TAPS]);
+        }
+        self.estimated_delay_samples = estimate.delay_samples;
+        self.delay_score = estimate.score;
+    }
+
+    fn estimate_delay(&self, near: &[f32]) -> DelayEstimate {
+        let mut best = DelayEstimate {
+            delay_samples: AEC_MIN_DELAY_CHUNKS * CHUNK_SAMPLES,
+            score: 0.0,
+        };
+        if self.reference_history.len() < near.len() + best.delay_samples {
+            return best;
         }
 
         let near_energy = near.iter().map(|v| *v * *v).sum::<f32>().sqrt() + AEC_EPSILON;
-        let mut best_delay = 0;
-        let mut best_score = 0.0f32;
 
-        for delay_chunks in 0..=AEC_MAX_DELAY_CHUNKS {
+        for delay_chunks in AEC_MIN_DELAY_CHUNKS..=AEC_MAX_DELAY_CHUNKS {
             let delay_samples = delay_chunks * CHUNK_SAMPLES;
             if self.reference_history.len() < near.len() + delay_samples {
                 continue;
             }
 
-            let start = self.reference_history.len() - near.len() - delay_samples;
-            let mut dot = 0.0f32;
-            let mut ref_energy = AEC_EPSILON;
-            for (i, near_sample) in near.iter().enumerate() {
-                let reference_sample = self.reference_history[start + i];
-                dot += *near_sample * reference_sample;
-                ref_energy += reference_sample * reference_sample;
-            }
-
-            let score = dot.abs() / (near_energy * ref_energy.sqrt());
-            if score > best_score {
-                best_score = score;
-                best_delay = delay_samples;
+            let score = self.score_delay_with_near_energy(near, near_energy, delay_samples);
+            if score > best.score {
+                best = DelayEstimate {
+                    delay_samples,
+                    score,
+                };
             }
         }
 
-        best_delay
+        best
+    }
+
+    fn score_delay(&self, near: &[f32], delay_samples: usize) -> f32 {
+        if self.reference_history.len() < near.len() + delay_samples {
+            return 0.0;
+        }
+
+        let near_energy = near.iter().map(|v| *v * *v).sum::<f32>().sqrt() + AEC_EPSILON;
+        self.score_delay_with_near_energy(near, near_energy, delay_samples)
+    }
+
+    fn score_delay_with_near_energy(
+        &self,
+        near: &[f32],
+        near_energy: f32,
+        delay_samples: usize,
+    ) -> f32 {
+        let start = self.reference_history.len() - near.len() - delay_samples;
+        let mut dot = 0.0f32;
+        let mut ref_energy = AEC_EPSILON;
+        for (i, near_sample) in near.iter().enumerate() {
+            let reference_sample = self.reference_history[start + i];
+            dot += *near_sample * reference_sample;
+            ref_energy += reference_sample * reference_sample;
+        }
+
+        dot.abs() / (near_energy * ref_energy.sqrt())
     }
 
     fn delayed_reference_block(&self, len: usize) -> Vec<f32> {
@@ -872,7 +1151,7 @@ fn spawn_spike_capture_thread(
                 append_diag(Some(&log_path), format!("{label} capture loop entering"));
                 unsafe {
                     run_capture_loop_with_sink(client, stop_handle.0, |chunk| {
-                        shared.push_bytes(stream, &chunk);
+                        shared.push_chunk(stream, chunk);
                     });
                 }
                 append_diag(Some(&log_path), format!("{label} capture loop exited"));
@@ -903,40 +1182,55 @@ fn spawn_canceller_thread(
         let started = Instant::now();
         let mut last_log = Instant::now();
         let mut last_delay = usize::MAX;
+        let mut last_delay_locked = false;
 
         while unsafe { WaitForSingleObject(stop_handle.0, 0) } != WAIT_OBJECT_0 {
-            let Some((endpoint, reference, endpoint_buffered, reference_buffered)) =
-                shared.wait_pop_block(stop_handle.0)
-            else {
+            let Some(block) = shared.wait_pop_block(stop_handle.0) else {
                 break;
             };
 
-            let output = canceller.process_block(&endpoint, &reference);
-            let before_db = energy_db(&endpoint);
+            let output = canceller.process_block(&block.endpoint, &block.reference);
+            let before_db = energy_db(&block.endpoint);
             let after_db = energy_db(&output);
             on_chunk.call(
                 Ok(samples_to_chunk_bytes(&output).into()),
                 ThreadsafeFunctionCallMode::NonBlocking,
             );
 
-            if canceller.estimated_delay_samples != last_delay {
+            if canceller.estimated_delay_samples != last_delay
+                || canceller.delay_locked != last_delay_locked
+            {
                 last_delay = canceller.estimated_delay_samples;
+                last_delay_locked = canceller.delay_locked;
                 append_diag(
                     Some(&log_path),
-                    format!("aec estimated-delay samples={last_delay}"),
+                    format!(
+                        "aec delay-state samples={last_delay} locked={} score={:.3}",
+                        canceller.delay_locked, canceller.delay_score
+                    ),
                 );
             }
 
             if last_log.elapsed() >= Duration::from_secs(1) {
+                let aec_locked = block.aligned && canceller.delay_locked;
+                let alignment_delta_ms = block.alignment_delta_100ns as f64 / 10_000.0;
                 append_diag(
                     Some(&log_path),
                     format!(
-                        "aec heartbeat elapsed_ms={} before_db={before_db:.2} after_db={after_db:.2} reduction_db={:.2} delay_samples={} endpoint_buffered_samples={} reference_buffered_samples={}",
+                        "aec heartbeat elapsed_ms={} before_db={before_db:.2} after_db={after_db:.2} reduction_db={:.2} delay_samples={} endpoint_buffered_samples={} reference_buffered_samples={} aligned={} delay_locked={} aec_locked={} alignment_delta_ms={:.2} device_delta_frames={} delay_score={:.3} dropped_endpoint_chunks={} dropped_reference_chunks={}",
                         started.elapsed().as_millis(),
                         before_db - after_db,
                         canceller.estimated_delay_samples,
-                        endpoint_buffered,
-                        reference_buffered
+                        block.endpoint_buffered_samples,
+                        block.reference_buffered_samples,
+                        block.aligned,
+                        canceller.delay_locked,
+                        aec_locked,
+                        alignment_delta_ms,
+                        block.device_delta_frames,
+                        canceller.delay_score,
+                        block.dropped_endpoint_chunks,
+                        block.dropped_reference_chunks
                     ),
                 );
                 last_log = Instant::now();
