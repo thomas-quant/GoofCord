@@ -785,14 +785,17 @@ impl SharedCaptureBuffers {
         };
 
         let mut guard = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+        // Deref the MutexGuard once into &mut StreamBuffers so the two disjoint field
+        // borrows below don't each trigger a separate deref_mut (E0499).
+        let buffers = &mut *guard;
         match stream {
             SpikeStream::Endpoint => {
-                guard.endpoint.push_back(block);
-                Self::trim_queue(&mut guard.endpoint, &mut guard.dropped_endpoint_chunks);
+                buffers.endpoint.push_back(block);
+                Self::trim_queue(&mut buffers.endpoint, &mut buffers.dropped_endpoint_chunks);
             }
             SpikeStream::Reference => {
-                guard.reference.push_back(block);
-                Self::trim_queue(&mut guard.reference, &mut guard.dropped_reference_chunks);
+                buffers.reference.push_back(block);
+                Self::trim_queue(&mut buffers.reference, &mut buffers.dropped_reference_chunks);
             }
         }
         self.ready.notify_one();
