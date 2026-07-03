@@ -49,6 +49,10 @@ jobs:
         shell: pwsh
         working-directory: native/wasapi-loopback
         run: |
+          # Install the addon's own devDeps (@napi-rs/cli) so `bun x napi` resolves the
+          # LOCAL napi binary — matching the addon repo's build.yml. Without this, bun tries
+          # to fetch a bogus remote `napi` package and fails before compiling.
+          bun install
           bun x napi build --release --target x86_64-pc-windows-msvc
           $node = Get-ChildItem -Path . -Filter "*.node" -Recurse | Select-Object -First 1
           if (-not $node) { Write-Error "napi build produced no .node"; exit 1 }
