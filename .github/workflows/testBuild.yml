@@ -38,12 +38,31 @@ jobs:
       - name: Install Node dependencies
         run: bun install --frozen-lockfile
 
+      - name: Install Rust toolchain
+        if: matrix.name == 'win'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Build spike wasapi addon
+        if: matrix.name == 'win'
+        shell: pwsh
+        working-directory: native/wasapi-loopback
+        run: |
+          bun x napi build --release --target x86_64-pc-windows-msvc
+          $node = Get-ChildItem -Path . -Filter "*.node" -Recurse | Select-Object -First 1
+          if (-not $node) { Write-Error "napi build produced no .node"; exit 1 }
+          $dest = Join-Path $env:GITHUB_WORKSPACE "node_modules/wasapi-loopback/prebuilds/windows-x86_64/wasapi-loopback-win32-x64.node"
+          New-Item -ItemType Directory -Force -Path (Split-Path $dest) | Out-Null
+          Copy-Item $node.FullName $dest -Force
+          Write-Host "wasapi spike addon built: $($node.FullName) -> $dest"
+
       - name: Install electron-builder globally
         run: bun add electron-builder -g
 
-      # The Windows WASAPI EXCLUDE-tree echo-fix addon now arrives via the
-      # github:thomas-quant/wasapi-loopback optionalDependency (resolved by `bun install` above),
-      # so CI no longer compiles Rust or exports an env path — it ships prebuilt like venbind's .node.
+      # The Windows WASAPI addon arrives via the github:thomas-quant/wasapi-loopback
+      # optionalDependency; this spike overwrites that prebuilt in node_modules before build.ts
+      # copies it into ts-out/native/.
       - name: Build GoofCord
         run: bun run build
 

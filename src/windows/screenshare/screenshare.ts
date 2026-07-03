@@ -1,8 +1,8 @@
 import path from "node:path";
 
 import { hasPipewirePulse, patchcordList, patchcordStartApp, patchcordStartSystem } from "@root/src/modules/native/patchcord.ts";
-// Windows WASAPI EXCLUDE-tree echo fix (the #46 fix). Additive 3-way audio gate:
-// Linux patchcord → win32 native exclude-tree → universal "loopback" fallback.
+// Windows WASAPI native audio path. Additive 3-way audio gate:
+// Linux patchcord → win32 native endpoint-minus-self/EXCLUDE capture → universal "loopback" fallback.
 import { tryStartWasapiLoopback } from "@root/src/modules/native/wasapiLoopback.ts";
 import { BrowserWindow, desktopCapturer, ipcMain, session } from "electron";
 import type { ShareableNode } from "patchcord";
@@ -99,7 +99,8 @@ export function registerScreenshareHandler() {
 					console.error("[Screenshare] Failed to start patchcord node:", err);
 				}
 			} else if (process.platform === "win32" && (await tryStartWasapiLoopback())) {
-				// Windows native WASAPI EXCLUDE-tree capture started (the #46 echo fix).
+				// Windows native WASAPI capture started (999.1 endpoint-minus-self spike, with
+				// process EXCLUDE fallback inside the native wrapper).
 				// Do NOT also request Chromium "loopback" here. The addon is already running its OWN
 				// WASAPI loopback capture, and a SECOND concurrent WASAPI loopback (Chromium's) fighting
 				// over the same shared Windows audio session corrupts it → CoreMessaging.dll heap-
@@ -110,7 +111,7 @@ export function registerScreenshareHandler() {
 				// capturer (and the seam discarded Chromium's loopback track anyway, so nothing is lost).
 			} else {
 				result.audio = "loopback";
-				console.log(pc.cyan("[Screenshare]"), "WASAPI process-loopback unsupported on this build, using loopback fallback");
+				console.log(pc.cyan("[Screenshare]"), "WASAPI native capture unsupported on this build, using loopback fallback");
 			}
 		}
 

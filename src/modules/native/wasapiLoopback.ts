@@ -19,7 +19,7 @@
 // immediately so the normal "loopback" path stays byte-identical to upstream.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { existsSync } from "node:fs";
+import { appendFileSync, existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 
@@ -39,6 +39,7 @@ interface WasapiAddon {
 	// onChunk is a napi CalleeHandled ThreadsafeFunction → JS is invoked as (err, chunk):
 	// the error slot is the FIRST arg (null on Ok), the audio Buffer is the SECOND.
 	start(excludeRootPid: number, onChunk: (err: unknown, chunk: Buffer) => void): boolean;
+	startEndpointMinusSelf(selfPid: number, logPath: string, onChunk: (err: unknown, chunk: Buffer) => void): boolean;
 	stop(): void;
 }
 
@@ -68,6 +69,14 @@ function obtainWasapiLoopback(): WasapiAddon | undefined {
 		console.error("Failed to import wasapi-loopback", e);
 	}
 	return addon;
+}
+
+function appendWasapiSpikeLog(logPath: string, message: string) {
+	try {
+		appendFileSync(logPath, `[js ${new Date().toISOString()}] ${message}\n`);
+	} catch {
+		// best-effort diagnostic only
+	}
 }
 
 // Whether preload.mts should inject the MSTG feeder + getDisplayMedia swap seam into the Discord
@@ -127,7 +136,7 @@ export async function tryStartWasapiLoopback(): Promise<boolean> {
 		// per ~10ms with a 3840-byte f32 Buffer, delivered CalleeHandled as (err, chunk): the chunk is
 		// the SECOND arg (the first is the error slot, null on Ok). Guard on err/chunk so a stray error
 		// frame can't crash the callback.
-		const ok = await wasapi.start(rootPid, (err: unknown, chunk: Buffer) => {
+		const onChunk = (err: unknown, chunk: Buffer) => {
 			const port = port1;
 			if (!port || err || !chunk) return;
 			try {
@@ -140,7 +149,22 @@ export async function tryStartWasapiLoopback(): Promise<boolean> {
 				// Never let the capture crash the app (ECHO-03 discipline): stop cleanly.
 				void stopWasapiLoopback();
 			}
-		});
+		};
+
+		const logPath = path.join(app.getPath("userData"), "wasapi-aec-spike.log");
+		let ok = false;
+		if (typeof wasapi.startEndpointMinusSelf === "function") {
+			ok = await wasapi.startEndpointMinusSelf(rootPid, logPath, onChunk);
+		} else {
+			appendWasapiSpikeLog(logPath, "startEndpointMinusSelf export missing; falling back to process EXCLUDE capture");
+		}
+
+		if (!ok) {
+			appendWasapiSpikeLog(logPath, "startEndpointMinusSelf returned false; falling back to process EXCLUDE capture");
+			console.warn(LOG_PREFIX, "WASAPI endpoint-minus-self spike unavailable, falling back to EXCLUDE-tree capture");
+			ok = await wasapi.start(rootPid, onChunk);
+			appendWasapiSpikeLog(logPath, `process EXCLUDE fallback returned ${ok}`);
+		}
 
 		if (!ok) {
 			// Activation != S_OK (API unavailable on this build): close the port and fall through
@@ -149,7 +173,7 @@ export async function tryStartWasapiLoopback(): Promise<boolean> {
 			return false;
 		}
 
-		console.log(LOG_PREFIX, "WASAPI EXCLUDE-tree capture streaming over MessageChannelMain");
+		console.log(LOG_PREFIX, "WASAPI native capture streaming over MessageChannelMain");
 		return true;
 	} catch {
 		await stopWasapiLoopback();
