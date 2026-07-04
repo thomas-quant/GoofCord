@@ -75,7 +75,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 999.1-04-PLAN.md — Endpoint-selector integration: endpoint dispatch + payload endpoints + capture-source dropdown UI [wave 3]
+- [~] 999.1-04-PLAN.md — Endpoint-selector integration: endpoint dispatch + payload endpoints + capture-source dropdown UI [wave 3] — **impl complete** (Task 1 `792424a` endpoint dispatch + addon typings, Task 2 `3202721` `renderEndpoints` payload, Task 3 `79ca040` `#endpoint-select` dropdown + `captureSource` derivation; `bun run check` + `bun run lint` exit 0, `fmt` not run); **CI + box PENDING** (Task 4 deferred human gate: consume Plan 03 `.node` → push → GoofCord `testBuild.yml` `--repo thomas-quant/GoofCord` → `win-artifacts` → second-device Windows test: chosen endpoint audible, "Default" preserves zero-config process-exclude, endpoint failure = silence, `wasapi-capture.log` shows `endpoint-default`/`endpoint:<id>`, no CoreMessaging crash; **AND** record the Sonar render-vs-capture on-box finding)
 
 **Why now (context):** The win32 path (`tryStartWasapiLoopback()` in `src/modules/native/wasapiLoopback.ts`) hardcodes EXCLUDE-of-own-process-tree and ignores `audioConfig` entirely, while the Linux/patchcord path honors `mode`/`pids` (`src/windows/screenshare/screenshare.ts:94-114`). OBS Studio is the proof-of-feasibility precedent — it runs multiple concurrent process-loopback captures (one per app) in one process (verified against MS docs + OBS KB, 2026-06-10).
 

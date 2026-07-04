@@ -5,16 +5,16 @@ milestone_name: — Small Upstream-able Fixes
 current_phase: 999.1
 current_phase_name: windows-audio-patchcord-parity-backend
 status: executing
-stopped_at: 999.1-03 implementation complete (render-endpoint enumerator + endpoint loopback, both mirrors); CI compile gate PENDING (human)
-last_updated: "2026-07-04T05:35:00.000Z"
+stopped_at: 999.1-04 implementation complete (endpoint dispatch + renderEndpoints payload + capture-source dropdown); CI + box verification gate PENDING (human)
+last_updated: "2026-07-04T06:10:00.000Z"
 last_activity: 2026-07-04
-last_activity_desc: 999.1-03 executed — endpoint enumeration + loopback backend (impl complete, CI PENDING)
+last_activity_desc: 999.1-04 executed — endpoint-selector integration end-to-end (impl complete, CI + box PENDING)
 progress:
   total_phases: 13
   completed_phases: 6
   total_plans: 23
-  completed_plans: 22
-  percent: 48
+  completed_plans: 23
+  percent: 50
 ---
 
 # Project State
@@ -29,8 +29,10 @@ See: .planning/PROJECT.md (updated 2026-06-06)
 ## Current Position
 
 Phase: 999.1 (windows-audio-patchcord-parity-backend) — EXECUTING
-Plan: 3 of 4 — implementation COMPLETE, CI compile gate PENDING (endpoint bindings + new feature gates)
-Status: Ready to execute Plan 04 (endpoint-selector integration)
+Plan: 4 of 4 — implementation COMPLETE, CI + box verification gate PENDING (all 4 plans; consume the endpoint-carrying `.node` → GoofCord CI → second-device Windows test)
+Status: All phase-999.1 plans implemented; awaiting the human CI + box gate before the phase closes
+
+**999.1-04 (2026-07-04):** Endpoint/source selector (feature 2) wired end-to-end in TypeScript, layering on Plan 02's widened `AudioConfig` + fail-closed verdict and Plan 03's Rust endpoint exports. `tryStartWasapiLoopback` now dispatches `mode:"system"`+`captureSource:"endpoint"` → `startDefaultRenderEndpoint()` (when `endpointId==="default"`) else `startRenderEndpoint(endpointId)` over the same unchanged `MessageChannelMain` hop, mapping `false` → `failed-no-fallback` (explicit endpoint fails CLOSED — never Chromium `"loopback"`); `WasapiAddon` extended + exported `RenderEndpointInfo` + fail-closed `listRenderEndpoints()` accessor; userData log records `endpoint-default`/`endpoint:<id>` kinds. `fetchScreenshareData` adds `renderEndpoints` to the win32 payload. `preload.mts` injects a `#endpoint-select` dropdown ("Default" + active render endpoints) into the linux-audio-section grid, shown only for `mode:"system"`, preselecting the stored `endpointId`; `getFormSettings` sets `captureSource:"endpoint"` ONLY for a non-`"default"` endpoint in system mode ("Default"/app/none keep the shipped `process-exclude` zero-config default). No new IPC channel (endpoints ride the existing payload; `audioConfig` rides `selectScreenshareSource`). Task 1 `792424a`, Task 2 `3202721`, Task 3 `79ca040`. `bun run check` + `bun run lint` exit 0; `bun run fmt` NOT run. **NOT built locally (CI-only-build rule); CI + the second-device box test are the outstanding gates — a chosen render endpoint audible to a viewer, "Default" preserves zero-config, endpoint failure = silence, and the Sonar render-vs-capture on-box finding recorded.**
 
 **999.1-03 (2026-07-04):** Rust backend for the endpoint/source selector (feature 2) — `listRenderEndpoints() -> RenderEndpointInfo[]` (MTA-thread `EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE)` → `GetId` + `OpenPropertyStore(PKEY_Device_FriendlyName)`, eConsole default tagged, fail-closed to empty vec) and `startRenderEndpoint(deviceId)` / `startDefaultRenderEndpoint()` (endpoint loopback: `Activate::<IAudioClient>` directly on the chosen/`GetDefaultAudioEndpoint(eRender,eConsole)` `IMMDevice`). Both start paths route through a NEW shared `initialize_loopback_client(audio_client)` helper (extracted from the process path) so the fixed 48k/stereo/f32 `LOOPBACK|EVENTCALLBACK|AUTOCONVERTPCM|SRC_DEFAULT_QUALITY` Initialize is byte-identical across process + endpoint — NOT `GetMixFormat`. Single-source under the one `SESSION`. NO self-cancel/AEC/NLMS (dead lineage stays out). Two new windows-rs gates (`Win32_UI_Shell_PropertiesSystem`, `Win32_Devices_FunctionDiscovery`) in BOTH `Cargo.toml`. Both mirrors byte-identical (`diff -q` clean). Task 1 `870b039`, Task 2 `5995092`. **NOT built locally (CI-only-build rule); CI compile is the outstanding gate.**
 
