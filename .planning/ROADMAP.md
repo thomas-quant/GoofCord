@@ -58,11 +58,9 @@ Plans:
 
 **Goal:** Grow the Windows WASAPI process-loopback addon from a fixed echo-fix into a patchcord-parity audio backend. **Scope narrowed at planning (per 999.1-CONTEXT.md) to EXACTLY TWO opt-in features:** (1) per-app INCLUDE (single app, `PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE`) and (2) an endpoint/source selector (endpoint loopback at the fixed 48k/stereo/f32 format). EXCLUDE-self stays the zero-config `mode:"system"` default (#211). Multi-app N-INCLUDE + mixer, window capture, restart-follow, and all AEC/self-cancel/B1 subtraction are DEFERRED/DEAD (surfaced as assumptions in the plans, not built). Also the substance of Milkshiift's PR #211 question ("same API as patchcord, include/exclude any apps, not just prevent echo").
 **Requirements:** WIN-APP-01 (per-app INCLUDE), WIN-ENDPOINT-01 (endpoint/source selector), WIN-AUDIOCFG-01 (widened AudioConfig + fail-closed dispatch) — phase-local tags (no formal REQUIREMENTS.md IDs mapped to this phase)
-**Plans:** 2/4 plans executed
+**Plans:** 4/4 implemented — CI compile + Windows box verification PENDING (end-of-phase human gate; run `/gsd-verify-work 999.1` after CI+box)
 
-Plans:
-
-- [x] 999.1-01-PLAN.md
+Plans: *(all `[~]` = implementation complete on branch `spike/999.1-per-app-include`; none human-verified — CI compile + Windows box gates PENDING)*
 
 **Wave 1**
 
@@ -70,7 +68,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [x] 999.1-02-PLAN.md — INCLUDE integration: widened AudioConfig + fail-closed verdict wrapper + win32 gate + app-checklist UI [wave 2]
+- [~] 999.1-02-PLAN.md — INCLUDE integration: widened AudioConfig + fail-closed verdict wrapper + win32 gate + app-checklist UI [wave 2] — **impl complete** (Task 1 `e3ff635` widen AudioConfig + addon typings, Task 2 `74a9423` config-dispatch wrapper + fail-closed verdict + userData log, Task 3 `7d91268` win32 `audioNodes` + verdict-branched gate + Windows advanced UI; `bun run check` + `bun run lint` exit 0, `fmt` not run); **CI + box PENDING** (Task 4 deferred human gate: consume Plan 01 `.node` → push → GoofCord `testBuild.yml` `--repo thomas-quant/GoofCord` → `win-artifacts` → second-device Windows test: app INCLUDE audible + self-free, system default unchanged, fail-closed = silence, `wasapi-capture.log` shows capture kinds, no CoreMessaging crash)
 - [~] 999.1-03-PLAN.md — Rust addon: render-endpoint enumeration (`listRenderEndpoints`) + endpoint loopback (`startRenderEndpoint`/`startDefaultRenderEndpoint`) [wave 2] — **impl complete** (Task 1 `870b039`, Task 2 `5995092`; both mirrors byte-identical; shared `initialize_loopback_client` fixed-format helper; no self-cancel/AEC); **CI compile PENDING** (Task 3 deferred human gate: push → `thomas-quant/wasapi-loopback` Windows CI green → prebuilt `.node` w/ INCLUDE + endpoint for Plan 04)
 
 **Wave 3** *(blocked on Wave 2 completion)*
