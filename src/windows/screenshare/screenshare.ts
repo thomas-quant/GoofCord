@@ -3,7 +3,7 @@ import path from "node:path";
 import { hasPipewirePulse, patchcordList, patchcordStartApp, patchcordStartSystem } from "@root/src/modules/native/patchcord.ts";
 // Windows WASAPI native capture (the #46 echo fix + per-app INCLUDE). Additive 3-way audio gate:
 // Linux patchcord → win32 native (config-dispatched, fail-closed verdict) → universal "loopback" fallback.
-import { canRunWasapiCapture, listWasapiAudioApps, tryStartWasapiLoopback } from "@root/src/modules/native/wasapiLoopback.ts";
+import { canRunWasapiCapture, listRenderEndpoints, listWasapiAudioApps, type RenderEndpointInfo, tryStartWasapiLoopback } from "@root/src/modules/native/wasapiLoopback.ts";
 import { app, BrowserWindow, desktopCapturer, ipcMain, session } from "electron";
 import type { ShareableNode } from "patchcord";
 import pc from "picocolors";
@@ -68,6 +68,10 @@ async function fetchScreenshareData(isRefresh = false) {
 
 	const [rawSources, audioNodes] = await Promise.all([skipSources ? null : desktopCapturer.getSources({ types: ["screen", "window"], thumbnailSize: { width: 320, height: 180 } }), process.platform === "linux" ? patchcordList().catch(() => [] as ShareableNode[]) : process.platform === "win32" ? listWin32AudioNodes() : []]);
 
+	// win32 capture-source dropdown data: the active render endpoints ("Default" + these). Synchronous +
+	// self-guarded (fail-closed to [] on any error), so no audio ever depends on enumeration succeeding.
+	const renderEndpoints: RenderEndpointInfo[] = process.platform === "win32" ? listRenderEndpoints() : [];
+
 	return {
 		sources:
 			rawSources?.map((s) => ({
@@ -80,6 +84,8 @@ async function fetchScreenshareData(isRefresh = false) {
 		// win32 advanced-UI signal: true when the native addon can run → picker shows the audio-mode
 		// control + app checklist instead of the plain system checkbox.
 		isWasapiAudio: canRunWasapiCapture(),
+		// win32 render endpoints for the capture-source selector (empty off-win32 / addon-missing).
+		renderEndpoints,
 	};
 }
 
