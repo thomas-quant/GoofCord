@@ -14,6 +14,11 @@ interface IPCSource {
 interface AudioConfig {
 	mode: "none" | "system" | "app";
 	pids: number[];
+	// system-mode backend selector: "process-exclude" = EXCLUDE-self (default, today's #211 behavior);
+	// "endpoint" = loopback of a chosen render device (Plan 04). No third/self-cancel value (that lineage is dead).
+	captureSource: "process-exclude" | "endpoint";
+	// endpoint mode: chosen IMMDevice id, or the "default" sentinel.
+	endpointId: "default" | string;
 }
 
 export interface ScreenshareSettings {
@@ -116,7 +121,7 @@ function getFormSettings(): ScreenshareSettings | null {
 
 	if (!contentHint || isNaN(resolution) || isNaN(framerate)) return null;
 
-	let audioConfig: AudioConfig = { mode: "none", pids: [] };
+	let audioConfig: AudioConfig = { mode: "none", pids: [], captureSource: "process-exclude", endpointId: "default" };
 
 	if (isPatchcordMode) {
 		audioConfig.mode = (document.querySelector<HTMLInputElement>('input[name="audioMode"]:checked')?.value as AudioConfig["mode"]) ?? "none";
@@ -172,7 +177,10 @@ async function init() {
 
 	const storedSettings = getConfig("screensharePreviousSettings") as ScreenshareSettings;
 	const s = !storedSettings || Array.isArray(storedSettings) ? (getDefaultValue("screensharePreviousSettings") as ScreenshareSettings) : storedSettings;
-	s.audioConfig ??= { mode: "none", pids: [] };
+	s.audioConfig ??= { mode: "none", pids: [], captureSource: "process-exclude", endpointId: "default" };
+	// Normalize older saved configs that predate the capture-source fields (locked decision).
+	s.audioConfig.captureSource ??= "process-exclude";
+	s.audioConfig.endpointId ??= "default";
 
 	const payload = (await ipcRenderer.invoke("refreshScreenshareSources")) as ScreensharePayload;
 	isPatchcordMode = payload.isPatchcord;

@@ -420,7 +420,7 @@ export const settingsSchema = {
 		screensharePreviousSettings: hidden<ScreenshareSettings>({
 			resolution: 1080,
 			framerate: 30,
-			audioConfig: { mode: "none", pids: [] },
+			audioConfig: { mode: "none", pids: [], captureSource: "process-exclude", endpointId: "default" },
 			contentHint: "motion",
 		}),
 		"windowState:main": hidden<[boolean, [number, number], [number, number]]>([true, [-1, -1], [835, 600]]),

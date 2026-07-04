@@ -40,6 +40,12 @@ interface WasapiAddon {
 	// the error slot is the FIRST arg (null on Ok), the audio Buffer is the SECOND.
 	start(excludeRootPid: number, onChunk: (err: unknown, chunk: Buffer) => void): boolean;
 	stop(): void;
+	// Plan 01 additions (per-app INCLUDE + audio-session enumerator). Optional at the load guard
+	// (graceful null-on-failure) — these are documentation-grade typings under @ts-nocheck.
+	//   INCLUDE variant of start(): false = unsupported on this build, never throws.
+	//   enumerator returns a per-PID audio-session list (deduped, system-sounds + own-PID dropped).
+	startIncludeProcessTree(targetPid: number, onChunk: (err: unknown, chunk: Buffer) => void): boolean;
+	listAudioApps(): { processId: number; displayName: string; binary: string }[];
 }
 
 // ── Addon load (mirror obtainVenbind: load-once flag + --no-wasapi guard + null-on-failure) ──
