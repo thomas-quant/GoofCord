@@ -5,15 +5,15 @@ milestone_name: — Small Upstream-able Fixes
 current_phase: 999.1
 current_phase_name: windows-audio-patchcord-parity-backend
 status: executing
-stopped_at: 999.1-01 implementation complete (INCLUDE + listAudioApps, both mirrors); CI compile gate PENDING (human)
-last_updated: "2026-07-04T05:20:00.000Z"
+stopped_at: 999.1-02 implementation complete (per-app INCLUDE wired + widened AudioConfig); CI + second-device box verification PENDING (human)
+last_updated: "2026-07-04T05:15:22.014Z"
 last_activity: 2026-07-04
-last_activity_desc: 999.1-01 Rust addon implemented (startIncludeProcessTree + listAudioApps); CI verify deferred
+last_activity_desc: Phase 999.1 execution started
 progress:
   total_phases: 13
   completed_phases: 6
   total_plans: 23
-  completed_plans: 19
+  completed_plans: 21
   percent: 46
 ---
 
@@ -29,8 +29,8 @@ See: .planning/PROJECT.md (updated 2026-06-06)
 ## Current Position
 
 Phase: 999.1 (windows-audio-patchcord-parity-backend) — EXECUTING
-Plan: 1 of 4 — implementation COMPLETE, CI compile gate PENDING (blocks Plan 02)
-Status: Executing Phase 999.1
+Plan: 2 of 4 — implementation COMPLETE, CI compile gate PENDING (blocks Plan 02)
+Status: Ready to execute
 
 **999.1-01 (2026-07-04):** Rust addon grown with the two per-app INCLUDE primitives — `startIncludeProcessTree(target_pid, on_chunk)` (single-app INCLUDE via `PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE`, reusing the shared `activate_process_tree` + `run_capture_loop` + `SESSION`/`stop` machinery) and `listAudioApps() -> AudioAppInfo[]` (MTA-thread session enumerator: `MMDeviceEnumerator` → `EnumAudioEndpoints(eRender)` → `IAudioSessionManager2` → `IAudioSessionControl2::GetProcessId`, dedupe, drop system-sounds + own PID, name via `GetDisplayName` else exe basename). Legacy `start` EXCLUDE path (#211 echo fix) untouched. Both mirrors (`native/wasapi-loopback/`, `wasapi-loopback-repo/`) byte-identical. No new windows-rs feature gate needed (all types under the already-present `Win32_Media_Audio`/`Win32_System_Com`/`Win32_System_Threading`, verified against windows 0.62.2 source). **NOT built locally (CI-only-build rule); CI compile is the outstanding gate.**
 
@@ -63,6 +63,7 @@ Last activity: 2026-07-04 — Phase 999.1 execution started
 - Trend: —
 
 *Updated after each plan completion*
+| Phase 999.1 P02 | 8min | 3 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -103,12 +104,13 @@ None yet.
 
 **OPEN (999.1-01, 2026-07-04): wasapi-loopback Windows CI compile gate outstanding.** The Plan 01 Rust addon changes (INCLUDE + listAudioApps, both mirrors) are implemented but NOT compiled — per the CI-only-build rule nothing was built locally. Before Plan 02 can proceed, a human must: push the branch to the `origin` fork → trigger the `thomas-quant/wasapi-loopback` Windows workflow (`--repo thomas-quant/wasapi-loopback`) against the ref → confirm a GREEN compile (windows-rs feature-gate + binding-constant verification) → obtain the prebuilt `.node` artifact that Plan 02's manual box test consumes. Static verification done here: `diff -q` mirror identity (lib.rs + Cargo.toml both exit 0) + all acceptance greps; API surface pre-verified against the local windows 0.62.2 crate source. Runtime INCLUDE capture + enumeration correctness are BOX-deferred to Plan 02.
 
-All v1.1 blockers resolved at milestone close — none carried forward:
+All v1.1 blockers resolved at milestone close — carried forward:
 
 - ~~PCM → `getDisplayMedia` MediaStream delivery in Electron 41.3.0~~ — RESOLVED (Phase 3 GO; per-share MessageChannel transport + MSTG, verified viewer-side).
 - ~~Exclude target = root Electron PID covers the Audio Service child~~ — CONFIRMED on hardware (root 19076, Audio Service 12280 in its `app.getAppMetrics()` subtree; `05-VERIFICATION.md`).
 - ~~Clean-room boundary~~ — HELD (public Microsoft `ApplicationLoopback` sample only, MIT notice retained, zero Discord symbols).
 - Verification remains MANUAL on a Windows x64 CI artifact (no automated screenshare repro; echo check needs a second device, audio playing) — relevant again only if a future milestone touches streaming.
+- 999.1-02 (per-app INCLUDE) is IMPLEMENTED but unverified: needs a GoofCord win-artifacts build consuming a Plan 01 .node that exports startIncludeProcessTree + listAudioApps, then a second-device Windows box test (app INCLUDE audible + self-free; system default unchanged; fail-closed = silence; wasapi-capture.log shows capture kinds; no CoreMessaging crash). Do not mark WIN-APP-01/WIN-AUDIOCFG-01 complete until box-verified.
 
 ## Deferred Items
 
@@ -137,6 +139,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-04
-Stopped at: 999.1-01 implementation complete (INCLUDE + listAudioApps, both mirrors byte-identical); CI compile gate PENDING (human)
-Resume file: .planning/phases/999.1-windows-audio-patchcord-parity-backend/999.1-01-SUMMARY.md (see ## Verification Status: PENDING — human CI gate)
+Last session: 2026-07-04T05:15:21.760Z
+Stopped at: 999.1-02 implementation complete (per-app INCLUDE wired + widened AudioConfig); CI + second-device box verification PENDING (human)
+Resume file: .planning/phases/999.1-windows-audio-patchcord-parity-backend/999.1-02-SUMMARY.md

@@ -58,16 +58,19 @@ Plans:
 
 **Goal:** Grow the Windows WASAPI process-loopback addon from a fixed echo-fix into a patchcord-parity audio backend. **Scope narrowed at planning (per 999.1-CONTEXT.md) to EXACTLY TWO opt-in features:** (1) per-app INCLUDE (single app, `PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE`) and (2) an endpoint/source selector (endpoint loopback at the fixed 48k/stereo/f32 format). EXCLUDE-self stays the zero-config `mode:"system"` default (#211). Multi-app N-INCLUDE + mixer, window capture, restart-follow, and all AEC/self-cancel/B1 subtraction are DEFERRED/DEAD (surfaced as assumptions in the plans, not built). Also the substance of Milkshiift's PR #211 question ("same API as patchcord, include/exclude any apps, not just prevent echo").
 **Requirements:** WIN-APP-01 (per-app INCLUDE), WIN-ENDPOINT-01 (endpoint/source selector), WIN-AUDIOCFG-01 (widened AudioConfig + fail-closed dispatch) — phase-local tags (no formal REQUIREMENTS.md IDs mapped to this phase)
-**Plans:** 4 plans
+**Plans:** 2/4 plans executed
 
 Plans:
+
+- [x] 999.1-01-PLAN.md
+
 **Wave 1**
 
 - [~] 999.1-01-PLAN.md — Rust addon: per-app INCLUDE (`startIncludeProcessTree`) + audio-session enumerator (`listAudioApps`) [wave 1] — **impl complete** (Task 1 `66307a8`, Task 2 `634b77d`; both mirrors byte-identical); **CI compile PENDING** (Task 3 is the deferred human gate: push → `thomas-quant/wasapi-loopback` Windows CI green → prebuilt `.node` for Plan 02)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 999.1-02-PLAN.md — INCLUDE integration: widened AudioConfig + fail-closed verdict wrapper + win32 gate + app-checklist UI [wave 2]
+- [x] 999.1-02-PLAN.md — INCLUDE integration: widened AudioConfig + fail-closed verdict wrapper + win32 gate + app-checklist UI [wave 2]
 - [ ] 999.1-03-PLAN.md — Rust addon: render-endpoint enumeration (`listRenderEndpoints`) + endpoint loopback (`startRenderEndpoint`/`startDefaultRenderEndpoint`) [wave 2]
 
 **Wave 3** *(blocked on Wave 2 completion)*
