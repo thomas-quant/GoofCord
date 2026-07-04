@@ -43,7 +43,8 @@ use windows::Win32::Media::Audio::{
     AUDCLNT_STREAMFLAGS_LOOPBACK, AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
     AUDIOCLIENT_ACTIVATION_PARAMS, AUDIOCLIENT_ACTIVATION_PARAMS_0,
     AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK, AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS,
-    PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE, VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
+    PROCESS_LOOPBACK_MODE, PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE,
+    PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE, VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
     WAVEFORMATEX, WAVEFORMATEXTENSIBLE, WAVEFORMATEXTENSIBLE_0,
 };
 use windows::Win32::Media::KernelStreaming::WAVE_FORMAT_EXTENSIBLE;
@@ -209,25 +210,33 @@ fn process_loopback_entrypoint_present() -> bool {
 
 // ─── Activation ─────────────────────────────────────────────────────────────────────
 
-/// Attempt to activate a process-loopback IAudioClient that EXCLUDES the process tree
-/// rooted at `exclude_root_pid`, initialized to the hardcoded 48k/stereo/f32 format.
+/// Attempt to activate a process-loopback IAudioClient for the process tree rooted at
+/// `target_pid`, in the requested `mode`, initialized to the hardcoded 48k/stereo/f32 format.
+///
+/// `mode` is the ONLY functional divergence between the two capture kinds:
+///   - `EXCLUDE_TARGET_PROCESS_TREE` — capture everything EXCEPT `target_pid`'s tree (the
+///     shipped #46 echo fix: pass the Electron main PID to drop the host's own playback).
+///   - `INCLUDE_TARGET_PROCESS_TREE` — capture ONLY `target_pid`'s tree (app-exclusive share).
+/// Every other step (VT_BLOB guard, async wait, `build_wave_format()` + `AUTOCONVERTPCM`
+/// initialize) is byte-identical across both modes.
 ///
 /// Returns `Activated(client)` on success, or `Unsupported` for ANY failure (missing
 /// entry point, non-S_OK activate result, or COM error) — never panics, never throws.
-unsafe fn activate_exclude_tree(exclude_root_pid: u32) -> ActivationResult {
+unsafe fn activate_process_tree(mode: PROCESS_LOOPBACK_MODE, target_pid: u32) -> ActivationResult {
     // 1. Dynamic-load gate: if the entry point is absent, this build doesn't support it.
     if !process_loopback_entrypoint_present() {
         return ActivationResult::Unsupported;
     }
 
-    // 2. Build the activation params: EXCLUDE the supplied process tree.
+    // 2. Build the activation params for the supplied process tree in the requested mode.
     let mut activation_params = AUDIOCLIENT_ACTIVATION_PARAMS {
         ActivationType: AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
         Anonymous: AUDIOCLIENT_ACTIVATION_PARAMS_0 {
             ProcessLoopbackParams: AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS {
-                TargetProcessId: exclude_root_pid,
-                // EXCLUDE tree: capture everything EXCEPT exclude_root_pid + its children.
-                ProcessLoopbackMode: PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE,
+                TargetProcessId: target_pid,
+                // EXCLUDE tree: capture everything EXCEPT target_pid + its children.
+                // INCLUDE tree: capture ONLY target_pid + its children.
+                ProcessLoopbackMode: mode,
             },
         },
     };
@@ -322,6 +331,16 @@ unsafe fn activate_exclude_tree(exclude_root_pid: u32) -> ActivationResult {
     }
 
     ActivationResult::Activated(audio_client)
+}
+
+/// Thin EXCLUDE wrapper: preserves the legacy `start` call site (the shipped #211 echo fix)
+/// byte-for-byte unchanged — EXCLUDE the process tree rooted at `exclude_root_pid`.
+#[inline]
+unsafe fn activate_exclude_tree(exclude_root_pid: u32) -> ActivationResult {
+    activate_process_tree(
+        PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE,
+        exclude_root_pid,
+    )
 }
 
 // ─── Capture-thread state ───────────────────────────────────────────────────────────
@@ -492,6 +511,86 @@ pub fn start(exclude_root_pid: u32, on_chunk: ChunkTsfn) -> napi::Result<bool> {
         match activation {
             ActivationResult::Activated(client) => {
                 // Report support BEFORE entering the (blocking) capture loop.
+                let _ = tx.send(true);
+                unsafe { run_capture_loop(client, on_chunk, stop_handle.0) };
+            }
+            ActivationResult::Unsupported => {
+                let _ = tx.send(false);
+            }
+        }
+
+        if com_ok {
+            unsafe { CoUninitialize() };
+        }
+    });
+
+    // Wait for the activation verdict from the capture thread.
+    let supported = rx.recv().unwrap_or(false);
+    if !supported {
+        // Unsupported: tear the (now-exiting) thread down and clean up the stop event.
+        unsafe {
+            let _ = SetEvent(stop_event);
+        }
+        let _ = join.join();
+        unsafe {
+            let _ = CloseHandle(stop_event);
+        }
+        return Ok(false);
+    }
+
+    *guard = Some(CaptureSession {
+        stop_event,
+        join: Some(join),
+    });
+    Ok(true)
+}
+
+/// Begin single-app INCLUDE loopback capture of the process tree rooted at `target_pid`
+/// (Discord-style app-exclusive share — captures ONLY that app + its children, self-free
+/// and VAC-free by construction). Emits the SAME fixed 48k/stereo/f32 480-frame (3840-byte)
+/// chunk contract as `start`; the ONLY divergence from the EXCLUDE path is the loopback mode
+/// constant handed to `activate_process_tree`.
+///
+/// Returns `false` (NOT an error) when process-loopback is unavailable on this build OR
+/// activation fails for any reason. App mode fails CLOSED on the TS side (no Chromium
+/// "loopback" fallback — privacy inversion + CoreMessaging crash), so a `false` here leaves
+/// the caller's audio unset.
+///
+/// The single global `SESSION` mutex is shared with `start`/`stop`: only one capture client
+/// runs at a time (multi-app N-INCLUDE + mixer is deferred to the R4 concurrency spike).
+#[napi(js_name = "startIncludeProcessTree")]
+pub fn start_include_process_tree(target_pid: u32, on_chunk: ChunkTsfn) -> napi::Result<bool> {
+    let mut guard = SESSION.lock().unwrap_or_else(|p| p.into_inner());
+    // Idempotent: a session already running counts as "started".
+    if guard.is_some() {
+        return Ok(true);
+    }
+
+    // Manual-reset stop event the capture loop polls; unsignaled initially.
+    let stop_event = match unsafe { CreateEventW(None, true, false, PCWSTR::null()) } {
+        Ok(h) => h,
+        Err(_) => return Ok(false),
+    };
+
+    // Activation is COM-apartment-affine, so run it ON the capture thread and report the
+    // outcome back over a channel; this call returns the real support verdict.
+    let (tx, rx): (Sender<bool>, _) = channel();
+    let stop_event_for_thread = SendHandle(stop_event);
+
+    let join = std::thread::spawn(move || {
+        // Capture the whole SendHandle (Send), not its inner HANDLE field.
+        let stop_handle = stop_event_for_thread;
+
+        // COM on the capture thread (MTA — no message pump needed for WASAPI capture).
+        let com = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+        let com_ok = com.is_ok();
+
+        // The ONLY functional divergence from `start`: INCLUDE the target tree.
+        let activation = unsafe {
+            activate_process_tree(PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE, target_pid)
+        };
+        match activation {
+            ActivationResult::Activated(client) => {
                 let _ = tx.send(true);
                 unsafe { run_capture_loop(client, on_chunk, stop_handle.0) };
             }
