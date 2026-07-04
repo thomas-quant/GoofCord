@@ -4,8 +4,8 @@ milestone: v1.3
 milestone_name: — Small Upstream-able Fixes
 current_phase: 999.1
 current_phase_name: windows-audio-patchcord-parity-backend
-status: executing
-stopped_at: 999.1-04 implementation complete (endpoint dispatch + renderEndpoints payload + capture-source dropdown); CI + box verification gate PENDING (human)
+status: in_progress
+stopped_at: "999.1 — all 4 plans implemented + code-reviewed (0 crit / 2 warn) + verified human_needed (10/12 static must-haves pass; 2 runtime truths await CI+box); UAT persisted → /gsd-verify-work 999.1 after CI+box"
 last_updated: "2026-07-04T06:10:00.000Z"
 last_activity: 2026-07-04
 last_activity_desc: 999.1-04 executed — endpoint-selector integration end-to-end (impl complete, CI + box PENDING)
@@ -31,6 +31,7 @@ See: .planning/PROJECT.md (updated 2026-06-06)
 Phase: 999.1 (windows-audio-patchcord-parity-backend) — EXECUTING
 Plan: 4 of 4 — implementation COMPLETE, CI + box verification gate PENDING (all 4 plans; consume the endpoint-carrying `.node` → GoofCord CI → second-device Windows test)
 Status: All phase-999.1 plans implemented; awaiting the human CI + box gate before the phase closes
+Verification: `999.1-VERIFICATION.md` = **human_needed** (10/12 static must-haves verified — mirror byte-identity, all 3 req tags wired, fail-closed branch traced, dead AEC lineage absent, `bun run check`/`lint` green; the 2 runtime truths are PRESENT_BEHAVIOR_UNVERIFIED). Code review `999.1-REVIEW.md` = 0 crit / 2 warn — WR-01 (empty-`pids[]` guard, `wasapiLoopback.ts:279`) + WR-02 (shared-`stop()` re-click race in pre-existing #211 code); both advisory, non-blocking. **Next:** run the 4 tests in `999.1-UAT.md` (CI compile → GoofCord win-artifacts → second-device box for app-INCLUDE + endpoint-selector, incl. the open Sonar render-vs-capture question), then `/gsd-verify-work 999.1` to close the phase. Nothing has been pushed / no CI triggered (awaiting explicit go-ahead per project rule).
 
 **999.1-04 (2026-07-04):** Endpoint/source selector (feature 2) wired end-to-end in TypeScript, layering on Plan 02's widened `AudioConfig` + fail-closed verdict and Plan 03's Rust endpoint exports. `tryStartWasapiLoopback` now dispatches `mode:"system"`+`captureSource:"endpoint"` → `startDefaultRenderEndpoint()` (when `endpointId==="default"`) else `startRenderEndpoint(endpointId)` over the same unchanged `MessageChannelMain` hop, mapping `false` → `failed-no-fallback` (explicit endpoint fails CLOSED — never Chromium `"loopback"`); `WasapiAddon` extended + exported `RenderEndpointInfo` + fail-closed `listRenderEndpoints()` accessor; userData log records `endpoint-default`/`endpoint:<id>` kinds. `fetchScreenshareData` adds `renderEndpoints` to the win32 payload. `preload.mts` injects a `#endpoint-select` dropdown ("Default" + active render endpoints) into the linux-audio-section grid, shown only for `mode:"system"`, preselecting the stored `endpointId`; `getFormSettings` sets `captureSource:"endpoint"` ONLY for a non-`"default"` endpoint in system mode ("Default"/app/none keep the shipped `process-exclude` zero-config default). No new IPC channel (endpoints ride the existing payload; `audioConfig` rides `selectScreenshareSource`). Task 1 `792424a`, Task 2 `3202721`, Task 3 `79ca040`. `bun run check` + `bun run lint` exit 0; `bun run fmt` NOT run. **NOT built locally (CI-only-build rule); CI + the second-device box test are the outstanding gates — a chosen render endpoint audible to a viewer, "Default" preserves zero-config, endpoint failure = silence, and the Sonar render-vs-capture on-box finding recorded.**
 
