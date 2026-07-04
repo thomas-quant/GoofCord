@@ -224,6 +224,32 @@ fn process_loopback_entrypoint_present() -> bool {
 
 // ─── Activation ─────────────────────────────────────────────────────────────────────
 
+/// Initialize an already-acquired `IAudioClient` to the fixed 48k/stereo/f32 loopback format.
+///
+/// This is the SINGLE Initialize/stream-flags block shared by BOTH client-acquisition paths —
+/// process-tree activation (the magic device) and render-endpoint activation (a real `IMMDevice`).
+/// Routing both through here guarantees the transport format never diverges: shared mode with
+/// `AUTOCONVERTPCM | SRC_DEFAULT_QUALITY` so the engine converts to our hardcoded format (the
+/// deliberate divergence from OBS, which queries the endpoint mix format), plus
+/// `LOOPBACK | EVENTCALLBACK` for the event-driven capture loop. StreamFlags is the SECOND
+/// Initialize parameter — AUTOCONVERTPCM goes HERE, not into hnsPeriodicity (Pitfall 2 / MS
+/// sample bug #196). Returns the raw `Initialize` result; callers collapse `Err` to `Unsupported`.
+unsafe fn initialize_loopback_client(audio_client: &IAudioClient) -> windows::core::Result<()> {
+    let wfx = build_wave_format();
+    let stream_flags = AUDCLNT_STREAMFLAGS_LOOPBACK
+        | AUDCLNT_STREAMFLAGS_EVENTCALLBACK
+        | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
+        | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY;
+    audio_client.Initialize(
+        AUDCLNT_SHAREMODE_SHARED,
+        stream_flags,                 // <-- StreamFlags (2nd param): AUTOCONVERTPCM lives here.
+        0,                            // hnsBufferDuration (engine default in event-driven shared mode)
+        0,                            // hnsPeriodicity (0 for event-driven shared mode)
+        &wfx as *const _ as *const WAVEFORMATEX,
+        None,
+    )
+}
+
 /// Attempt to activate a process-loopback IAudioClient for the process tree rooted at
 /// `target_pid`, in the requested `mode`, initialized to the hardcoded 48k/stereo/f32 format.
 ///
@@ -322,25 +348,11 @@ unsafe fn activate_process_tree(mode: PROCESS_LOOPBACK_MODE, target_pid: u32) ->
         None => return ActivationResult::Unsupported,
     };
 
-    // 7. Initialize: StreamFlags is the SECOND parameter — AUTOCONVERTPCM goes HERE, not
-    //    into hnsPeriodicity (Pitfall 2 / MS sample bug #196). AUTOCONVERTPCM makes the
-    //    shared-mode engine convert to our hardcoded 48k/stereo/f32, so no Rust DSP.
-    let wfx = build_wave_format();
-    let stream_flags = AUDCLNT_STREAMFLAGS_LOOPBACK
-        | AUDCLNT_STREAMFLAGS_EVENTCALLBACK
-        | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
-        | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY;
-    if audio_client
-        .Initialize(
-            AUDCLNT_SHAREMODE_SHARED,
-            stream_flags,                 // <-- StreamFlags (2nd param): AUTOCONVERTPCM lives here.
-            0,                            // hnsBufferDuration (engine default in event-driven shared mode)
-            0,                            // hnsPeriodicity (0 for event-driven shared mode)
-            &wfx as *const _ as *const WAVEFORMATEX,
-            None,
-        )
-        .is_err()
-    {
+    // 7. Initialize to the fixed 48k/stereo/f32 loopback format via the shared helper — the SAME
+    //    Initialize/stream-flags block the endpoint path uses, so the transport format stays
+    //    byte-identical across both client-acquisition paths. AUTOCONVERTPCM makes the shared-mode
+    //    engine convert to our hardcoded format, so no Rust DSP.
+    if initialize_loopback_client(&audio_client).is_err() {
         return ActivationResult::Unsupported;
     }
 
@@ -355,6 +367,57 @@ unsafe fn activate_exclude_tree(exclude_root_pid: u32) -> ActivationResult {
         PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE,
         exclude_root_pid,
     )
+}
+
+/// Attempt to activate a render-endpoint loopback `IAudioClient` for the chosen render device
+/// (or the eConsole default when `device_id` is `None`/`"default"`), initialized to the fixed
+/// 48k/stereo/f32 format via `initialize_loopback_client`.
+///
+/// Unlike the process path (the `ActivateAudioInterfaceAsync` magic device), endpoint loopback
+/// acquires the client DIRECTLY from a real `IMMDevice` (`Activate::<IAudioClient>`), then
+/// loopback-captures everything rendered to that endpoint. The format is NOT queried via
+/// `GetMixFormat` (the deliberate divergence from OBS) — the engine converts to our hardcoded
+/// format via `AUTOCONVERTPCM`, or activation fails and we return `Unsupported`.
+///
+/// Returns `Activated(client)` on success, or `Unsupported` for ANY failure (missing device,
+/// COM error, unsupported format) — never panics, never throws. This is a SINGLE-source mode: it
+/// runs under the one shared `SESSION` and must NOT co-run with a process capture in the session.
+unsafe fn activate_render_endpoint_loopback(device_id: Option<&str>) -> ActivationResult {
+    let enumerator: IMMDeviceEnumerator =
+        match CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) {
+            Ok(e) => e,
+            Err(_) => return ActivationResult::Unsupported,
+        };
+
+    // Resolve the target IMMDevice: the "default" sentinel (or None) -> the eConsole default
+    // render endpoint; any other id -> GetDevice(widened UTF-16 id).
+    let device: IMMDevice = match device_id {
+        None | Some("default") => match enumerator.GetDefaultAudioEndpoint(eRender, eConsole) {
+            Ok(d) => d,
+            Err(_) => return ActivationResult::Unsupported,
+        },
+        Some(id) => {
+            // Widen to a NUL-terminated UTF-16 buffer; `wide` outlives the GetDevice call.
+            let wide: Vec<u16> = id.encode_utf16().chain(std::iter::once(0)).collect();
+            match enumerator.GetDevice(PCWSTR(wide.as_ptr())) {
+                Ok(d) => d,
+                Err(_) => return ActivationResult::Unsupported,
+            }
+        }
+    };
+
+    // Acquire the IAudioClient directly from the IMMDevice (no magic device, no async activation).
+    // Any non-success -> Unsupported (mirror the process path's non-S_OK discipline).
+    let audio_client: IAudioClient = match device.Activate(CLSCTX_ALL, None) {
+        Ok(c) => c,
+        Err(_) => return ActivationResult::Unsupported,
+    };
+
+    if initialize_loopback_client(&audio_client).is_err() {
+        return ActivationResult::Unsupported;
+    }
+
+    ActivationResult::Activated(audio_client)
 }
 
 // ─── Capture-thread state ───────────────────────────────────────────────────────────
@@ -639,6 +702,97 @@ pub fn start_include_process_tree(target_pid: u32, on_chunk: ChunkTsfn) -> napi:
     Ok(true)
 }
 
+/// Begin render-endpoint loopback capture of `device_id` (or the eConsole default when `None`).
+/// Shared body for the two endpoint napi exports below — identical to the `start` skeleton
+/// (single `SESSION` idempotency, stop event, on-capture-thread MTA activation + channel verdict,
+/// `run_capture_loop` reuse, `Ok(false)` fail-closed), but acquires the client via
+/// `activate_render_endpoint_loopback` instead of the process-tree magic device. Single-source: it
+/// shares the one `SESSION` mutex, so it never co-runs with a process capture in the same session.
+fn start_endpoint_session(device_id: Option<String>, on_chunk: ChunkTsfn) -> napi::Result<bool> {
+    let mut guard = SESSION.lock().unwrap_or_else(|p| p.into_inner());
+    // Idempotent: a session already running counts as "started".
+    if guard.is_some() {
+        return Ok(true);
+    }
+
+    // Manual-reset stop event the capture loop polls; unsignaled initially.
+    let stop_event = match unsafe { CreateEventW(None, true, false, PCWSTR::null()) } {
+        Ok(h) => h,
+        Err(_) => return Ok(false),
+    };
+
+    // Activation is COM-apartment-affine, so run it ON the capture thread and report the
+    // outcome back over a channel; this call returns the real support verdict.
+    let (tx, rx): (Sender<bool>, _) = channel();
+    let stop_event_for_thread = SendHandle(stop_event);
+
+    let join = std::thread::spawn(move || {
+        // Capture the whole SendHandle (Send), not its inner HANDLE field.
+        let stop_handle = stop_event_for_thread;
+
+        // COM on the capture thread (MTA — no message pump needed for WASAPI capture).
+        let com = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+        let com_ok = com.is_ok();
+
+        // The ONLY divergence from the process path: acquire the client from a render endpoint.
+        let activation = unsafe { activate_render_endpoint_loopback(device_id.as_deref()) };
+        match activation {
+            ActivationResult::Activated(client) => {
+                let _ = tx.send(true);
+                unsafe { run_capture_loop(client, on_chunk, stop_handle.0) };
+            }
+            ActivationResult::Unsupported => {
+                let _ = tx.send(false);
+            }
+        }
+
+        if com_ok {
+            unsafe { CoUninitialize() };
+        }
+    });
+
+    // Wait for the activation verdict from the capture thread.
+    let supported = rx.recv().unwrap_or(false);
+    if !supported {
+        // Unsupported: tear the (now-exiting) thread down and clean up the stop event.
+        unsafe {
+            let _ = SetEvent(stop_event);
+        }
+        let _ = join.join();
+        unsafe {
+            let _ = CloseHandle(stop_event);
+        }
+        return Ok(false);
+    }
+
+    *guard = Some(CaptureSession {
+        stop_event,
+        join: Some(join),
+    });
+    Ok(true)
+}
+
+/// Begin endpoint loopback capture of an explicitly-chosen render endpoint (`device_id` is a raw
+/// `IMMDevice` id from the render-endpoint list, or the `"default"` sentinel). The VAC/Sonar fix:
+/// point GoofCord at a clean render bus. Emits the SAME fixed 48k/stereo/f32 480-frame (3840-byte)
+/// chunk contract as every other native path. Returns `false` (NOT an error) when activation fails
+/// — explicit-endpoint mode fails CLOSED on the TS side (no Chromium `"loopback"` fallback), so a
+/// `false` here leaves the caller's audio unset.
+#[napi(js_name = "startRenderEndpoint")]
+pub fn start_render_endpoint(device_id: String, on_chunk: ChunkTsfn) -> napi::Result<bool> {
+    start_endpoint_session(Some(device_id), on_chunk)
+}
+
+/// Begin endpoint loopback capture of the eConsole DEFAULT render endpoint (resolved once at share
+/// start via `GetDefaultAudioEndpoint(eRender, eConsole)`; default-device-change follow is
+/// deferred). Emits the SAME fixed 48k/stereo/f32 480-frame (3840-byte) chunk contract. Returns
+/// `false` (NOT an error) when activation fails — the caller decides fallback (strict modes fail
+/// closed to no audio).
+#[napi(js_name = "startDefaultRenderEndpoint")]
+pub fn start_default_render_endpoint(on_chunk: ChunkTsfn) -> napi::Result<bool> {
+    start_endpoint_session(None, on_chunk)
+}
+
 /// Stop capture: signal the capture thread to exit, then join it with a bounded timeout
 /// so a hung native teardown can't wedge the caller (composes with the JS wrapper's
 /// before-quit Promise.race). Idempotent — a no-op if nothing is running.
@@ -879,7 +1033,7 @@ unsafe fn process_basename(pid: u32) -> String {
 /// property store has none); `isDefault` marks the eConsole default render endpoint.
 #[napi(object)]
 pub struct RenderEndpointInfo {
-    /// The endpoint's `IMMDevice` id (the `startRenderEndpoint` selector key).
+    /// The endpoint's `IMMDevice` id (the explicit render-endpoint selector key).
     pub id: String,
     /// Friendly name (`PKEY_Device_FriendlyName`), falling back to the id.
     pub name: String,
