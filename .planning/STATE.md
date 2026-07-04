@@ -1,10 +1,14 @@
 ---
 gsd_state_version: 1.0
 milestone: v1.3
-milestone_name: Small Upstream-able Fixes
+milestone_name: — Small Upstream-able Fixes
+current_phase: 10
+current_phase_name: KEY-01 in-debug — map correct, end-to-end unvalidated
 status: in_progress
-last_updated: "2026-06-10T23:00:00.000Z"
-last_activity: 2026-06-10 — #179 investigated (punctuation=client-fixable / named keys=venbind-blocked / mouse5=unsupported); venbind named-key fix written + pushed to fork thomas-quant/venbind (CI run 27311623130 building); GoofCord wiring spec written (10-GOOFCORD-WIRING.md)
+stopped_at: v1.2 milestone opened (lean shell); 4 parallel investigation spikes dispatched
+last_updated: "2026-07-04T04:34:33.592Z"
+last_activity: 2026-06-14
+last_activity_desc: "Completed quick task 260614-2rn: DOM code/key on synthetic global-keybind events (non-printable keys); global PageUp runtime test pending"
 progress:
   total_phases: 3
   completed_phases: 0
