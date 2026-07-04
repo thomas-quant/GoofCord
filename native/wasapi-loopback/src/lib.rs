@@ -31,28 +31,37 @@ use napi_derive::napi;
 
 // The `#[implement]` macro emits absolute `::windows_core::` paths, so windows-core is a
 // direct dependency (see Cargo.toml). `windows` also re-exports it as `windows::core`.
-use windows::core::{implement, w, IUnknown, Interface, GUID, HRESULT, PCWSTR};
+use windows::core::{implement, w, IUnknown, Interface, GUID, HRESULT, PCWSTR, PWSTR};
 use windows::Win32::Foundation::{
     CloseHandle, GetLastError, ERROR_PROC_NOT_FOUND, E_FAIL, HANDLE, S_OK, WAIT_OBJECT_0,
 };
 use windows::Win32::Media::Audio::{
     ActivateAudioInterfaceAsync, IActivateAudioInterfaceAsyncOperation,
     IActivateAudioInterfaceCompletionHandler, IActivateAudioInterfaceCompletionHandler_Impl,
-    IAudioCaptureClient, IAudioClient, AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_SHAREMODE_SHARED,
+    IAudioCaptureClient, IAudioClient, IAudioSessionControl, IAudioSessionControl2,
+    IAudioSessionEnumerator, IAudioSessionManager2, IMMDevice, IMMDeviceCollection,
+    IMMDeviceEnumerator, AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_SHAREMODE_SHARED,
     AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM, AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
     AUDCLNT_STREAMFLAGS_LOOPBACK, AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
     AUDIOCLIENT_ACTIVATION_PARAMS, AUDIOCLIENT_ACTIVATION_PARAMS_0,
     AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK, AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS,
-    PROCESS_LOOPBACK_MODE, PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE,
+    DEVICE_STATE_ACTIVE, MMDeviceEnumerator, PROCESS_LOOPBACK_MODE,
+    PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE,
     PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE, VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
-    WAVEFORMATEX, WAVEFORMATEXTENSIBLE, WAVEFORMATEXTENSIBLE_0,
+    WAVEFORMATEX, WAVEFORMATEXTENSIBLE, WAVEFORMATEXTENSIBLE_0, eRender,
 };
 use windows::Win32::Media::KernelStreaming::WAVE_FORMAT_EXTENSIBLE;
 use windows::Win32::Media::Multimedia::KSDATAFORMAT_SUBTYPE_IEEE_FLOAT;
 use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
-use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, BLOB, COINIT_MULTITHREADED};
+use windows::Win32::System::Com::{
+    CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, BLOB, CLSCTX_ALL,
+    COINIT_MULTITHREADED,
+};
 use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
-use windows::Win32::System::Threading::{CreateEventW, SetEvent, WaitForSingleObject, INFINITE};
+use windows::Win32::System::Threading::{
+    CreateEventW, GetCurrentProcessId, OpenProcess, QueryFullProcessImageNameW, SetEvent,
+    WaitForSingleObject, INFINITE, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+};
 use windows::Win32::System::Variant::VT_BLOB;
 
 // ─── Hardcoded capture format (the renderer/transport contract) ─────────────────────
@@ -665,4 +674,187 @@ pub fn stop() {
     unsafe {
         let _ = CloseHandle(session.stop_event);
     }
+}
+
+// ─── Audio-session app enumeration (listAudioApps) ──────────────────────────────────
+//
+// Clean-room from the public Microsoft Core Audio session APIs (IMMDeviceEnumerator +
+// IAudioSessionManager2/IAudioSessionControl2): enumerate every ACTIVE eRender endpoint,
+// walk each endpoint's audio sessions, and surface one entry per audio-emitting app PID.
+// The picker (Plan 02) lists these so the user can choose an app to INCLUDE-capture.
+// Enumeration is fail-closed: ANY failure at ANY step yields an empty list — never an
+// error, never a panic across the FFI boundary.
+
+/// One audio-emitting app, as surfaced to the screenshare picker. napi maps the fields to
+/// the JS shape `{ processId, displayName, binary }` — the exact contract the existing
+/// renderer checklist already consumes. Do NOT widen it.
+#[napi(object)]
+pub struct AudioAppInfo {
+    /// The app's process id (the INCLUDE-capture target).
+    pub process_id: u32,
+    /// Friendly name: the audio-session display name, else the executable basename.
+    pub display_name: String,
+    /// The executable basename (e.g. `chrome.exe`).
+    pub binary: String,
+}
+
+/// Enumerate audio-emitting apps (one entry per PID). Deduped by PID; the system-sounds
+/// pseudo-session and GoofCord's OWN process id are dropped. Fail-closed: returns an empty
+/// vec on any failure — never throws.
+///
+/// The Electron "Audio Service" utility CHILD pid is dropped on the TS side in Plan 02
+/// (only the main process can resolve it via `app.getAppMetrics()`); this addon drops only
+/// its own process id here — the split is intentional.
+#[napi(js_name = "listAudioApps")]
+pub fn list_audio_apps() -> napi::Result<Vec<AudioAppInfo>> {
+    // Session enumeration is COM-apartment-affine: run it on a dedicated MTA thread (the
+    // same apartment discipline as the capture thread) so it never depends on — or
+    // disturbs — the caller's apartment. A panic on that thread collapses to an empty vec.
+    let apps = std::thread::spawn(|| unsafe { enumerate_audio_apps() })
+        .join()
+        .unwrap_or_default();
+    Ok(apps)
+}
+
+/// MTA-apartment bracket around the enumeration: CoInitialize the dedicated thread, collect,
+/// CoUninitialize — mirrors the capture thread's `CoInitializeEx(COINIT_MULTITHREADED)` +
+/// `CoUninitialize` pattern. All COM interfaces are created and dropped inside
+/// `collect_audio_apps` before the apartment is torn down.
+unsafe fn enumerate_audio_apps() -> Vec<AudioAppInfo> {
+    let com = CoInitializeEx(None, COINIT_MULTITHREADED);
+    let com_ok = com.is_ok();
+    let apps = collect_audio_apps();
+    if com_ok {
+        CoUninitialize();
+    }
+    apps
+}
+
+/// The enumeration body. Every fallible COM step degrades to "skip this item" or an early
+/// empty return — no `?`, no panic, no throw (fail-closed enumeration).
+unsafe fn collect_audio_apps() -> Vec<AudioAppInfo> {
+    let mut out: Vec<AudioAppInfo> = Vec::new();
+    let mut seen: Vec<u32> = Vec::new(); // dedupe by PID (N is tiny; a linear scan is fine).
+    let own_pid = GetCurrentProcessId();
+
+    let enumerator: IMMDeviceEnumerator =
+        match CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) {
+            Ok(e) => e,
+            Err(_) => return out,
+        };
+
+    // Every ACTIVE render endpoint — an app can be emitting on any of them.
+    let devices: IMMDeviceCollection =
+        match enumerator.EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE) {
+            Ok(d) => d,
+            Err(_) => return out,
+        };
+
+    let device_count = devices.GetCount().unwrap_or(0);
+    for d in 0..device_count {
+        let device: IMMDevice = match devices.Item(d) {
+            Ok(dev) => dev,
+            Err(_) => continue,
+        };
+        let manager: IAudioSessionManager2 = match device.Activate(CLSCTX_ALL, None) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        let sessions: IAudioSessionEnumerator = match manager.GetSessionEnumerator() {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+
+        let session_count = sessions.GetCount().unwrap_or(0);
+        for s in 0..session_count {
+            let control: IAudioSessionControl = match sessions.GetSession(s) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            let control2: IAudioSessionControl2 = match control.cast() {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+
+            // Drop the system-sounds pseudo-session (S_OK == "is system sounds").
+            if control2.IsSystemSoundsSession() == S_OK {
+                continue;
+            }
+
+            let pid = match control2.GetProcessId() {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            // Drop the "no single process" sentinel (0), GoofCord's own PID, and dupes.
+            if pid == 0 || pid == own_pid || seen.contains(&pid) {
+                continue;
+            }
+            seen.push(pid);
+
+            // Prefer the session display name; fall back to the executable basename.
+            let binary = process_basename(pid);
+            let display_name =
+                session_display_name(&control).unwrap_or_else(|| binary.clone());
+            out.push(AudioAppInfo {
+                process_id: pid,
+                display_name,
+                binary,
+            });
+        }
+    }
+
+    out
+}
+
+/// The session's friendly display name, or `None` when absent. An empty name — or an
+/// unexpanded resource reference (`@%SystemRoot%\...,-101`) that would render as gibberish —
+/// is treated as "no name" so the caller falls back to the executable basename. The string
+/// GetDisplayName hands back is CoTaskMem-allocated; we free it here regardless of parse.
+unsafe fn session_display_name(control: &IAudioSessionControl) -> Option<String> {
+    let raw: PWSTR = control.GetDisplayName().ok()?;
+    if raw.is_null() {
+        return None;
+    }
+    let owned = raw.to_string().ok();
+    CoTaskMemFree(Some(raw.as_ptr() as *const core::ffi::c_void));
+
+    let name = owned?;
+    let trimmed = name.trim();
+    if trimmed.is_empty() || trimmed.starts_with('@') {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+/// The executable basename for `pid` (e.g. `chrome.exe`) via `QueryFullProcessImageNameW`,
+/// or an empty string when the process can't be opened/queried. Opens with only
+/// PROCESS_QUERY_LIMITED_INFORMATION (resolves across integrity levels without elevation).
+unsafe fn process_basename(pid: u32) -> String {
+    let handle = match OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
+        Ok(h) => h,
+        Err(_) => return String::new(),
+    };
+
+    let mut buf = [0u16; 260]; // MAX_PATH
+    let mut size = buf.len() as u32;
+    let queried = QueryFullProcessImageNameW(
+        handle,
+        PROCESS_NAME_WIN32,
+        PWSTR::from_raw(buf.as_mut_ptr()),
+        &mut size,
+    )
+    .is_ok();
+    let _ = CloseHandle(handle);
+
+    if !queried || size == 0 {
+        return String::new();
+    }
+
+    let full = String::from_utf16_lossy(&buf[..size as usize]);
+    // basename: keep only the segment after the last path separator.
+    full.rsplit(|c| c == '\\' || c == '/')
+        .next()
+        .unwrap_or("")
+        .to_string()
 }
