@@ -32,6 +32,9 @@ interface ScreensharePayload {
 	sources: IPCSource[] | null;
 	audioNodes: ShareableNode[];
 	isPatchcord: boolean;
+	// win32: true when the native WASAPI addon can run → show the advanced audio UI (mode control +
+	// app checklist) instead of the plain system checkbox. Lets the win32 path reach app mode.
+	isWasapiAudio: boolean;
 }
 
 const DISPLAY_MODES = {
@@ -49,6 +52,7 @@ const CONTROL_ICONS: Record<string, string> = {
 };
 
 let isPatchcordMode = false;
+let isWasapiAudio = false;
 let isRefreshing = false;
 
 const escapeMap: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
@@ -123,7 +127,7 @@ function getFormSettings(): ScreenshareSettings | null {
 
 	let audioConfig: AudioConfig = { mode: "none", pids: [], captureSource: "process-exclude", endpointId: "default" };
 
-	if (isPatchcordMode) {
+	if (isPatchcordMode || isWasapiAudio) {
 		audioConfig.mode = (document.querySelector<HTMLInputElement>('input[name="audioMode"]:checked')?.value as AudioConfig["mode"]) ?? "none";
 		audioConfig.pids = Array.from(document.querySelectorAll<HTMLInputElement>("#audio-apps-list input:checked")).map((el) => Number(el.value));
 	} else if ($<HTMLInputElement>("audio-share-checkbox").checked) {
@@ -160,7 +164,7 @@ async function refreshData() {
 			$("sources-list").innerHTML = sources.map(createSourceItemHtml).join("");
 		}
 
-		if (isPatchcordMode) {
+		if (isPatchcordMode || isWasapiAudio) {
 			const selectedPids = Array.from(document.querySelectorAll<HTMLInputElement>("#audio-apps-list input:checked")).map((el) => Number(el.value));
 			$("audio-apps-list").innerHTML = renderAudioApps(audioNodes, selectedPids);
 		}
@@ -184,6 +188,7 @@ async function init() {
 
 	const payload = (await ipcRenderer.invoke("refreshScreenshareSources")) as ScreensharePayload;
 	isPatchcordMode = payload.isPatchcord;
+	isWasapiAudio = payload.isWasapiAudio;
 
 	$("title-text").textContent = i("screenshare-screenshare");
 	$("subtitle-text").textContent = i("screenshare-subtitle");
@@ -201,7 +206,7 @@ async function init() {
 	$("resolution-group").innerHTML = generateSegmentedControlHtml("resolution", DISPLAY_MODES.Quality, s.resolution);
 	$("framerate-group").innerHTML = generateSegmentedControlHtml("framerate", DISPLAY_MODES.Framerate, s.framerate);
 
-	if (isPatchcordMode) {
+	if (isPatchcordMode || isWasapiAudio) {
 		$("linux-audio-section").style.display = "block";
 		$("linux-audio-title").textContent = i("screenshare-audio-linux-title");
 		$("audio-mode-label").textContent = i("screenshare-audio-mode-label");
