@@ -71,7 +71,7 @@ Plans:
 **Wave 2** *(blocked on Wave 1 completion)*
 
 - [x] 999.1-02-PLAN.md — INCLUDE integration: widened AudioConfig + fail-closed verdict wrapper + win32 gate + app-checklist UI [wave 2]
-- [ ] 999.1-03-PLAN.md — Rust addon: render-endpoint enumeration (`listRenderEndpoints`) + endpoint loopback (`startRenderEndpoint`/`startDefaultRenderEndpoint`) [wave 2]
+- [~] 999.1-03-PLAN.md — Rust addon: render-endpoint enumeration (`listRenderEndpoints`) + endpoint loopback (`startRenderEndpoint`/`startDefaultRenderEndpoint`) [wave 2] — **impl complete** (Task 1 `870b039`, Task 2 `5995092`; both mirrors byte-identical; shared `initialize_loopback_client` fixed-format helper; no self-cancel/AEC); **CI compile PENDING** (Task 3 deferred human gate: push → `thomas-quant/wasapi-loopback` Windows CI green → prebuilt `.node` w/ INCLUDE + endpoint for Plan 04)
 
 **Wave 3** *(blocked on Wave 2 completion)*
 

@@ -5,16 +5,16 @@ milestone_name: — Small Upstream-able Fixes
 current_phase: 999.1
 current_phase_name: windows-audio-patchcord-parity-backend
 status: executing
-stopped_at: 999.1-02 implementation complete (per-app INCLUDE wired + widened AudioConfig); CI + second-device box verification PENDING (human)
-last_updated: "2026-07-04T05:15:22.014Z"
+stopped_at: 999.1-03 implementation complete (render-endpoint enumerator + endpoint loopback, both mirrors); CI compile gate PENDING (human)
+last_updated: "2026-07-04T05:35:00.000Z"
 last_activity: 2026-07-04
-last_activity_desc: Phase 999.1 execution started
+last_activity_desc: 999.1-03 executed — endpoint enumeration + loopback backend (impl complete, CI PENDING)
 progress:
   total_phases: 13
   completed_phases: 6
   total_plans: 23
-  completed_plans: 21
-  percent: 46
+  completed_plans: 22
+  percent: 48
 ---
 
 # Project State
@@ -29,8 +29,10 @@ See: .planning/PROJECT.md (updated 2026-06-06)
 ## Current Position
 
 Phase: 999.1 (windows-audio-patchcord-parity-backend) — EXECUTING
-Plan: 2 of 4 — implementation COMPLETE, CI compile gate PENDING (blocks Plan 02)
-Status: Ready to execute
+Plan: 3 of 4 — implementation COMPLETE, CI compile gate PENDING (endpoint bindings + new feature gates)
+Status: Ready to execute Plan 04 (endpoint-selector integration)
+
+**999.1-03 (2026-07-04):** Rust backend for the endpoint/source selector (feature 2) — `listRenderEndpoints() -> RenderEndpointInfo[]` (MTA-thread `EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE)` → `GetId` + `OpenPropertyStore(PKEY_Device_FriendlyName)`, eConsole default tagged, fail-closed to empty vec) and `startRenderEndpoint(deviceId)` / `startDefaultRenderEndpoint()` (endpoint loopback: `Activate::<IAudioClient>` directly on the chosen/`GetDefaultAudioEndpoint(eRender,eConsole)` `IMMDevice`). Both start paths route through a NEW shared `initialize_loopback_client(audio_client)` helper (extracted from the process path) so the fixed 48k/stereo/f32 `LOOPBACK|EVENTCALLBACK|AUTOCONVERTPCM|SRC_DEFAULT_QUALITY` Initialize is byte-identical across process + endpoint — NOT `GetMixFormat`. Single-source under the one `SESSION`. NO self-cancel/AEC/NLMS (dead lineage stays out). Two new windows-rs gates (`Win32_UI_Shell_PropertiesSystem`, `Win32_Devices_FunctionDiscovery`) in BOTH `Cargo.toml`. Both mirrors byte-identical (`diff -q` clean). Task 1 `870b039`, Task 2 `5995092`. **NOT built locally (CI-only-build rule); CI compile is the outstanding gate.**
 
 **999.1-01 (2026-07-04):** Rust addon grown with the two per-app INCLUDE primitives — `startIncludeProcessTree(target_pid, on_chunk)` (single-app INCLUDE via `PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE`, reusing the shared `activate_process_tree` + `run_capture_loop` + `SESSION`/`stop` machinery) and `listAudioApps() -> AudioAppInfo[]` (MTA-thread session enumerator: `MMDeviceEnumerator` → `EnumAudioEndpoints(eRender)` → `IAudioSessionManager2` → `IAudioSessionControl2::GetProcessId`, dedupe, drop system-sounds + own PID, name via `GetDisplayName` else exe basename). Legacy `start` EXCLUDE path (#211 echo fix) untouched. Both mirrors (`native/wasapi-loopback/`, `wasapi-loopback-repo/`) byte-identical. No new windows-rs feature gate needed (all types under the already-present `Win32_Media_Audio`/`Win32_System_Com`/`Win32_System_Threading`, verified against windows 0.62.2 source). **NOT built locally (CI-only-build rule); CI compile is the outstanding gate.**
 
@@ -64,6 +66,7 @@ Last activity: 2026-07-04 — Phase 999.1 execution started
 
 *Updated after each plan completion*
 | Phase 999.1 P02 | 8min | 3 tasks | 4 files |
+| Phase 999.1 P03 | ~17min | 2 tasks (Task 3 deferred CI gate) | 4 files |
 
 ## Accumulated Context
 
@@ -102,7 +105,9 @@ None yet.
 
 [Issues that affect future work]
 
-**OPEN (999.1-01, 2026-07-04): wasapi-loopback Windows CI compile gate outstanding.** The Plan 01 Rust addon changes (INCLUDE + listAudioApps, both mirrors) are implemented but NOT compiled — per the CI-only-build rule nothing was built locally. Before Plan 02 can proceed, a human must: push the branch to the `origin` fork → trigger the `thomas-quant/wasapi-loopback` Windows workflow (`--repo thomas-quant/wasapi-loopback`) against the ref → confirm a GREEN compile (windows-rs feature-gate + binding-constant verification) → obtain the prebuilt `.node` artifact that Plan 02's manual box test consumes. Static verification done here: `diff -q` mirror identity (lib.rs + Cargo.toml both exit 0) + all acceptance greps; API surface pre-verified against the local windows 0.62.2 crate source. Runtime INCLUDE capture + enumeration correctness are BOX-deferred to Plan 02.
+**OPEN (999.1-03, 2026-07-04): wasapi-loopback Windows CI compile gate outstanding (endpoint bindings + 2 new feature gates).** The Plan 03 endpoint changes (layered on Plan 01's committed addon) are implemented but NOT compiled — CI-only-build rule, nothing built locally. Before Plan 04 can proceed, a human must: push the branch (Plan 01 + Plan 03 addon edits) to the `origin` fork → trigger the `thomas-quant/wasapi-loopback` Windows workflow (`--repo thomas-quant/wasapi-loopback`) against the ref → confirm a GREEN compile verifying the NEW gates (`Win32_UI_Shell_PropertiesSystem` → `IPropertyStore`, `Win32_Devices_FunctionDiscovery` → `PKEY_Device_FriendlyName`), the endpoint activation bindings (`GetDefaultAudioEndpoint`/`GetDevice`/`OpenPropertyStore`/`IMMDevice::Activate::<IAudioClient>`), and the shared `initialize_loopback_client` → obtain the prebuilt `.node` (now carrying INCLUDE + endpoint) that Plan 04's manual box test consumes. Static verification done here: `diff -q` mirror identity (lib.rs + Cargo.toml both exit 0) + all acceptance greps; endpoint API surface pre-modeled against the local windows 0.62.2 crate. BOX-deferred to Plan 04: endpoint loopback at the fixed format on real devices, `"default"` → eConsole default, the Sonar render-vs-capture open question, concurrent endpoint + process stability.
+
+**~~OPEN (999.1-01)~~ superseded by the 999.1-03 gate above** — the Plan 01 INCLUDE + listAudioApps addon edits ride the same branch/`.node` and are covered by the same push → `thomas-quant/wasapi-loopback` CI → prebuilt-`.node` gate.
 
 All v1.1 blockers resolved at milestone close — carried forward:
 
@@ -139,6 +144,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-04T05:15:21.760Z
-Stopped at: 999.1-02 implementation complete (per-app INCLUDE wired + widened AudioConfig); CI + second-device box verification PENDING (human)
-Resume file: .planning/phases/999.1-windows-audio-patchcord-parity-backend/999.1-02-SUMMARY.md
+Last session: 2026-07-04T05:35:00.000Z
+Stopped at: 999.1-03 implementation complete (render-endpoint enumerator + endpoint loopback, both mirrors byte-identical); CI compile gate PENDING (human)
+Resume file: .planning/phases/999.1-windows-audio-patchcord-parity-backend/999.1-03-SUMMARY.md
