@@ -34,6 +34,16 @@ const require = createRequire(import.meta.url);
 
 const LOG_PREFIX = pc.cyan("[Screenshare]");
 
+// The render-endpoint descriptor surfaced to the picker's capture-source dropdown (Plan 04). Mirrors
+// the Rust napi RenderEndpointInfo { id, name, isDefault } — `id` is the IMMDevice id, `name` the
+// friendly name, `isDefault` flags the eConsole default render endpoint. Reused by screenshare.ts's
+// payload and (structurally) by the preload dropdown.
+export interface RenderEndpointInfo {
+	id: string;
+	name: string;
+	isDefault: boolean;
+}
+
 // The addon's contract (see native/wasapi-loopback/src/lib.rs):
 //   start(excludeRootPid: number, onChunk: (err, chunk) => void): boolean  // false = unsupported, never throws
 //   stop(): void                                                           // idempotent, bounded join
@@ -48,6 +58,15 @@ interface WasapiAddon {
 	//   enumerator returns a per-PID audio-session list (deduped, system-sounds + own-PID dropped).
 	startIncludeProcessTree(targetPid: number, onChunk: (err: unknown, chunk: Buffer) => void): boolean;
 	listAudioApps(): { processId: number; displayName: string; binary: string }[];
+	// Plan 03 additions (render-endpoint enumeration + endpoint loopback). Optional at the load guard
+	// (graceful null-on-failure; a pre-endpoint .node simply lacks these) — documentation-grade under @ts-nocheck.
+	//   startRenderEndpoint: loopback of a chosen render device by IMMDevice id; false = unsupported /
+	//     unresolved id (fail-closed), never throws.
+	//   startDefaultRenderEndpoint: loopback of the eConsole default render device; false = unsupported.
+	//   listRenderEndpoints: active eRender endpoints ({ id, name, isDefault }); [] fail-closed.
+	startRenderEndpoint(deviceId: string, onChunk: (err: unknown, chunk: Buffer) => void): boolean;
+	startDefaultRenderEndpoint(onChunk: (err: unknown, chunk: Buffer) => void): boolean;
+	listRenderEndpoints(): RenderEndpointInfo[];
 }
 
 // ── Addon load (mirror obtainVenbind: load-once flag + --no-wasapi guard + null-on-failure) ──
@@ -111,6 +130,22 @@ export function listWasapiAudioApps(): { processId: number; displayName: string;
 	}
 }
 
+// Thin accessor over the addon's render-endpoint enumerator, used by fetchScreenshareData to populate the
+// win32 capture-source dropdown. Returns [] fail-closed off-win32 / --no-wasapi / addon-missing / on any
+// throw (or when the prebuilt .node predates the endpoint exports), so the picker simply offers "Default"
+// only rather than erroring. Keeps screenshare.ts from importing the raw addon; shape is RenderEndpointInfo.
+export function listRenderEndpoints(): RenderEndpointInfo[] {
+	if (process.platform !== "win32" || process.argv.includes("--no-wasapi")) return [];
+	const wasapi = obtainWasapiLoopback();
+	if (!wasapi || typeof wasapi.listRenderEndpoints !== "function") return [];
+	try {
+		return wasapi.listRenderEndpoints() ?? [];
+	} catch (e: unknown) {
+		console.error(LOG_PREFIX, "listRenderEndpoints failed:", e);
+		return [];
+	}
+}
+
 // ── State (nulled by stopWasapiLoopback; safe to call stop twice) ────────────────────────
 let port1: MessagePortMain | undefined;
 
@@ -162,7 +197,8 @@ async function logCapture(kind: string, verdict: WasapiVerdict): Promise<void> {
  * for every mode; only the native start call varies:
  *   mode:"system" + captureSource:"process-exclude" → start(process.pid)          — EXCLUDE-self (#211)
  *   mode:"app"                                        → startIncludeProcessTree(pid) — per-app INCLUDE
- *   mode:"system" + captureSource:"endpoint"          → STUB, fails closed (Plan 04 wires the backend)
+ *   mode:"system" + captureSource:"endpoint"          → startRenderEndpoint(id) / startDefaultRenderEndpoint()
+ *                                                       — render-endpoint loopback (the VAC/Sonar fix)
  *
  * Returns a WasapiVerdict (never throws). App mode + explicit-endpoint mode FAIL CLOSED: on any
  * non-support / failure / exception they return "failed-no-fallback" so the caller leaves result.audio
@@ -184,14 +220,6 @@ export async function tryStartWasapiLoopback(audioConfig: WasapiAudioConfig): Pr
 	if (!wasapi) {
 		await logCapture("addon-missing", closedVerdict);
 		return closedVerdict;
-	}
-
-	// Endpoint backend not wired until Plan 04 — fail CLOSED now. Do NOT silently satisfy an endpoint
-	// request with the EXCLUDE-self path; that captures the wrong scope (privacy inversion).
-	if (audioConfig.mode === "system" && audioConfig.captureSource === "endpoint") {
-		console.log(LOG_PREFIX, "endpoint backend not wired until Plan 04 — failing closed (no audio)");
-		await logCapture("endpoint-unwired", "failed-no-fallback");
-		return "failed-no-fallback";
 	}
 
 	try {
@@ -230,7 +258,21 @@ export async function tryStartWasapiLoopback(audioConfig: WasapiAudioConfig): Pr
 		// never throws). The transport hop above is unchanged; only this call varies.
 		let ok: boolean;
 		let kind: string;
-		if (audioConfig.mode === "app") {
+		if (audioConfig.mode === "system" && audioConfig.captureSource === "endpoint") {
+			// Explicit render-endpoint loopback (the VAC/Sonar power-user fix): point GoofCord at a chosen
+			// clean render bus. "default" resolves to the eConsole default render endpoint; any other id is
+			// the chosen IMMDevice. FAILS CLOSED: a false verdict (activation failure / unresolved-or-forged
+			// id / a prebuilt .node that predates the endpoint exports) maps to failed-no-fallback below
+			// (closedVerdict is failed-no-fallback for endpoint mode), so an explicit-endpoint request never
+			// degrades to a broad Chromium "loopback" (privacy inversion) or the EXCLUDE-self scope.
+			if (audioConfig.endpointId === "default") {
+				kind = "endpoint-default";
+				ok = await wasapi.startDefaultRenderEndpoint(onChunk);
+			} else {
+				kind = `endpoint:${audioConfig.endpointId}`;
+				ok = await wasapi.startRenderEndpoint(audioConfig.endpointId, onChunk);
+			}
+		} else if (audioConfig.mode === "app") {
 			// Per-app INCLUDE: capture ONLY the chosen app's process tree (N=1 for now; pids[0]).
 			// Self-free by construction (engine-side filter) — patchcord parity.
 			kind = "include-pid";
