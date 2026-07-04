@@ -58,7 +58,7 @@ Plans:
 
 **Goal:** Grow the Windows WASAPI process-loopback addon from a fixed echo-fix into a patchcord-parity audio backend. **Scope narrowed at planning (per 999.1-CONTEXT.md) to EXACTLY TWO opt-in features:** (1) per-app INCLUDE (single app, `PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE`) and (2) an endpoint/source selector (endpoint loopback at the fixed 48k/stereo/f32 format). EXCLUDE-self stays the zero-config `mode:"system"` default (#211). Multi-app N-INCLUDE + mixer, window capture, restart-follow, and all AEC/self-cancel/B1 subtraction are DEFERRED/DEAD (surfaced as assumptions in the plans, not built). Also the substance of Milkshiift's PR #211 question ("same API as patchcord, include/exclude any apps, not just prevent echo").
 **Requirements:** WIN-APP-01 (per-app INCLUDE), WIN-ENDPOINT-01 (endpoint/source selector), WIN-AUDIOCFG-01 (widened AudioConfig + fail-closed dispatch) — phase-local tags (no formal REQUIREMENTS.md IDs mapped to this phase)
-**Plans:** 4/4 implemented — CI compile + Windows box verification PENDING (end-of-phase human gate; run `/gsd-verify-work 999.1` after CI+box)
+**Plans:** 4/4 implemented — CI chain GREEN 2026-07-04 (addon compile run 28697943156 + GoofCord win-artifacts run 28698026482, "Assert wasapi addon packaged" ✓); only the 2 second-device Windows BOX tests remain → run `/gsd-verify-work 999.1`
 
 Plans: *(all `[~]` = implementation complete on branch `spike/999.1-per-app-include`; none human-verified — CI compile + Windows box gates PENDING)*
 
