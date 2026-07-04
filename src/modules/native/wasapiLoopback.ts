@@ -275,8 +275,21 @@ export async function tryStartWasapiLoopback(audioConfig: WasapiAudioConfig): Pr
 		} else if (audioConfig.mode === "app") {
 			// Per-app INCLUDE: capture ONLY the chosen app's process tree (N=1 for now; pids[0]).
 			// Self-free by construction (engine-side filter) — patchcord parity.
+			// Guard the PID EXPLICITLY before the native call: if the user picked "app" mode but
+			// checked no app, getFormSettings yields pids: [] so pids[0] is undefined. Handing that
+			// to the napi u32 parameter would rely on napi's argument validation throwing (caught
+			// below as an exception) rather than a deterministic decision here — and any coercion to
+			// 0 would root the INCLUDE tree at PID 0 (System Idle, unspecified capture). Fail closed
+			// deterministically instead (closedVerdict is failed-no-fallback for app mode), so a
+			// missing selection is a clean silent share, not an implementation-detail-dependent one.
+			const targetPid = audioConfig.pids[0];
+			if (typeof targetPid !== "number" || !Number.isInteger(targetPid) || targetPid <= 0) {
+				await stopWasapiLoopback();
+				await logCapture("app-no-pid", closedVerdict);
+				return closedVerdict;
+			}
 			kind = "include-pid";
-			ok = await wasapi.startIncludeProcessTree(audioConfig.pids[0], onChunk);
+			ok = await wasapi.startIncludeProcessTree(targetPid, onChunk);
 		} else {
 			// mode:"system" + captureSource:"process-exclude" — today's EXCLUDE-self path (#211).
 			// PID discipline (ECHO-02): the EXCLUDE-tree root is the Electron main PID; the addon
