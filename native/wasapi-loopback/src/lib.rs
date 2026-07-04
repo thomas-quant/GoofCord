@@ -48,21 +48,26 @@ use windows::Win32::Media::Audio::{
     DEVICE_STATE_ACTIVE, MMDeviceEnumerator, PROCESS_LOOPBACK_MODE,
     PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE,
     PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE, VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
-    WAVEFORMATEX, WAVEFORMATEXTENSIBLE, WAVEFORMATEXTENSIBLE_0, eRender,
+    WAVEFORMATEX, WAVEFORMATEXTENSIBLE, WAVEFORMATEXTENSIBLE_0, eConsole, eRender,
 };
 use windows::Win32::Media::KernelStreaming::WAVE_FORMAT_EXTENSIBLE;
 use windows::Win32::Media::Multimedia::KSDATAFORMAT_SUBTYPE_IEEE_FLOAT;
+// Endpoint friendly-name property key + the property store interface returned by
+// IMMDevice::OpenPropertyStore (render-endpoint enumeration). PKEY_Device_FriendlyName lives under
+// Win32_Devices_FunctionDiscovery; IPropertyStore under Win32_UI_Shell_PropertiesSystem.
+use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
+use windows::Win32::UI::Shell::PropertiesSystem::IPropertyStore;
 use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, BLOB, CLSCTX_ALL,
-    COINIT_MULTITHREADED,
+    COINIT_MULTITHREADED, STGM_READ,
 };
 use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
 use windows::Win32::System::Threading::{
     CreateEventW, GetCurrentProcessId, OpenProcess, QueryFullProcessImageNameW, SetEvent,
     WaitForSingleObject, INFINITE, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
 };
-use windows::Win32::System::Variant::VT_BLOB;
+use windows::Win32::System::Variant::{VT_BLOB, VT_LPWSTR};
 
 // ─── Hardcoded capture format (the renderer/transport contract) ─────────────────────
 //
@@ -857,4 +862,132 @@ unsafe fn process_basename(pid: u32) -> String {
         .next()
         .unwrap_or("")
         .to_string()
+}
+
+// ─── Render-endpoint enumeration (list_render_endpoints) ────────────────────────────
+//
+// Clean-room from the public Microsoft Core Audio device APIs (IMMDeviceEnumerator +
+// IPropertyStore + PKEY_Device_FriendlyName), mirroring OBS's win-wasapi endpoint
+// enumeration: list every ACTIVE eRender endpoint, read its device id + friendly name,
+// and tag the eConsole default. The selector (Plan 04) presents these so the user can
+// point GoofCord at a clean render bus (e.g. a VAC "Stream" endpoint). Fail-closed: ANY
+// failure at ANY step yields an empty list — never an error, never a panic across FFI.
+
+/// One active render endpoint, as surfaced to the source selector. napi maps the fields to
+/// the JS shape `{ id, name, isDefault }` (`is_default` → `isDefault`). `id` is the raw
+/// `IMMDevice` id (the `GetDevice` key); `name` is the friendly name (or the id when the
+/// property store has none); `isDefault` marks the eConsole default render endpoint.
+#[napi(object)]
+pub struct RenderEndpointInfo {
+    /// The endpoint's `IMMDevice` id (the `startRenderEndpoint` selector key).
+    pub id: String,
+    /// Friendly name (`PKEY_Device_FriendlyName`), falling back to the id.
+    pub name: String,
+    /// True for the current eConsole default render endpoint (the `"default"` sentinel target).
+    pub is_default: bool,
+}
+
+/// Enumerate active render endpoints (one entry per `eRender` `DEVICE_STATE_ACTIVE` device),
+/// with the eConsole default tagged. Fail-closed: returns an empty vec on any failure — never
+/// throws. Runs on a dedicated MTA thread (same apartment discipline as `listAudioApps` and the
+/// capture thread) so it never depends on — or disturbs — the caller's apartment.
+#[napi(js_name = "listRenderEndpoints")]
+pub fn list_render_endpoints() -> napi::Result<Vec<RenderEndpointInfo>> {
+    let endpoints = std::thread::spawn(|| unsafe { enumerate_render_endpoints() })
+        .join()
+        .unwrap_or_default();
+    Ok(endpoints)
+}
+
+/// MTA-apartment bracket around the render-endpoint enumeration (mirrors `enumerate_audio_apps`):
+/// CoInitialize the dedicated thread, collect, CoUninitialize. All COM interfaces are created and
+/// dropped inside `collect_render_endpoints` before the apartment is torn down.
+unsafe fn enumerate_render_endpoints() -> Vec<RenderEndpointInfo> {
+    let com = CoInitializeEx(None, COINIT_MULTITHREADED);
+    let com_ok = com.is_ok();
+    let out = collect_render_endpoints();
+    if com_ok {
+        CoUninitialize();
+    }
+    out
+}
+
+/// The enumeration body. Every fallible COM step degrades to "skip this endpoint" or an early
+/// empty return — no `?`, no panic, no throw (fail-closed enumeration).
+unsafe fn collect_render_endpoints() -> Vec<RenderEndpointInfo> {
+    let mut out: Vec<RenderEndpointInfo> = Vec::new();
+
+    let enumerator: IMMDeviceEnumerator =
+        match CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) {
+            Ok(e) => e,
+            Err(_) => return out,
+        };
+
+    // Resolve the eConsole default once (best-effort) so each entry can be tagged. A failure
+    // here just means nothing is tagged default — enumeration still proceeds.
+    let default_id: Option<String> = match enumerator.GetDefaultAudioEndpoint(eRender, eConsole) {
+        Ok(d) => immdevice_id(&d),
+        Err(_) => None,
+    };
+
+    let devices: IMMDeviceCollection =
+        match enumerator.EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE) {
+            Ok(d) => d,
+            Err(_) => return out,
+        };
+
+    let device_count = devices.GetCount().unwrap_or(0);
+    for d in 0..device_count {
+        let device: IMMDevice = match devices.Item(d) {
+            Ok(dev) => dev,
+            Err(_) => continue,
+        };
+        // The id is the selector key — an endpoint without one is unusable, so skip it.
+        let id = match immdevice_id(&device) {
+            Some(i) => i,
+            None => continue,
+        };
+        let name = endpoint_friendly_name(&device).unwrap_or_else(|| id.clone());
+        let is_default = default_id.as_deref() == Some(id.as_str());
+        out.push(RenderEndpointInfo { id, name, is_default });
+    }
+
+    out
+}
+
+/// The `IMMDevice` id string (the `GetDevice`/selector key), or `None` when absent. `GetId`
+/// hands back a CoTaskMem-allocated `PWSTR`; we copy it into an owned `String` and free the
+/// original with `CoTaskMemFree` (same ownership discipline as `session_display_name`).
+unsafe fn immdevice_id(device: &IMMDevice) -> Option<String> {
+    let raw: PWSTR = device.GetId().ok()?;
+    if raw.is_null() {
+        return None;
+    }
+    let owned = raw.to_string().ok();
+    CoTaskMemFree(Some(raw.as_ptr() as *const core::ffi::c_void));
+    owned
+}
+
+/// The endpoint's friendly name via the property store (`PKEY_Device_FriendlyName`), or `None`.
+/// The string lives inside the returned owning `PROPVARIANT` (`VT_LPWSTR`); we copy it into an
+/// owned `String` and let the `PROPVARIANT` drop — its `PropVariantClear` frees the string (we
+/// OWN the value returned by `GetValue`, so this is the correct release, NOT `CoTaskMemFree`).
+unsafe fn endpoint_friendly_name(device: &IMMDevice) -> Option<String> {
+    let store: IPropertyStore = device.OpenPropertyStore(STGM_READ).ok()?;
+    let prop = store.GetValue(&PKEY_Device_FriendlyName).ok()?;
+    let pv = &prop.Anonymous.Anonymous;
+    if pv.vt != VT_LPWSTR {
+        return None;
+    }
+    let raw = pv.Anonymous.pwszVal;
+    if raw.is_null() {
+        return None;
+    }
+    let owned = raw.to_string().ok()?;
+    let trimmed = owned.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
 }

@@ -39,9 +39,15 @@ windows-core = "0.62"
 #   Win32_Media_Multimedia             -> KSDATAFORMAT_SUBTYPE_IEEE_FLOAT (the WAVEFORMATEXTENSIBLE SubFormat)
 #   Win32_System_Variant               -> VT_BLOB / VARENUM (the PROPVARIANT discriminant)
 #   Win32_System_Com_StructuredStorage -> PROPVARIANT (carries AUDIOCLIENT_ACTIVATION_PARAMS into the activation)
+#   Win32_UI_Shell_PropertiesSystem    -> (listRenderEndpoints) IPropertyStore (IMMDevice::OpenPropertyStore return type)
+#   Win32_Devices_FunctionDiscovery    -> (listRenderEndpoints) PKEY_Device_FriendlyName (the endpoint friendly-name property key)
 # NOTE: the listAudioApps session-enumeration + process-image-name types all live under the
 # already-present Win32_Media_Audio / Win32_System_Com / Win32_System_Threading features —
-# no NEW feature gate is required for this addition (verified against windows 0.62.2).
+# no NEW feature gate is required for that addition (verified against windows 0.62.2). The
+# listRenderEndpoints friendly-name path DOES require two new gates: Win32_UI_Shell_PropertiesSystem
+# (IPropertyStore) and Win32_Devices_FunctionDiscovery (PKEY_Device_FriendlyName). eConsole/
+# GetDefaultAudioEndpoint/GetDevice/OpenPropertyStore stay under the existing Win32_Media_Audio;
+# STGM_READ under Win32_System_Com; VT_LPWSTR under Win32_System_Variant (all already enabled).
 [dependencies.windows]
 version = "0.62"
 features = [
@@ -55,6 +61,8 @@ features = [
     "Win32_Media_Multimedia",
     "Win32_System_Variant",
     "Win32_System_Com_StructuredStorage",
+    "Win32_UI_Shell_PropertiesSystem",
+    "Win32_Devices_FunctionDiscovery",
 ]
 
 [build-dependencies]
