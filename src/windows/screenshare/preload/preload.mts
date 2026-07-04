@@ -28,6 +28,16 @@ export interface ScreenshareSettings {
 	contentHint: "motion" | "detail";
 }
 
+// A render endpoint offered in the win32 capture-source dropdown (mirrors the main-process
+// RenderEndpointInfo / Rust napi shape): `id` = IMMDevice id, `name` = friendly name, `isDefault`
+// flags the console default. Kept local (like AudioConfig/ScreensharePayload) so the sandboxed
+// preload never imports the main-process wasapiLoopback module.
+interface RenderEndpointInfo {
+	id: string;
+	name: string;
+	isDefault: boolean;
+}
+
 interface ScreensharePayload {
 	sources: IPCSource[] | null;
 	audioNodes: ShareableNode[];
@@ -35,6 +45,8 @@ interface ScreensharePayload {
 	// win32: true when the native WASAPI addon can run → show the advanced audio UI (mode control +
 	// app checklist) instead of the plain system checkbox. Lets the win32 path reach app mode.
 	isWasapiAudio: boolean;
+	// win32: active render endpoints for the capture-source dropdown ("Default" + these). Empty off-win32.
+	renderEndpoints: RenderEndpointInfo[];
 }
 
 const DISPLAY_MODES = {
@@ -130,6 +142,19 @@ function getFormSettings(): ScreenshareSettings | null {
 	if (isPatchcordMode || isWasapiAudio) {
 		audioConfig.mode = (document.querySelector<HTMLInputElement>('input[name="audioMode"]:checked')?.value as AudioConfig["mode"]) ?? "none";
 		audioConfig.pids = Array.from(document.querySelectorAll<HTMLInputElement>("#audio-apps-list input:checked")).map((el) => Number(el.value));
+
+		// win32 capture-source derivation: only a NON-"default" endpoint chosen in system mode flips the
+		// backend to endpoint loopback. "Default" (or app/none mode) keeps the shipped zero-config
+		// process-exclude behavior — normal users are never flipped into endpoint mode. audioConfig is
+		// initialized with { captureSource: "process-exclude", endpointId: "default" }, so those defaults
+		// stand untouched unless this branch overrides them.
+		if (isWasapiAudio && audioConfig.mode === "system") {
+			const chosenEndpoint = document.querySelector<HTMLSelectElement>("#endpoint-select")?.value ?? "default";
+			if (chosenEndpoint !== "default") {
+				audioConfig.captureSource = "endpoint";
+				audioConfig.endpointId = chosenEndpoint;
+			}
+		}
 	} else if ($<HTMLInputElement>("audio-share-checkbox").checked) {
 		audioConfig.mode = "system";
 	}
@@ -224,12 +249,51 @@ async function init() {
 		const appsLabel = $("audio-apps-label");
 		const appsDesc = $("audio-apps-desc");
 
+		// win32 capture-source selector: a dropdown of "Default" + the active render endpoints, built only
+		// on Windows (isWasapiAudio) — patchcord/Linux has no endpoint concept — and shown only in system
+		// mode (wired into updateAppListVisibility below). Choosing a non-"default" endpoint points
+		// GoofCord's loopback at that clean render bus (the VAC/Sonar fix); "Default" keeps the shipped
+		// zero-config process-exclude behavior. A <select> (not a segmented control) because the endpoint
+		// list is arbitrary-length. Injected here rather than in screenshare.html to keep the diff surgical.
+		let endpointContainer: HTMLElement | null = null;
+		if (isWasapiAudio) {
+			const grid = document.querySelector<HTMLElement>("#linux-audio-section .settings-grid");
+			if (grid) {
+				const storedEndpoint = s.audioConfig.endpointId ?? "default";
+				const endpointOptions = [`<option value="default"${storedEndpoint === "default" ? " selected" : ""}>Default (system default)</option>`]
+					.concat(
+						payload.renderEndpoints.map((ep) => {
+							const label = ep.name + (ep.isDefault ? " (default)" : "");
+							return `<option value="${escapeHtml(ep.id)}"${ep.id === storedEndpoint ? " selected" : ""}>${escapeHtml(label)}</option>`;
+						}),
+					)
+					.join("");
+
+				endpointContainer = document.createElement("div");
+				endpointContainer.className = "setting-group";
+				endpointContainer.id = "endpoint-selector-container";
+				endpointContainer.style.display = "none";
+				endpointContainer.innerHTML = `
+					<span class="settings-label">
+						<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg>
+						<span id="endpoint-select-label">Capture source</span>
+					</span>
+					<select id="endpoint-select" class="endpoint-select" aria-labelledby="endpoint-select-label">${endpointOptions}</select>
+				`;
+				grid.appendChild(endpointContainer);
+			}
+		}
+
 		let previousMode = s.audioConfig.mode;
 
 		const updateAppListVisibility = () => {
 			const currentMode = document.querySelector<HTMLInputElement>('input[name="audioMode"]:checked')?.value || "none";
 			const isNone = currentMode === "none";
 			appsContainer.style.display = isNone ? "none" : "flex";
+
+			// The capture-source dropdown is a system-mode concept only (endpoint loopback replaces the
+			// system mix); hide it for app/none so it can't be mistaken for an app-mode control.
+			if (endpointContainer) endpointContainer.style.display = currentMode === "system" ? "flex" : "none";
 
 			if (!isNone) {
 				const isSystem = currentMode === "system";
