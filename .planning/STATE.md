@@ -147,6 +147,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-04T05:35:00.000Z
-Stopped at: 999.1-03 implementation complete (render-endpoint enumerator + endpoint loopback, both mirrors byte-identical); CI compile gate PENDING (human)
-Resume file: .planning/phases/999.1-windows-audio-patchcord-parity-backend/999.1-03-SUMMARY.md
+Last session: 2026-07-04 — execute 999.1 (all 4 plans) → code review + fix → verify → CI chain GREEN (addon + GoofCord win-artifacts) → on-box test.
+Stopped at: 999.1 scoped features DONE + on-box working (endpoint selector ✅, single-app INCLUDE ✅, WR-01 fail-closed ✅). User chose to build real multi-app N-INCLUDE mixing next. Nothing pushed upstream / to any main.
+Resume file: **.planning/phases/999.1-windows-audio-patchcord-parity-backend/999.1-RESUME-HANDOFF.md** (full handoff — branches, refs, next work, constraints) + 999.1-NEXT-multi-app-include.md (multi-app plan). Say "build multi-app" to resume the feature, or /gsd-verify-work 999.1 to close the phase.
