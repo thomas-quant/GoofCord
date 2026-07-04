@@ -2,19 +2,19 @@
 gsd_state_version: 1.0
 milestone: v1.3
 milestone_name: — Small Upstream-able Fixes
-current_phase: 10
-current_phase_name: KEY-01 in-debug — map correct, end-to-end unvalidated
-status: in_progress
-stopped_at: v1.2 milestone opened (lean shell); 4 parallel investigation spikes dispatched
-last_updated: "2026-07-04T04:34:33.592Z"
-last_activity: 2026-06-14
-last_activity_desc: "Completed quick task 260614-2rn: DOM code/key on synthetic global-keybind events (non-printable keys); global PageUp runtime test pending"
+current_phase: 999.1
+current_phase_name: windows-audio-patchcord-parity-backend
+status: executing
+stopped_at: 999.1-01 implementation complete (INCLUDE + listAudioApps, both mirrors); CI compile gate PENDING (human)
+last_updated: "2026-07-04T05:20:00.000Z"
+last_activity: 2026-07-04
+last_activity_desc: 999.1-01 Rust addon implemented (startIncludeProcessTree + listAudioApps); CI verify deferred
 progress:
-  total_phases: 3
-  completed_phases: 0
-  total_plans: 0
-  completed_plans: 0
-  percent: 0
+  total_phases: 13
+  completed_phases: 6
+  total_plans: 23
+  completed_plans: 19
+  percent: 46
 ---
 
 # Project State
@@ -24,18 +24,20 @@ progress:
 See: .planning/PROJECT.md (updated 2026-06-06)
 
 **Core value:** On Windows, a user can start a screenshare, cancel the source picker, and start again — and the stream works — without the app getting stuck or requiring a restart.
-**Current focus:** v1.3 — Small Upstream-able Fixes (build). KEY-01 keybinds non-alphanumeric fix (`preload/keybinds.ts:53`) + STREAM-05 occluded-window flag typo (`main.ts:67`), promoted from the v1.2 investigations. SEC-01 `cloudToken` is an optional deferred stretch. Keybind/flag verification is manual on a Windows x64 CI artifact.
+**Current focus:** Phase 999.1 — windows-audio-patchcord-parity-backend
 
 ## Current Position
 
-Phase: 10 (KEY-01 in-debug — map correct, end-to-end unvalidated) · 11 (STREAM-05 committed, unvalidated) · 12 (deferred stretch)
-Plan: —
-Status: KEY-01 (`7103149`) map **confirmed correct vs ground truth** (Discord persists standard DOM keyCodes — localStorage: 188=`,`, 190=`.`, 192=`` ` ``). **WIN (user-confirmed):** with the fix, non-alpha keybinds (`]`, Ctrl-combos) **register/fire when FOCUSED** — they didn't before (Discord runs desktop/embedded → relies on venbind, so the fix's registration string is on the focused firing path too; earlier "focused=Discord-native" model was WRONG). **PRESERVE this — it's the success.** Remaining gap: **out-of-focus/global** firing unvalidated (broke on wrong `origin/main` base; suspect the `venbind.ts:38` focus-gate). **Next agent:** see `phases/10-keybinds-non-alphanumeric-fix/10-HANDOFF.md` — bun:test on the pure map, named-key gap (F-keys/space), re-validate on the **dev/release base** with a focused-regression guard. **Targets upstream #179** (non-alpha global keybinds, OPEN — maintainer blamed venbind, we found it's GoofCord's `String.fromCharCode` glue; KEY-01 likely Closes #179; study his reverted `3f9096e` before PRing). STREAM-05 (`c988872`) separate/low-risk, unvalidated. SEC-01 deferred.
+Phase: 999.1 (windows-audio-patchcord-parity-backend) — EXECUTING
+Plan: 1 of 4 — implementation COMPLETE, CI compile gate PENDING (blocks Plan 02)
+Status: Executing Phase 999.1
+
+**999.1-01 (2026-07-04):** Rust addon grown with the two per-app INCLUDE primitives — `startIncludeProcessTree(target_pid, on_chunk)` (single-app INCLUDE via `PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE`, reusing the shared `activate_process_tree` + `run_capture_loop` + `SESSION`/`stop` machinery) and `listAudioApps() -> AudioAppInfo[]` (MTA-thread session enumerator: `MMDeviceEnumerator` → `EnumAudioEndpoints(eRender)` → `IAudioSessionManager2` → `IAudioSessionControl2::GetProcessId`, dedupe, drop system-sounds + own PID, name via `GetDisplayName` else exe basename). Legacy `start` EXCLUDE path (#211 echo fix) untouched. Both mirrors (`native/wasapi-loopback/`, `wasapi-loopback-repo/`) byte-identical. No new windows-rs feature gate needed (all types under the already-present `Win32_Media_Audio`/`Win32_System_Com`/`Win32_System_Threading`, verified against windows 0.62.2 source). **NOT built locally (CI-only-build rule); CI compile is the outstanding gate.**
 
 **2026-06-10 PIVOT (supersedes the named-key framing above):** #179 fully investigated — KEY-01 (punctuation, `7103149`) is the ONLY client-side-fixable part and does **NOT** Close #179; it addresses the `[`/`\` punctuation regression only. **Named keys (PageUp/PageDown, F-keys, etc.) were venbind-blocked**, not a `String.fromCharCode` issue: venbind's matcher lowercases registrations but compares case-sensitively against capitalized/locale-dependent press-side names (`GetKeyNameTextW` on Win, keysym Debug on Linux) — broken on **both** backends. **mouse5 unsupported** (venbind has no mouse events). venbind is dormant (last code 2025-05-27) with no maintained fork → **fixed venbind itself**: fork `thomas-quant/venbind`, branch `fix/uiohook-named-key-matching` (`b8d9c82`, canonical lowercase token map on both backends) + `fork-ci` (build-only CI + MS API docs), build run `27311623130`. **GoofCord-side wiring + the keybindShortcut.ts refactor/bun-tests are spec'd in `10-GOOFCORD-WIRING.md`** — do via GSD once CI is green and the prebuilt `.node` is in hand. Memory: `venbind-fix-branch-wip`, `venbind-dormant-no-maintained-fork`. Upstream PR to tuxinal/venbind still gated.
 
 **⚠ Clean-room:** the keybind map is grounded in the PUBLIC DOM keyCode standard; Discord internals were not copied — keep Discord-mapping investigation OUT of repo/commits/PRs.
-Last activity: 2026-06-14 — Completed quick task 260614-2rn: DOM code/key on synthetic global-keybind events (non-printable keys); global PageUp runtime test pending
+Last activity: 2026-07-04 — Phase 999.1 execution started
 
 ## Performance Metrics
 
@@ -99,6 +101,8 @@ None yet.
 
 [Issues that affect future work]
 
+**OPEN (999.1-01, 2026-07-04): wasapi-loopback Windows CI compile gate outstanding.** The Plan 01 Rust addon changes (INCLUDE + listAudioApps, both mirrors) are implemented but NOT compiled — per the CI-only-build rule nothing was built locally. Before Plan 02 can proceed, a human must: push the branch to the `origin` fork → trigger the `thomas-quant/wasapi-loopback` Windows workflow (`--repo thomas-quant/wasapi-loopback`) against the ref → confirm a GREEN compile (windows-rs feature-gate + binding-constant verification) → obtain the prebuilt `.node` artifact that Plan 02's manual box test consumes. Static verification done here: `diff -q` mirror identity (lib.rs + Cargo.toml both exit 0) + all acceptance greps; API surface pre-verified against the local windows 0.62.2 crate source. Runtime INCLUDE capture + enumeration correctness are BOX-deferred to Plan 02.
+
 All v1.1 blockers resolved at milestone close — none carried forward:
 
 - ~~PCM → `getDisplayMedia` MediaStream delivery in Electron 41.3.0~~ — RESOLVED (Phase 3 GO; per-share MessageChannel transport + MSTG, verified viewer-side).
@@ -133,6 +137,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-06-07
-Stopped at: v1.2 milestone opened (lean shell); 4 parallel investigation spikes dispatched
-Resume file: .planning/phases/06-encryption-hardening-investigation/ (and 07/08/09 — FINDINGS.md per phase)
+Last session: 2026-07-04
+Stopped at: 999.1-01 implementation complete (INCLUDE + listAudioApps, both mirrors byte-identical); CI compile gate PENDING (human)
+Resume file: .planning/phases/999.1-windows-audio-patchcord-parity-backend/999.1-01-SUMMARY.md (see ## Verification Status: PENDING — human CI gate)

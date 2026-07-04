@@ -63,7 +63,7 @@ Plans:
 Plans:
 **Wave 1**
 
-- [ ] 999.1-01-PLAN.md — Rust addon: per-app INCLUDE (`startIncludeProcessTree`) + audio-session enumerator (`listAudioApps`) [wave 1]
+- [~] 999.1-01-PLAN.md — Rust addon: per-app INCLUDE (`startIncludeProcessTree`) + audio-session enumerator (`listAudioApps`) [wave 1] — **impl complete** (Task 1 `66307a8`, Task 2 `634b77d`; both mirrors byte-identical); **CI compile PENDING** (Task 3 is the deferred human gate: push → `thomas-quant/wasapi-loopback` Windows CI green → prebuilt `.node` for Plan 02)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
