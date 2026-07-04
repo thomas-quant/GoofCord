@@ -20,12 +20,14 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { existsSync } from "node:fs";
+import { appendFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
 
 import { app, MessageChannelMain, type MessagePortMain } from "electron";
 import pc from "picocolors";
 
+import { userDataPath } from "../../utils.ts";
 import { mainWindow } from "../../windows/main/main.ts";
 
 const require = createRequire(import.meta.url);
@@ -85,6 +87,30 @@ export function shouldInjectWasapiTransport<IPCOn>() {
 	return process.platform === "win32" && !process.argv.includes("--no-wasapi");
 }
 
+// Whether the win32 advanced audio UI (app checklist + mode control) should be shown for a share: the
+// addon must be able to run (win32, not --no-wasapi, prebuilt .node present). Off ⇒ the picker shows
+// only the legacy system checkbox and app mode is unreachable. Drives the ScreensharePayload
+// `isWasapiAudio` flag consumed by the preload advanced-UI gate.
+export function canRunWasapiCapture(): boolean {
+	return process.platform === "win32" && !process.argv.includes("--no-wasapi") && wasapiPathExists;
+}
+
+// Thin accessor over the addon's audio-session enumerator, used by fetchScreenshareData to populate the
+// win32 app checklist. Returns [] fail-closed off-win32 / --no-wasapi / addon-missing / on any throw,
+// so the picker simply shows no apps rather than erroring. Keeps screenshare.ts from importing the raw
+// addon. Shape matches the renderer's ShareableNode contract ({ processId, displayName, binary }).
+export function listWasapiAudioApps(): { processId: number; displayName: string; binary: string }[] {
+	if (process.platform !== "win32" || process.argv.includes("--no-wasapi")) return [];
+	const wasapi = obtainWasapiLoopback();
+	if (!wasapi || typeof wasapi.listAudioApps !== "function") return [];
+	try {
+		return wasapi.listAudioApps() ?? [];
+	} catch (e: unknown) {
+		console.error(LOG_PREFIX, "listAudioApps failed:", e);
+		return [];
+	}
+}
+
 // ── State (nulled by stopWasapiLoopback; safe to call stop twice) ────────────────────────
 let port1: MessagePortMain | undefined;
 
@@ -97,43 +123,94 @@ function toArrayBuffer(chunk: Buffer): ArrayBuffer {
 	return out;
 }
 
+// The activation verdict returned to the screenshare audio gate. This is the fail-closed contract:
+//   started               → a native WASAPI capture is running; the caller MUST leave result.audio
+//                            UNSET (never co-run Chromium "loopback" — CoreMessaging hard-crash).
+//   unsupported-fallback-ok → nothing native started AND the mode legitimately tolerates the Chromium
+//                            "loopback" fallback (system + process-exclude only — the shipped #211
+//                            dynamic-OS-floor behavior). The caller may set result.audio = "loopback".
+//   failed-no-fallback     → nothing native started for a mode that MUST fail closed (app mode, or
+//                            explicit-endpoint mode). The caller MUST leave result.audio UNSET —
+//                            NEVER Chromium "loopback" (privacy inversion: user asked for ONE app /
+//                            ONE device; a broad fallback would capture everything they did not share).
+export type WasapiVerdict = "started" | "unsupported-fallback-ok" | "failed-no-fallback";
+
+// A minimal structural view of the persisted AudioConfig (the real type lives in preload.mts; this
+// file is @ts-nocheck so this annotation is documentation-grade). Only the fields the dispatch reads.
+interface WasapiAudioConfig {
+	mode: "none" | "system" | "app";
+	pids: number[];
+	captureSource: "process-exclude" | "endpoint";
+	endpointId: "default" | string;
+}
+
+// No-DevTools diagnostic (the Windows test box has no F12): append one line per share attempt to a
+// userData log recording the resolved capture kind + verdict. Best-effort — write errors are swallowed
+// so a failed log never affects capture.
+const CAPTURE_LOG_PATH = path.join(userDataPath, "wasapi-capture.log");
+async function logCapture(kind: string, verdict: WasapiVerdict): Promise<void> {
+	try {
+		await appendFile(CAPTURE_LOG_PATH, `${new Date().toISOString()} kind=${kind} verdict=${verdict}\n`);
+	} catch {
+		// diagnostics are best-effort — never let a log write failure affect capture
+	}
+}
+
 /**
- * Start the REAL WASAPI EXCLUDE-tree capture behind the proven MessageChannelMain transport.
+ * Start the REAL WASAPI capture behind the proven MessageChannelMain transport, dispatching on the
+ * persisted AudioConfig. The transport hop (MessageChannelMain → port1 → renderer feeder) is IDENTICAL
+ * for every mode; only the native start call varies:
+ *   mode:"system" + captureSource:"process-exclude" → start(process.pid)          — EXCLUDE-self (#211)
+ *   mode:"app"                                        → startIncludeProcessTree(pid) — per-app INCLUDE
+ *   mode:"system" + captureSource:"endpoint"          → STUB, fails closed (Plan 04 wires the backend)
  *
- * Returns false (never throws) on: non-win32, --no-wasapi, addon-not-loaded, addon activation
- * unsupported on this build, or any exception → the caller falls through to Electron "loopback"
- * (ECHO-03). On success, the addon's ThreadsafeFunction pushes 480-frame/3840-byte f32 buffers
- * which we forward down `port1` to the renderer feeder.
+ * Returns a WasapiVerdict (never throws). App mode + explicit-endpoint mode FAIL CLOSED: on any
+ * non-support / failure / exception they return "failed-no-fallback" so the caller leaves result.audio
+ * unset (never Chromium "loopback"). Only system+process-exclude tolerates the fallback.
  */
-export async function tryStartWasapiLoopback(): Promise<boolean> {
-	if (process.platform !== "win32" || process.argv.includes("--no-wasapi")) return false;
+export async function tryStartWasapiLoopback(audioConfig: WasapiAudioConfig): Promise<WasapiVerdict> {
+	// system+process-exclude is the ONLY mode that legitimately tolerates the Chromium "loopback"
+	// fallback (dynamic OS floor — the shipped #211 behavior). Every other mode maps a non-start to
+	// "failed-no-fallback" so the share stays silent rather than broadening the capture.
+	const toleratesFallback = audioConfig.mode === "system" && audioConfig.captureSource === "process-exclude";
+	const closedVerdict: WasapiVerdict = toleratesFallback ? "unsupported-fallback-ok" : "failed-no-fallback";
+
+	if (process.platform !== "win32" || process.argv.includes("--no-wasapi")) {
+		await logCapture("unsupported", closedVerdict);
+		return closedVerdict;
+	}
 
 	const wasapi = obtainWasapiLoopback();
-	if (!wasapi) return false;
+	if (!wasapi) {
+		await logCapture("addon-missing", closedVerdict);
+		return closedVerdict;
+	}
+
+	// Endpoint backend not wired until Plan 04 — fail CLOSED now. Do NOT silently satisfy an endpoint
+	// request with the EXCLUDE-self path; that captures the wrong scope (privacy inversion).
+	if (audioConfig.mode === "system" && audioConfig.captureSource === "endpoint") {
+		console.log(LOG_PREFIX, "endpoint backend not wired until Plan 04 — failing closed (no audio)");
+		await logCapture("endpoint-unwired", "failed-no-fallback");
+		return "failed-no-fallback";
+	}
 
 	try {
-		// PID discipline (ECHO-02): the EXCLUDE-tree root is the Electron main PID. The addon excludes
-		// the whole tree rooted there via EXCLUDE_TARGET_PROCESS_TREE (covering the Audio Service utility
-		// child) so GoofCord's own call playback never re-enters the captured mix.
-		const rootPid = process.pid;
-
 		// Make start idempotent across re-clicks: tear down any prior session/port first.
 		await stopWasapiLoopback();
 
 		// Hop-1: create the channel, keep port1, transfer port2 to the renderer's preload
 		// (isolated world). MessageChannelMain is the canonical Electron zero-copy audio path —
-		// NEVER per-frame ipcRenderer.send of raw PCM (locked anti-pattern T2).
+		// NEVER per-frame ipcRenderer.send of raw PCM (locked anti-pattern T2). Identical for every mode.
 		const channel = new MessageChannelMain();
 		port1 = channel.port1;
 		mainWindow.webContents.postMessage("wasapi:pcm-port", null, [channel.port2]);
 		port1.start();
 
-		// Start the REAL addon. start() returns the activation verdict synchronously on the JS side
-		// (false on non-S_OK / missing entrypoint — never throws). The ThreadsafeFunction onChunk runs
-		// per ~10ms with a 3840-byte f32 Buffer, delivered CalleeHandled as (err, chunk): the chunk is
-		// the SECOND arg (the first is the error slot, null on Ok). Guard on err/chunk so a stray error
-		// frame can't crash the callback.
-		const ok = await wasapi.start(rootPid, (err: unknown, chunk: Buffer) => {
+		// The ThreadsafeFunction onChunk runs per ~10ms with a 3840-byte f32 Buffer, delivered
+		// CalleeHandled as (err, chunk): the chunk is the SECOND arg (the first is the error slot,
+		// null on Ok). Guard on err/chunk so a stray error frame can't crash the callback. Shared
+		// verbatim across every capture mode — only the native start call below differs.
+		const onChunk = (err: unknown, chunk: Buffer) => {
 			const port = port1;
 			if (!port || err || !chunk) return;
 			try {
@@ -146,20 +223,43 @@ export async function tryStartWasapiLoopback(): Promise<boolean> {
 				// Never let the capture crash the app (ECHO-03 discipline): stop cleanly.
 				void stopWasapiLoopback();
 			}
-		});
+		};
 
-		if (!ok) {
-			// Activation != S_OK (API unavailable on this build): close the port and fall through
-			// to "loopback" — no crash (ECHO-03). The addon already cleaned up its own thread.
-			await stopWasapiLoopback();
-			return false;
+		// Dispatch the native start on the resolved mode. start()/startIncludeProcessTree() return the
+		// activation verdict synchronously on the JS side (false on non-S_OK / missing entrypoint —
+		// never throws). The transport hop above is unchanged; only this call varies.
+		let ok: boolean;
+		let kind: string;
+		if (audioConfig.mode === "app") {
+			// Per-app INCLUDE: capture ONLY the chosen app's process tree (N=1 for now; pids[0]).
+			// Self-free by construction (engine-side filter) — patchcord parity.
+			kind = "include-pid";
+			ok = await wasapi.startIncludeProcessTree(audioConfig.pids[0], onChunk);
+		} else {
+			// mode:"system" + captureSource:"process-exclude" — today's EXCLUDE-self path (#211).
+			// PID discipline (ECHO-02): the EXCLUDE-tree root is the Electron main PID; the addon
+			// excludes the whole tree (covering the Audio Service utility child) so GoofCord's own
+			// call playback never re-enters the captured mix.
+			kind = "exclude-self";
+			ok = await wasapi.start(process.pid, onChunk);
 		}
 
-		console.log(LOG_PREFIX, "WASAPI EXCLUDE-tree capture streaming over MessageChannelMain");
-		return true;
+		if (!ok) {
+			// Activation != S_OK: close the port. For system+process-exclude the Chromium "loopback"
+			// fallback is acceptable (unsupported-fallback-ok); for app mode it fails closed. The addon
+			// already cleaned up its own thread.
+			await stopWasapiLoopback();
+			await logCapture(kind, closedVerdict);
+			return closedVerdict;
+		}
+
+		console.log(LOG_PREFIX, `WASAPI ${kind} capture streaming over MessageChannelMain`);
+		await logCapture(kind, "started");
+		return "started";
 	} catch {
 		await stopWasapiLoopback();
-		return false; // → "loopback" fallback, never crash (ECHO-03)
+		await logCapture("exception", closedVerdict);
+		return closedVerdict; // fail closed unless system+process-exclude, never crash (ECHO-03)
 	}
 }
 
