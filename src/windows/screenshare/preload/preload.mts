@@ -14,6 +14,8 @@ interface IPCSource {
 interface AudioConfig {
 	mode: "none" | "system" | "app";
 	pids: number[];
+	captureSource: "process-exclude" | "endpoint-exclude-self";
+	endpointId: string;
 }
 
 export interface ScreenshareSettings {
@@ -27,6 +29,14 @@ interface ScreensharePayload {
 	sources: IPCSource[] | null;
 	audioNodes: ShareableNode[];
 	isPatchcord: boolean;
+	isWasapiAudio: boolean;
+	renderEndpoints: RenderEndpointInfo[];
+}
+
+interface RenderEndpointInfo {
+	id: string;
+	name: string;
+	isDefault: boolean;
 }
 
 const DISPLAY_MODES = {
@@ -44,6 +54,7 @@ const CONTROL_ICONS: Record<string, string> = {
 };
 
 let isPatchcordMode = false;
+let isWasapiAudio = false;
 let isRefreshing = false;
 
 const escapeMap: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
@@ -116,13 +127,14 @@ function getFormSettings(): ScreenshareSettings | null {
 
 	if (!contentHint || isNaN(resolution) || isNaN(framerate)) return null;
 
-	let audioConfig: AudioConfig = { mode: "none", pids: [] };
+	let audioConfig: AudioConfig = { mode: "none", pids: [], captureSource: "endpoint-exclude-self", endpointId: "default" };
 
 	if (isPatchcordMode) {
 		audioConfig.mode = (document.querySelector<HTMLInputElement>('input[name="audioMode"]:checked')?.value as AudioConfig["mode"]) ?? "none";
 		audioConfig.pids = Array.from(document.querySelectorAll<HTMLInputElement>("#audio-apps-list input:checked")).map((el) => Number(el.value));
 	} else if ($<HTMLInputElement>("audio-share-checkbox").checked) {
 		audioConfig.mode = "system";
+		if (isWasapiAudio) audioConfig.endpointId = document.querySelector<HTMLSelectElement>("#endpoint-select")?.value ?? "default";
 	}
 
 	return { audioConfig, contentHint, resolution, framerate };
@@ -172,10 +184,13 @@ async function init() {
 
 	const storedSettings = getConfig("screensharePreviousSettings") as ScreenshareSettings;
 	const s = !storedSettings || Array.isArray(storedSettings) ? (getDefaultValue("screensharePreviousSettings") as ScreenshareSettings) : storedSettings;
-	s.audioConfig ??= { mode: "none", pids: [] };
+	s.audioConfig ??= { mode: "none", pids: [], captureSource: "endpoint-exclude-self", endpointId: "default" };
+	s.audioConfig.captureSource ??= "endpoint-exclude-self";
+	s.audioConfig.endpointId ??= "default";
 
 	const payload = (await ipcRenderer.invoke("refreshScreenshareSources")) as ScreensharePayload;
 	isPatchcordMode = payload.isPatchcord;
+	isWasapiAudio = payload.isWasapiAudio;
 
 	$("title-text").textContent = i("screenshare-screenshare");
 	$("subtitle-text").textContent = i("screenshare-subtitle");
@@ -244,6 +259,25 @@ async function init() {
 		$("audio-toggle-label").textContent = i("screenshare-audio-capture");
 		$("audio-toggle-desc").textContent = i("screenshare-audio-capture-desc");
 		$<HTMLInputElement>("audio-share-checkbox").checked = s.audioConfig.mode !== "none";
+
+		if (isWasapiAudio) {
+			const storedEndpoint = s.audioConfig.endpointId ?? "default";
+			const endpointOptions = [`<option value="default"${storedEndpoint === "default" ? " selected" : ""}>${escapeHtml(i("screenshare-audio-default-device"))}</option>`]
+				.concat(
+					payload.renderEndpoints.map((endpoint) => {
+						const label = endpoint.name + (endpoint.isDefault ? ` (${i("screenshare-audio-default")})` : "");
+						return `<option value="${escapeHtml(endpoint.id)}"${endpoint.id === storedEndpoint ? " selected" : ""}>${escapeHtml(label)}</option>`;
+					}),
+				)
+				.join("");
+			const endpointContainer = document.createElement("div");
+			endpointContainer.className = "setting-group";
+			endpointContainer.innerHTML = `
+				<span class="settings-label" id="endpoint-select-label">${escapeHtml(i("screenshare-audio-output-device"))}</span>
+				<select id="endpoint-select" aria-labelledby="endpoint-select-label">${endpointOptions}</select>
+			`;
+			$("standard-audio-section").appendChild(endpointContainer);
+		}
 	}
 
 	if (payload.sources) {

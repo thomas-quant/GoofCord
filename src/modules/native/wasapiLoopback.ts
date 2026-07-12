@@ -12,25 +12,30 @@
 // Load model: the addon ships at ts-out/native/wasapi-loopback-<plat>-<arch>.node (placed there by
 // build.ts via a HOST-AGNOSTIC fs copy — NOT Bun's `native-module:` file-loader, which silently
 // fails to emit the .node when the BUILD HOST is Windows). createRequire + a --no-wasapi guard load
-// it; the addon's `start(excludeRootPid, onChunk)` returns false (never throws) when the API is
-// unavailable on this build → we fall through to Electron "loopback" (ECHO-03).
-//
-// On non-win32 / --no-wasapi / addon-not-loaded, tryStartWasapiLoopback returns false
-// immediately so the normal "loopback" path stays byte-identical to upstream.
+// it. Endpoint-bound capture returns a raw HRESULT so the default endpoint can fall back through
+// the existing process-exclude path while an explicitly selected endpoint fails closed.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { existsSync } from "node:fs";
+import { appendFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
 
 import { app, MessageChannelMain, type MessagePortMain } from "electron";
 import pc from "picocolors";
 
+import { userDataPath } from "../../utils.ts";
 import { mainWindow } from "../../windows/main/main.ts";
 
 const require = createRequire(import.meta.url);
 
 const LOG_PREFIX = pc.cyan("[Screenshare]");
+
+export interface RenderEndpointInfo {
+	id: string;
+	name: string;
+	isDefault: boolean;
+}
 
 // The addon's contract (see native/wasapi-loopback/src/lib.rs):
 //   start(excludeRootPid: number, onChunk: (err, chunk) => void): boolean  // false = unsupported, never throws
@@ -40,6 +45,9 @@ interface WasapiAddon {
 	// the error slot is the FIRST arg (null on Ok), the audio Buffer is the SECOND.
 	start(excludeRootPid: number, onChunk: (err: unknown, chunk: Buffer) => void): boolean;
 	stop(): void;
+	startRenderEndpointExcludeProcessTree(deviceId: string, excludeRootPid: number, onChunk: (err: unknown, chunk: Buffer) => void): number;
+	startDefaultRenderEndpointExcludeProcessTree(excludeRootPid: number, onChunk: (err: unknown, chunk: Buffer) => void): number;
+	listRenderEndpoints(): RenderEndpointInfo[];
 }
 
 // ── Addon load (mirror obtainVenbind: load-once flag + --no-wasapi guard + null-on-failure) ──
@@ -79,6 +87,22 @@ export function shouldInjectWasapiTransport<IPCOn>() {
 	return process.platform === "win32" && !process.argv.includes("--no-wasapi");
 }
 
+export function canRunWasapiCapture(): boolean {
+	return process.platform === "win32" && !process.argv.includes("--no-wasapi") && wasapiPathExists;
+}
+
+export function listRenderEndpoints(): RenderEndpointInfo[] {
+	if (process.platform !== "win32" || process.argv.includes("--no-wasapi")) return [];
+	const wasapi = obtainWasapiLoopback();
+	if (!wasapi || typeof wasapi.listRenderEndpoints !== "function") return [];
+	try {
+		return wasapi.listRenderEndpoints() ?? [];
+	} catch (e: unknown) {
+		console.error(LOG_PREFIX, "listRenderEndpoints failed:", e);
+		return [];
+	}
+}
+
 // ── State (nulled by stopWasapiLoopback; safe to call stop twice) ────────────────────────
 let port1: MessagePortMain | undefined;
 
@@ -91,69 +115,112 @@ function toArrayBuffer(chunk: Buffer): ArrayBuffer {
 	return out;
 }
 
+export type WasapiVerdict = "started" | "unsupported-fallback-ok" | "failed-no-fallback";
+
+interface WasapiAudioConfig {
+	mode: "none" | "system" | "app";
+	pids: number[];
+	captureSource: "process-exclude" | "endpoint-exclude-self";
+	endpointId: string;
+}
+
+const CAPTURE_LOG_PATH = path.join(userDataPath, "wasapi-capture.log");
+
+async function logCapture(kind: string, verdict: WasapiVerdict, hr?: number): Promise<void> {
+	try {
+		const hresult = hr === undefined ? "" : ` hr=0x${(hr >>> 0).toString(16).padStart(8, "0").toUpperCase()}`;
+		await appendFile(CAPTURE_LOG_PATH, `${new Date().toISOString()} kind=${kind} verdict=${verdict}${hresult}\n`);
+	} catch {
+		// Diagnostics are best-effort and must never affect capture.
+	}
+}
+
 /**
- * Start the REAL WASAPI EXCLUDE-tree capture behind the proven MessageChannelMain transport.
- *
- * Returns false (never throws) on: non-win32, --no-wasapi, addon-not-loaded, addon activation
- * unsupported on this build, or any exception → the caller falls through to Electron "loopback"
- * (ECHO-03). On success, the addon's ThreadsafeFunction pushes 480-frame/3840-byte f32 buffers
- * which we forward down `port1` to the renderer feeder.
+ * Start native Windows capture over the existing MessageChannel transport.
+ * Explicit endpoints fail closed. The default endpoint falls back to the #211 process-exclude
+ * path when endpoint-bound activation is unavailable; only that process path may then permit
+ * Chromium's loopback fallback.
  */
-export async function tryStartWasapiLoopback(): Promise<boolean> {
-	if (process.platform !== "win32" || process.argv.includes("--no-wasapi")) return false;
+export async function tryStartWasapiLoopback(audioConfig: WasapiAudioConfig): Promise<WasapiVerdict> {
+	const explicitEndpoint = audioConfig.captureSource === "endpoint-exclude-self" && audioConfig.endpointId !== "default";
+	const failureVerdict: WasapiVerdict = explicitEndpoint ? "failed-no-fallback" : "unsupported-fallback-ok";
+
+	if (process.platform !== "win32" || process.argv.includes("--no-wasapi")) {
+		await logCapture("unsupported", failureVerdict);
+		return failureVerdict;
+	}
+
+	if (audioConfig.mode !== "system") {
+		await logCapture("invalid-mode", "failed-no-fallback");
+		return "failed-no-fallback";
+	}
 
 	const wasapi = obtainWasapiLoopback();
-	if (!wasapi) return false;
+	if (!wasapi) {
+		await logCapture("addon-missing", failureVerdict);
+		return failureVerdict;
+	}
 
 	try {
-		// PID discipline (ECHO-02): the EXCLUDE-tree root is the Electron main PID. The addon excludes
-		// the whole tree rooted there via EXCLUDE_TARGET_PROCESS_TREE (covering the Audio Service utility
-		// child) so GoofCord's own call playback never re-enters the captured mix.
-		const rootPid = process.pid;
-
-		// Make start idempotent across re-clicks: tear down any prior session/port first.
 		await stopWasapiLoopback();
 
-		// Hop-1: create the channel, keep port1, transfer port2 to the renderer's preload
-		// (isolated world). MessageChannelMain is the canonical Electron zero-copy audio path —
-		// NEVER per-frame ipcRenderer.send of raw PCM (locked anti-pattern T2).
 		const channel = new MessageChannelMain();
 		port1 = channel.port1;
 		mainWindow.webContents.postMessage("wasapi:pcm-port", null, [channel.port2]);
 		port1.start();
 
-		// Start the REAL addon. start() returns the activation verdict synchronously on the JS side
-		// (false on non-S_OK / missing entrypoint — never throws). The ThreadsafeFunction onChunk runs
-		// per ~10ms with a 3840-byte f32 Buffer, delivered CalleeHandled as (err, chunk): the chunk is
-		// the SECOND arg (the first is the error slot, null on Ok). Guard on err/chunk so a stray error
-		// frame can't crash the callback.
-		const ok = await wasapi.start(rootPid, (err: unknown, chunk: Buffer) => {
+		const onChunk = (err: unknown, chunk: Buffer) => {
 			const port = port1;
 			if (!port || err || !chunk) return;
 			try {
-				// Electron's MAIN-process MessagePortMain.postMessage transfer list accepts ONLY
-				// MessagePortMain instances — NOT ArrayBuffers (unlike the renderer/DOM MessagePort).
-				// Send the buffer as the MESSAGE (structured-cloned, ~384 KB/s — negligible).
 				port.postMessage(toArrayBuffer(chunk));
 			} catch {
-				// A throw inside the threadsafe callback would be an uncaught main-process exception.
-				// Never let the capture crash the app (ECHO-03 discipline): stop cleanly.
 				void stopWasapiLoopback();
 			}
-		});
+		};
 
-		if (!ok) {
-			// Activation != S_OK (API unavailable on this build): close the port and fall through
-			// to "loopback" — no crash (ECHO-03). The addon already cleaned up its own thread.
-			await stopWasapiLoopback();
-			return false;
+		if (audioConfig.captureSource === "endpoint-exclude-self") {
+			const kind = audioConfig.endpointId === "default" ? "endpoint-exclude-self:default" : `endpoint-exclude-self:${audioConfig.endpointId}`;
+			let hr: number | undefined;
+			try {
+				hr =
+					audioConfig.endpointId === "default"
+						? wasapi.startDefaultRenderEndpointExcludeProcessTree(process.pid, onChunk)
+						: wasapi.startRenderEndpointExcludeProcessTree(audioConfig.endpointId, process.pid, onChunk);
+			} catch {
+				// A pre-endpoint addon behaves like an unsupported endpoint activation.
+			}
+
+			if (hr === 0) {
+				console.log(LOG_PREFIX, `WASAPI ${kind} capture streaming over MessageChannelMain`);
+				await logCapture(kind, "started", hr);
+				return "started";
+			}
+
+			if (explicitEndpoint) {
+				await stopWasapiLoopback();
+				await logCapture(kind, "failed-no-fallback", hr);
+				return "failed-no-fallback";
+			}
+
+			await logCapture(kind, "unsupported-fallback-ok", hr);
 		}
 
-		console.log(LOG_PREFIX, "WASAPI EXCLUDE-tree capture streaming over MessageChannelMain");
-		return true;
+		const processKind = audioConfig.captureSource === "endpoint-exclude-self" ? "process-exclude:fallback" : "process-exclude";
+		const ok = wasapi.start(process.pid, onChunk);
+		if (!ok) {
+			await stopWasapiLoopback();
+			await logCapture(processKind, "unsupported-fallback-ok");
+			return "unsupported-fallback-ok";
+		}
+
+		console.log(LOG_PREFIX, `WASAPI ${processKind} capture streaming over MessageChannelMain`);
+		await logCapture(processKind, "started");
+		return "started";
 	} catch {
 		await stopWasapiLoopback();
-		return false; // → "loopback" fallback, never crash (ECHO-03)
+		await logCapture("exception", failureVerdict);
+		return failureVerdict;
 	}
 }
 
