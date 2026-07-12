@@ -134,8 +134,9 @@ export function registerScreenshareHandler() {
 				}
 			} else if (process.platform === "win32") {
 				// Windows native WASAPI capture, dispatched on audioConfig (EXCLUDE-self for
-				// system+process-exclude, per-app INCLUDE for app mode; endpoint mode fails closed until
-				// Plan 04). The verdict enforces fail-closed: only system+process-exclude may fall back.
+				// system+process-exclude, per-app INCLUDE for app mode, plain endpoint, or the endpoint-
+				// exclude-self spike). The verdict enforces fail-closed: only process-exclude may fall back;
+				// endpoint-exclude-self reaches this dispatch unchanged and cannot broaden its scope.
 				const verdict = await tryStartWasapiLoopback(audioConfig);
 				if (verdict === "started") {
 					// Native capture is running — leave result.audio UNSET.
@@ -153,11 +154,11 @@ export function registerScreenshareHandler() {
 					result.audio = "loopback";
 					console.log(pc.cyan("[Screenshare]"), "WASAPI process-loopback unsupported on this build, using loopback fallback");
 				} else {
-					// "failed-no-fallback": app / explicit-endpoint activation failed. FAIL CLOSED — leave
+					// "failed-no-fallback": app / endpoint / endpoint-exclude-self activation failed. FAIL CLOSED — leave
 					// result.audio UNSET. NEVER a broad Chromium "loopback" fallback: the user asked for ONE
 					// app / ONE device, and a silent fallback would capture everything (privacy inversion) +
 					// risk the CoreMessaging crash. Silence is the correct, safe outcome.
-					console.log(pc.cyan("[Screenshare]"), "app/endpoint audio failed closed — no audio (never falling back to loopback)");
+					console.log(pc.cyan("[Screenshare]"), "strict WASAPI audio failed closed — no audio (never falling back to loopback)");
 				}
 			} else {
 				result.audio = "loopback";

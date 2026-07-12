@@ -420,6 +420,8 @@ export const settingsSchema = {
 		screensharePreviousSettings: hidden<ScreenshareSettings>({
 			resolution: 1080,
 			framerate: 30,
+			// "endpoint-exclude-self" is an accepted spike override in settings.json; keep the
+			// shipped zero-config process EXCLUDE path as the default.
 			audioConfig: { mode: "none", pids: [], captureSource: "process-exclude", endpointId: "default" },
 			contentHint: "motion",
 		}),

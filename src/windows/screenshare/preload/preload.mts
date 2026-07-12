@@ -15,8 +15,9 @@ interface AudioConfig {
 	mode: "none" | "system" | "app";
 	pids: number[];
 	// system-mode backend selector: "process-exclude" = EXCLUDE-self (default, today's #211 behavior);
-	// "endpoint" = loopback of a chosen render device (Plan 04). No third/self-cancel value (that lineage is dead).
-	captureSource: "process-exclude" | "endpoint";
+	// "endpoint" = loopback of a chosen render device; "endpoint-exclude-self" = endpoint-bound
+	// engine-side EXCLUDE-process-tree spike. This is exclusion, never cancellation/subtraction.
+	captureSource: "process-exclude" | "endpoint" | "endpoint-exclude-self";
 	// endpoint mode: chosen IMMDevice id, or the "default" sentinel.
 	endpointId: "default" | string;
 }
@@ -66,6 +67,9 @@ const CONTROL_ICONS: Record<string, string> = {
 let isPatchcordMode = false;
 let isWasapiAudio = false;
 let isRefreshing = false;
+// The spike has no polished picker control: preserve it only when explicitly seeded in
+// settings.json. Normal/default and plain-endpoint picker behavior remains unchanged.
+let persistedSpikeCaptureSource: AudioConfig["captureSource"] = "process-exclude";
 
 const escapeMap: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
 const escapeHtml = (text: string) => String(text ?? "").replace(/[&<>"']/g, (m) => escapeMap[m]);
@@ -137,21 +141,20 @@ function getFormSettings(): ScreenshareSettings | null {
 
 	if (!contentHint || isNaN(resolution) || isNaN(framerate)) return null;
 
-	let audioConfig: AudioConfig = { mode: "none", pids: [], captureSource: "process-exclude", endpointId: "default" };
+	let audioConfig: AudioConfig = { mode: "none", pids: [], captureSource: persistedSpikeCaptureSource, endpointId: "default" };
 
 	if (isPatchcordMode || isWasapiAudio) {
 		audioConfig.mode = (document.querySelector<HTMLInputElement>('input[name="audioMode"]:checked')?.value as AudioConfig["mode"]) ?? "none";
 		audioConfig.pids = Array.from(document.querySelectorAll<HTMLInputElement>("#audio-apps-list input:checked")).map((el) => Number(el.value));
 
 		// win32 capture-source derivation: only a NON-"default" endpoint chosen in system mode flips the
-		// backend to endpoint loopback. "Default" (or app/none mode) keeps the shipped zero-config
-		// process-exclude behavior — normal users are never flipped into endpoint mode. audioConfig is
-		// initialized with { captureSource: "process-exclude", endpointId: "default" }, so those defaults
-		// stand untouched unless this branch overrides them.
+		// normal backend to endpoint loopback. "Default" (or app/none mode) keeps the shipped zero-config
+		// process-exclude behavior. The settings.json-only spike value is deliberately preserved while
+		// this picker still supplies its chosen endpoint id.
 		if (isWasapiAudio && audioConfig.mode === "system") {
 			const chosenEndpoint = document.querySelector<HTMLSelectElement>("#endpoint-select")?.value ?? "default";
 			if (chosenEndpoint !== "default") {
-				audioConfig.captureSource = "endpoint";
+				if (audioConfig.captureSource !== "endpoint-exclude-self") audioConfig.captureSource = "endpoint";
 				audioConfig.endpointId = chosenEndpoint;
 			}
 		}
@@ -210,6 +213,7 @@ async function init() {
 	// Normalize older saved configs that predate the capture-source fields (locked decision).
 	s.audioConfig.captureSource ??= "process-exclude";
 	s.audioConfig.endpointId ??= "default";
+	persistedSpikeCaptureSource = s.audioConfig.captureSource === "endpoint-exclude-self" ? "endpoint-exclude-self" : "process-exclude";
 
 	const payload = (await ipcRenderer.invoke("refreshScreenshareSources")) as ScreensharePayload;
 	isPatchcordMode = payload.isPatchcord;

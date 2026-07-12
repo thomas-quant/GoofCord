@@ -66,6 +66,10 @@ interface WasapiAddon {
 	//   listRenderEndpoints: active eRender endpoints ({ id, name, isDefault }); [] fail-closed.
 	startRenderEndpoint(deviceId: string, onChunk: (err: unknown, chunk: Buffer) => void): boolean;
 	startDefaultRenderEndpoint(onChunk: (err: unknown, chunk: Buffer) => void): boolean;
+	// Spike exports: 0 = started; nonzero = raw HRESULT from endpoint resolve, blob activation,
+	// or fixed-format initialization. These remain separate from the shipped boolean exports.
+	startRenderEndpointExcludeProcessTree(deviceId: string, excludeRootPid: number, onChunk: (err: unknown, chunk: Buffer) => void): number;
+	startDefaultRenderEndpointExcludeProcessTree(excludeRootPid: number, onChunk: (err: unknown, chunk: Buffer) => void): number;
 	listRenderEndpoints(): RenderEndpointInfo[];
 }
 
@@ -175,7 +179,7 @@ export type WasapiVerdict = "started" | "unsupported-fallback-ok" | "failed-no-f
 interface WasapiAudioConfig {
 	mode: "none" | "system" | "app";
 	pids: number[];
-	captureSource: "process-exclude" | "endpoint";
+	captureSource: "process-exclude" | "endpoint" | "endpoint-exclude-self";
 	endpointId: "default" | string;
 }
 
@@ -183,9 +187,10 @@ interface WasapiAudioConfig {
 // userData log recording the resolved capture kind + verdict. Best-effort — write errors are swallowed
 // so a failed log never affects capture.
 const CAPTURE_LOG_PATH = path.join(userDataPath, "wasapi-capture.log");
-async function logCapture(kind: string, verdict: WasapiVerdict): Promise<void> {
+async function logCapture(kind: string, verdict: WasapiVerdict, hr?: number): Promise<void> {
 	try {
-		await appendFile(CAPTURE_LOG_PATH, `${new Date().toISOString()} kind=${kind} verdict=${verdict}\n`);
+		const hresult = hr === undefined ? "" : ` hr=0x${(hr >>> 0).toString(16).padStart(8, "0").toUpperCase()}`;
+		await appendFile(CAPTURE_LOG_PATH, `${new Date().toISOString()} kind=${kind} verdict=${verdict}${hresult}\n`);
 	} catch {
 		// diagnostics are best-effort — never let a log write failure affect capture
 	}
@@ -199,6 +204,8 @@ async function logCapture(kind: string, verdict: WasapiVerdict): Promise<void> {
  *   mode:"app"                                        → startIncludeProcessTree(pid) — per-app INCLUDE
  *   mode:"system" + captureSource:"endpoint"          → startRenderEndpoint(id) / startDefaultRenderEndpoint()
  *                                                       — render-endpoint loopback (the VAC/Sonar fix)
+ *   mode:"system" + captureSource:"endpoint-exclude-self"
+ *                                                     → endpoint-bound process-tree EXCLUDE semantic spike
  *
  * Returns a WasapiVerdict (never throws). App mode + explicit-endpoint mode FAIL CLOSED: on any
  * non-support / failure / exception they return "failed-no-fallback" so the caller leaves result.audio
@@ -258,7 +265,20 @@ export async function tryStartWasapiLoopback(audioConfig: WasapiAudioConfig): Pr
 		// never throws). The transport hop above is unchanged; only this call varies.
 		let ok: boolean;
 		let kind: string;
-		if (audioConfig.mode === "system" && audioConfig.captureSource === "endpoint") {
+		let hr: number | undefined;
+		if (audioConfig.mode === "system" && audioConfig.captureSource === "endpoint-exclude-self") {
+			// Endpoint-bound process-tree EXCLUDE spike: one synchronously activated IAudioClient, with
+			// the chosen IMMDevice providing endpoint scope and process.pid rooting the engine-side
+			// EXCLUDE filter. Any nonzero HRESULT fails closed; never broaden to another capture mode.
+			if (audioConfig.endpointId === "default") {
+				kind = "endpoint-exclude-self:default";
+				hr = wasapi.startDefaultRenderEndpointExcludeProcessTree(process.pid, onChunk);
+			} else {
+				kind = `endpoint-exclude-self:${audioConfig.endpointId}`;
+				hr = wasapi.startRenderEndpointExcludeProcessTree(audioConfig.endpointId, process.pid, onChunk);
+			}
+			ok = hr === 0;
+		} else if (audioConfig.mode === "system" && audioConfig.captureSource === "endpoint") {
 			// Explicit render-endpoint loopback (the VAC/Sonar power-user fix): point GoofCord at a chosen
 			// clean render bus. "default" resolves to the eConsole default render endpoint; any other id is
 			// the chosen IMMDevice. FAILS CLOSED: a false verdict (activation failure / unresolved-or-forged
@@ -304,12 +324,12 @@ export async function tryStartWasapiLoopback(audioConfig: WasapiAudioConfig): Pr
 			// fallback is acceptable (unsupported-fallback-ok); for app mode it fails closed. The addon
 			// already cleaned up its own thread.
 			await stopWasapiLoopback();
-			await logCapture(kind, closedVerdict);
+			await logCapture(kind, closedVerdict, hr);
 			return closedVerdict;
 		}
 
 		console.log(LOG_PREFIX, `WASAPI ${kind} capture streaming over MessageChannelMain`);
-		await logCapture(kind, "started");
+		await logCapture(kind, "started", hr);
 		return "started";
 	} catch {
 		await stopWasapiLoopback();
