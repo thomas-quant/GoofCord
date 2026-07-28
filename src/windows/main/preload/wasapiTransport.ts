@@ -54,12 +54,20 @@ export function installWasapiTransport(): void {
 	const writer = gen.writable.getWriter() as WritableStreamDefaultWriter<unknown>;
 	let tsUs = 0; // timestamp MUST be microseconds, monotonic (else frames silently garble)
 
-	// Bounded ring of transferred ArrayBuffers (each = 480*2 interleaved f32 = 3840 bytes).
-	const ring: ArrayBuffer[] = [];
+	// One bounded ring PER SOURCE (each chunk = 480*2 interleaved f32 = 3840 bytes). "app" mode
+	// runs one WASAPI INCLUDE session per selected app, so several independent streams arrive
+	// interleaved on the same port, tagged with their source index; they are summed on drain.
+	// "system" mode simply has a single source (index 0).
+	const rings = new Map<number, ArrayBuffer[]>();
 	let drainTimer: ReturnType<typeof setInterval> | undefined;
 	let activePort: MessagePort | undefined;
 
-	function pushChunk(ab: ArrayBuffer): void {
+	function pushChunk(index: number, ab: ArrayBuffer): void {
+		let ring = rings.get(index);
+		if (ring === undefined) {
+			ring = [];
+			rings.set(index, ring);
+		}
 		if (ring.length >= RING_DEPTH) {
 			ring.shift(); // drop-oldest on overflow (T4)
 		}
@@ -79,16 +87,34 @@ export function installWasapiTransport(): void {
 		void writer.write(ad);
 	}
 
-	// Drain loop: consume one chunk per ~10ms from the ring; on underrun write a zero-filled
-	// AudioData of the same shape to keep the MSTG timeline monotonic.
+	// Drain loop: consume one chunk per source per ~10ms and SUM them into a single frame. A
+	// source that has nothing queued contributes silence, so the MSTG timeline stays monotonic
+	// whether we have zero, one, or several live sources.
 	const intervalMs = (FRAMES / SAMPLE_RATE) * 1000; // ≈10ms
+	const MIX_LEN = CHANNELS * FRAMES;
 	drainTimer = setInterval(() => {
-		const ab = ring.shift();
-		if (ab) {
-			writeAudioData(new Float32Array(ab));
-		} else {
-			writeAudioData(new Float32Array(CHANNELS * FRAMES)); // silence fill on underrun
+		const mixed = new Float32Array(MIX_LEN);
+		let contributors = 0;
+
+		for (const ring of rings.values()) {
+			const ab = ring.shift();
+			if (ab === undefined) continue;
+			const src = new Float32Array(ab);
+			if (src.length !== MIX_LEN) continue; // defensive: ignore a malformed chunk
+			for (let i = 0; i < MIX_LEN; i++) mixed[i] += src[i];
+			contributors++;
 		}
+
+		// Summing independent streams can exceed [-1, 1] when several apps are loud at once.
+		// Hard-clamp rather than normalise: a moving gain would pump audibly as apps start/stop.
+		if (contributors > 1) {
+			for (let i = 0; i < MIX_LEN; i++) {
+				const v = mixed[i];
+				mixed[i] = v > 1 ? 1 : v < -1 ? -1 : v;
+			}
+		}
+
+		writeAudioData(mixed);
 	}, intervalMs);
 
 	function teardown(): void {
@@ -96,7 +122,7 @@ export function installWasapiTransport(): void {
 			clearInterval(drainTimer);
 			drainTimer = undefined;
 		}
-		ring.length = 0;
+		rings.clear();
 		try {
 			activePort?.close();
 		} catch {
@@ -129,14 +155,17 @@ export function installWasapiTransport(): void {
 	// ── HOP-2 receiver: the zero-copy port-forward path ──────────────────────────────────
 	// The preload forwards the MessagePort via window.postMessage(..., [port]) AFTER it sees our
 	// "goofcord:wasapi-ready" handshake below. activePort is set ONLY here — i.e. only after the
-	// main process forwarded the port, which it does only when tryStartWasapiLoopback() succeeded.
+	// main process forwarded the port, which it does only when startWasapiCapture() succeeded.
 	window.addEventListener("message", (e: MessageEvent) => {
 		if (e.data !== "goofcord:wasapi-pcm-port") return;
 		const port = e.ports[0];
 		if (!port) return;
 		activePort = port;
 		port.onmessage = (msg: MessageEvent) => {
-			if (msg.data instanceof ArrayBuffer) pushChunk(msg.data);
+			// { index, pcm } — index identifies the capture session so N app streams can be mixed.
+			const data = msg.data as { index?: number; pcm?: unknown } | null;
+			if (data == null || !(data.pcm instanceof ArrayBuffer)) return;
+			pushChunk(typeof data.index === "number" ? data.index : 0, data.pcm);
 		};
 		port.start();
 	});
@@ -153,7 +182,7 @@ export function installWasapiTransport(): void {
 		const stream = await originalGDM(opts);
 
 		// ECHO-03 (D-11): only swap when capture is actually active. activePort is set only after
-		// tryStartWasapiLoopback() succeeded and the main process forwarded the port. If it's unset
+		// startWasapiCapture() succeeded and the main process forwarded the port. If it's unset
 		// (unsupported build / --no-wasapi / activation returned false), leave the original Chromium
 		// "loopback" track in place so the viewer hears audio instead of a silence-filled gen track.
 		if (!activePort) return stream;

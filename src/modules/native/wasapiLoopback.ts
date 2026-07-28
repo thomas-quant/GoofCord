@@ -1,21 +1,36 @@
 // @ts-nocheck Bun won't install the wasapi-loopback addon on macOS/linux, so typescript can't compile with checks (mirror venbind.ts:1)
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Windows WASAPI EXCLUDE-tree echo fix (the #46 fix) — main-process capture wrapper.
+// Windows WASAPI screenshare audio (the #46 echo fix) — main-process capture wrapper.
 //
-// The clean-room addon (native/wasapi-loopback) captures the full endpoint mix EXCEPT
-// GoofCord's own process tree (the Audio Service child is covered via EXCLUDE_TARGET_PROCESS_TREE),
-// so the viewer hears shared desktop audio but NOT the Discord call echoed back. The captured PCM
-// is forwarded over the canonical Electron MessageChannelMain transport (MessageChannelMain →
-// webContents.postMessage → preload-injected MSTG feeder → viewer).
+// TWO capture modes, chosen by what the user picked in the source picker. This mirrors what
+// Discord's desktop client does, which we confirmed by reading its own renderer bundle:
+//
+//   Discord `getPidFromDesktopSource(id)`:
+//     "window:<hwnd>:…" -> the real PID behind that window  -> INCLUDE that process tree
+//     "screen:…"        -> the sentinel PID 1               -> capture everything but itself
+//
+//   Ours:
+//     audioConfig.mode === "app"    -> startIncludeProcessTree(pid) per selected app
+//     audioConfig.mode === "system" -> startExcludeProcessTree(ourPid)
+//
+// WHY THE INCLUDE MODE MATTERS: EXCLUDE is a denylist, and the WASAPI activation struct has
+// exactly ONE TargetProcessId — so it can drop OUR audio or a virtual cable's, never both. A
+// transparent VAC looping the mic back to the speakers therefore lands in every EXCLUDE capture
+// and viewers hear the sharer twice. INCLUDE is an allowlist: a VAC that was never added simply
+// cannot appear. That is the entire reason Discord's window-share is echo-free, and it is the
+// mode GoofCord was missing.
+//
+// N INCLUDE sessions run concurrently (one per selected app) and are mixed in the renderer;
+// each chunk is tagged with its source index so the feeder can sum them.
 //
 // Load model: the addon ships at ts-out/native/wasapi-loopback-<plat>-<arch>.node (placed there by
 // build.ts via a HOST-AGNOSTIC fs copy — NOT Bun's `native-module:` file-loader, which silently
 // fails to emit the .node when the BUILD HOST is Windows). createRequire + a --no-wasapi guard load
-// it; the addon's `start(excludeRootPid, onChunk)` returns false (never throws) when the API is
-// unavailable on this build → we fall through to Electron "loopback" (ECHO-03).
+// it; every addon entry point returns a falsy/0 result rather than throwing when the API is
+// unavailable on this build.
 //
-// On non-win32 / --no-wasapi / addon-not-loaded, tryStartWasapiLoopback returns false
+// On non-win32 / --no-wasapi / addon-not-loaded, startWasapiCapture returns "unsupported"
 // immediately so the normal "loopback" path stays byte-identical to upstream.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -32,14 +47,23 @@ const require = createRequire(import.meta.url);
 
 const LOG_PREFIX = pc.cyan("[Screenshare]");
 
-// The addon's contract (see native/wasapi-loopback/src/lib.rs):
-//   start(excludeRootPid: number, onChunk: (err, chunk) => void): boolean  // false = unsupported, never throws
-//   stop(): void                                                           // idempotent, bounded join
+// An app with a live audio session, offered in the picker's per-app list.
+export interface WasapiAudioApp {
+	processId: number;
+	displayName: string;
+	binary: string;
+}
+
+// The addon's contract (see native/wasapi-loopback/src/lib.rs). Session-returning starts:
+// a non-zero session id means capturing, 0 means "unavailable/failed" (never throws).
 interface WasapiAddon {
 	// onChunk is a napi CalleeHandled ThreadsafeFunction → JS is invoked as (err, chunk):
 	// the error slot is the FIRST arg (null on Ok), the audio Buffer is the SECOND.
-	start(excludeRootPid: number, onChunk: (err: unknown, chunk: Buffer) => void): boolean;
-	stop(): void;
+	startExcludeProcessTree(excludeRootPid: number, onChunk: (err: unknown, chunk: Buffer) => void): number;
+	startIncludeProcessTree(targetPid: number, onChunk: (err: unknown, chunk: Buffer) => void): number;
+	stopSession(id: number): void;
+	stopAll(): void;
+	listAudioApps(): WasapiAudioApp[];
 }
 
 // ── Addon load (mirror obtainVenbind: load-once flag + --no-wasapi guard + null-on-failure) ──
@@ -59,7 +83,7 @@ function obtainWasapiLoopback(): WasapiAddon | undefined {
 	addonLoadAttempted = true;
 	try {
 		addon = require(wasapiPath) as WasapiAddon;
-		if (!addon || typeof addon.start !== "function" || typeof addon.stop !== "function") {
+		if (!addon || typeof addon.startExcludeProcessTree !== "function" || typeof addon.startIncludeProcessTree !== "function" || typeof addon.stopAll !== "function") {
 			throw new Error("wasapi-loopback addon missing start/stop exports");
 		}
 		console.log(pc.green("[WASAPI]"), "Loaded wasapi-loopback addon");
@@ -70,17 +94,57 @@ function obtainWasapiLoopback(): WasapiAddon | undefined {
 	return addon;
 }
 
+// Whether the native Windows capture path is usable at all.
+function wasapiAvailable(): boolean {
+	return process.platform === "win32" && !process.argv.includes("--no-wasapi");
+}
+
+/**
+ * Whether Windows native capture is available, so the picker can offer the 3-mode audio UI
+ * (none / system / app) instead of the bare on-off toggle.
+ *
+ * NOTE the asymmetry with Linux: patchcord can capture "system MINUS these apps", but WASAPI
+ * cannot — `AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS` carries a single `TargetProcessId`, which we
+ * must spend excluding ourselves. So Windows supports per-app INCLUDE but NOT per-app exclude,
+ * and the picker must not offer an exclusion list it cannot honour.
+ */
+export function isWasapiAvailable(): boolean {
+	return wasapiAvailable() && obtainWasapiLoopback() !== undefined;
+}
+
 // Whether preload.mts should inject the MSTG feeder + getDisplayMedia swap seam into the Discord
 // page main world. The feeder must be present whenever the addon can run (win32, not --no-wasapi)
 // so the addon's chunks have somewhere to land; otherwise capture silently falls through to the
 // echoing "loopback" path. Read from main via sendSync (the sandboxed preload has no process.argv /
 // authoritative platform). Off-Windows or --no-wasapi ⇒ false ⇒ no injection ⇒ byte-identical to upstream.
 export function shouldInjectWasapiTransport<IPCOn>() {
-	return process.platform === "win32" && !process.argv.includes("--no-wasapi");
+	return wasapiAvailable();
 }
 
-// ── State (nulled by stopWasapiLoopback; safe to call stop twice) ────────────────────────
+/**
+ * Apps with a live audio session, for the picker's per-app include list. This is the Windows
+ * counterpart of `patchcordList()` on Linux — it is what makes the 3-mode picker (none / system /
+ * app) meaningful on Windows instead of a bare on-off toggle.
+ *
+ * Fail-closed: returns [] off-Windows, without the addon, or on any error — never throws.
+ */
+export function listWasapiAudioApps(): WasapiAudioApp[] {
+	if (!wasapiAvailable()) return [];
+	const wasapi = obtainWasapiLoopback();
+	if (!wasapi || typeof wasapi.listAudioApps !== "function") return [];
+	try {
+		// Never offer ourselves as an include target: capturing GoofCord's own tree is the echo
+		// we are here to remove.
+		return wasapi.listAudioApps().filter((a) => a.processId !== process.pid);
+	} catch (e: unknown) {
+		console.error(LOG_PREFIX, "listAudioApps failed:", e);
+		return [];
+	}
+}
+
+// ── State (cleared by stopWasapiLoopback; safe to call stop twice) ────────────────────────
 let port1: MessagePortMain | undefined;
+let sessionIds: number[] = [];
 
 // The addon's onChunk delivers a napi Buffer (480-frame / stereo / f32 = 3840 bytes); forward its
 // bytes down the kept MessagePort. COPY into a fresh ArrayBuffer (the Buffer may share/reuse V8
@@ -91,26 +155,41 @@ function toArrayBuffer(chunk: Buffer): ArrayBuffer {
 	return out;
 }
 
+/** What the screenshare picker sends us. `pids` is only meaningful in "app" mode. */
+export interface WasapiAudioConfig {
+	mode: "none" | "system" | "app";
+	pids: number[];
+}
+
 /**
- * Start the REAL WASAPI EXCLUDE-tree capture behind the proven MessageChannelMain transport.
- *
- * Returns false (never throws) on: non-win32, --no-wasapi, addon-not-loaded, addon activation
- * unsupported on this build, or any exception → the caller falls through to Electron "loopback"
- * (ECHO-03). On success, the addon's ThreadsafeFunction pushes 480-frame/3840-byte f32 buffers
- * which we forward down `port1` to the renderer feeder.
+ * Outcome of a capture attempt:
+ *   "started"       — native capture running; caller must NOT also request Chromium "loopback".
+ *   "unsupported"   — nothing started; caller may fall back to Chromium "loopback".
+ *   "failed-closed" — app mode was requested and could not be honoured. The caller must leave
+ *                     audio UNSET rather than fall back: falling back to system-wide "loopback"
+ *                     when the user explicitly asked for one app is a privacy inversion (it would
+ *                     broadcast every app plus the call itself).
  */
-export async function tryStartWasapiLoopback(): Promise<boolean> {
-	if (process.platform !== "win32" || process.argv.includes("--no-wasapi")) return false;
+export type WasapiStartResult = "started" | "unsupported" | "failed-closed";
+
+/**
+ * Start native capture for the requested mode behind the proven MessageChannelMain transport.
+ *
+ * On success the addon's ThreadsafeFunction pushes 480-frame/3840-byte f32 buffers, which we
+ * forward down `port1` tagged with their source index so the renderer can mix N app streams.
+ */
+export async function startWasapiCapture(audioConfig: WasapiAudioConfig): Promise<WasapiStartResult> {
+	if (!wasapiAvailable() || audioConfig.mode === "none") return "unsupported";
 
 	const wasapi = obtainWasapiLoopback();
-	if (!wasapi) return false;
+	if (!wasapi) return audioConfig.mode === "app" ? "failed-closed" : "unsupported";
+
+	// App mode with nothing selected has no meaning — treat it as "user asked for app audio and
+	// we have none", i.e. fail closed rather than silently broadcasting the whole system.
+	const targets = audioConfig.mode === "app" ? audioConfig.pids.filter((p) => Number.isInteger(p) && p > 0 && p !== process.pid) : [];
+	if (audioConfig.mode === "app" && targets.length === 0) return "failed-closed";
 
 	try {
-		// PID discipline (ECHO-02): the EXCLUDE-tree root is the Electron main PID. The addon excludes
-		// the whole tree rooted there via EXCLUDE_TARGET_PROCESS_TREE (covering the Audio Service utility
-		// child) so GoofCord's own call playback never re-enters the captured mix.
-		const rootPid = process.pid;
-
 		// Make start idempotent across re-clicks: tear down any prior session/port first.
 		await stopWasapiLoopback();
 
@@ -122,56 +201,69 @@ export async function tryStartWasapiLoopback(): Promise<boolean> {
 		mainWindow.webContents.postMessage("wasapi:pcm-port", null, [channel.port2]);
 		port1.start();
 
-		// Start the REAL addon. start() returns the activation verdict synchronously on the JS side
-		// (false on non-S_OK / missing entrypoint — never throws). The ThreadsafeFunction onChunk runs
-		// per ~10ms with a 3840-byte f32 Buffer, delivered CalleeHandled as (err, chunk): the chunk is
-		// the SECOND arg (the first is the error slot, null on Ok). Guard on err/chunk so a stray error
-		// frame can't crash the callback.
-		const ok = await wasapi.start(rootPid, (err: unknown, chunk: Buffer) => {
+		// One chunk sink per source index. Guard on err/chunk so a stray error frame can't crash
+		// the callback, and never let a throw inside the threadsafe callback become an uncaught
+		// main-process exception.
+		const sink = (index: number) => (err: unknown, chunk: Buffer) => {
 			const port = port1;
 			if (!port || err || !chunk) return;
 			try {
 				// Electron's MAIN-process MessagePortMain.postMessage transfer list accepts ONLY
 				// MessagePortMain instances — NOT ArrayBuffers (unlike the renderer/DOM MessagePort).
-				// Send the buffer as the MESSAGE (structured-cloned, ~384 KB/s — negligible).
-				port.postMessage(toArrayBuffer(chunk));
+				// Send the buffer as the MESSAGE (structured-cloned, ~384 KB/s per source).
+				port.postMessage({ index, pcm: toArrayBuffer(chunk) });
 			} catch {
-				// A throw inside the threadsafe callback would be an uncaught main-process exception.
-				// Never let the capture crash the app (ECHO-03 discipline): stop cleanly.
 				void stopWasapiLoopback();
 			}
-		});
+		};
 
-		if (!ok) {
-			// Activation != S_OK (API unavailable on this build): close the port and fall through
-			// to "loopback" — no crash (ECHO-03). The addon already cleaned up its own thread.
-			await stopWasapiLoopback();
-			return false;
+		const started: number[] = [];
+		if (audioConfig.mode === "app") {
+			// INCLUDE one session per selected app — the VAC-immune allowlist path.
+			targets.forEach((pid, i) => {
+				const id = wasapi.startIncludeProcessTree(pid, sink(i));
+				if (id) started.push(id);
+				else console.warn(LOG_PREFIX, `WASAPI INCLUDE capture failed for pid ${pid}`);
+			});
+		} else {
+			// EXCLUDE our own tree — "share whole screen" audio. EXCLUDE_TARGET_PROCESS_TREE covers
+			// the separate "Audio Service" utility child, so our own call playback never re-enters.
+			const id = wasapi.startExcludeProcessTree(process.pid, sink(0));
+			if (id) started.push(id);
 		}
 
-		console.log(LOG_PREFIX, "WASAPI EXCLUDE-tree capture streaming over MessageChannelMain");
-		return true;
-	} catch {
+		sessionIds = started;
+
+		if (started.length === 0) {
+			await stopWasapiLoopback();
+			return audioConfig.mode === "app" ? "failed-closed" : "unsupported";
+		}
+
+		console.log(LOG_PREFIX, audioConfig.mode === "app" ? `WASAPI INCLUDE capture streaming (${started.length}/${targets.length} app${targets.length === 1 ? "" : "s"})` : "WASAPI EXCLUDE-tree capture streaming over MessageChannelMain");
+		return "started";
+	} catch (e: unknown) {
+		console.error(LOG_PREFIX, "WASAPI capture failed to start:", e);
 		await stopWasapiLoopback();
-		return false; // → "loopback" fallback, never crash (ECHO-03)
+		return audioConfig.mode === "app" ? "failed-closed" : "unsupported";
 	}
 }
 
 /**
- * Idempotent teardown: stop the native capture, close the kept port, null state.
+ * Idempotent teardown: stop every native session, close the kept port, null state.
  * Safe to call twice (mirrors stopPatchcord; composes with the single-owner finishRequest).
  */
 export async function stopWasapiLoopback<IPCHandle>() {
-	// Stop the native capture FIRST so no more chunks arrive after we drop the port. The addon's
-	// stop() is idempotent with a bounded internal join; obtain (cached) without re-loading.
+	// Stop the native capture FIRST so no more chunks arrive after we drop the port. stopAll() is
+	// idempotent with a bounded internal join; obtain (cached) without re-loading.
 	const wasapi = addon;
 	if (wasapi) {
 		try {
-			wasapi.stop();
+			wasapi.stopAll();
 		} catch {
-			// best-effort; stop() is idempotent and a throw here is non-fatal
+			// best-effort; stopAll() is idempotent and a throw here is non-fatal
 		}
 	}
+	sessionIds = [];
 
 	const port = port1;
 	port1 = undefined;
@@ -181,7 +273,7 @@ export async function stopWasapiLoopback<IPCHandle>() {
 		} catch {
 			// already closed
 		}
-		console.log(LOG_PREFIX, "WASAPI EXCLUDE-tree capture stopped");
+		console.log(LOG_PREFIX, "WASAPI capture stopped");
 	}
 }
 

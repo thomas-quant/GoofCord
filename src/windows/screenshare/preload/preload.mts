@@ -26,7 +26,12 @@ export interface ScreenshareSettings {
 interface ScreensharePayload {
 	sources: IPCSource[] | null;
 	audioNodes: ShareableNode[];
-	isPatchcord: boolean;
+	// Per-app audio capture exists on this platform (patchcord on Linux, WASAPI on Windows) —
+	// show the 3-mode audio UI instead of the bare on/off toggle.
+	hasAdvancedAudio: boolean;
+	// "system MINUS these apps" is supported (patchcord only). WASAPI has a single
+	// TargetProcessId, spent excluding GoofCord itself, so Windows cannot honour an exclude list.
+	supportsAudioExclude: boolean;
 }
 
 const DISPLAY_MODES = {
@@ -43,7 +48,8 @@ const CONTROL_ICONS: Record<string, string> = {
 	app: `<svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18"/></svg>`,
 };
 
-let isPatchcordMode = false;
+let hasAdvancedAudio = false;
+let supportsAudioExclude = false;
 let isRefreshing = false;
 
 const escapeMap: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
@@ -118,7 +124,7 @@ function getFormSettings(): ScreenshareSettings | null {
 
 	let audioConfig: AudioConfig = { mode: "none", pids: [] };
 
-	if (isPatchcordMode) {
+	if (hasAdvancedAudio) {
 		audioConfig.mode = (document.querySelector<HTMLInputElement>('input[name="audioMode"]:checked')?.value as AudioConfig["mode"]) ?? "none";
 		audioConfig.pids = Array.from(document.querySelectorAll<HTMLInputElement>("#audio-apps-list input:checked")).map((el) => Number(el.value));
 	} else if ($<HTMLInputElement>("audio-share-checkbox").checked) {
@@ -155,7 +161,7 @@ async function refreshData() {
 			$("sources-list").innerHTML = sources.map(createSourceItemHtml).join("");
 		}
 
-		if (isPatchcordMode) {
+		if (hasAdvancedAudio) {
 			const selectedPids = Array.from(document.querySelectorAll<HTMLInputElement>("#audio-apps-list input:checked")).map((el) => Number(el.value));
 			$("audio-apps-list").innerHTML = renderAudioApps(audioNodes, selectedPids);
 		}
@@ -175,7 +181,8 @@ async function init() {
 	s.audioConfig ??= { mode: "none", pids: [] };
 
 	const payload = (await ipcRenderer.invoke("refreshScreenshareSources")) as ScreensharePayload;
-	isPatchcordMode = payload.isPatchcord;
+	hasAdvancedAudio = payload.hasAdvancedAudio;
+	supportsAudioExclude = payload.supportsAudioExclude;
 
 	$("title-text").textContent = i("screenshare-screenshare");
 	$("subtitle-text").textContent = i("screenshare-subtitle");
@@ -193,7 +200,7 @@ async function init() {
 	$("resolution-group").innerHTML = generateSegmentedControlHtml("resolution", DISPLAY_MODES.Quality, s.resolution);
 	$("framerate-group").innerHTML = generateSegmentedControlHtml("framerate", DISPLAY_MODES.Framerate, s.framerate);
 
-	if (isPatchcordMode) {
+	if (hasAdvancedAudio) {
 		$("linux-audio-section").style.display = "block";
 		$("linux-audio-title").textContent = i("screenshare-audio-linux-title");
 		$("audio-mode-label").textContent = i("screenshare-audio-mode-label");
@@ -216,10 +223,13 @@ async function init() {
 		const updateAppListVisibility = () => {
 			const currentMode = document.querySelector<HTMLInputElement>('input[name="audioMode"]:checked')?.value || "none";
 			const isNone = currentMode === "none";
-			appsContainer.style.display = isNone ? "none" : "flex";
+			const isSystem = currentMode === "system";
+			// In system mode the list means "exclude these apps", which only patchcord can do.
+			// Hiding it on Windows keeps the picker from promising a filter we cannot apply.
+			const showList = !isNone && (!isSystem || supportsAudioExclude);
+			appsContainer.style.display = showList ? "flex" : "none";
 
-			if (!isNone) {
-				const isSystem = currentMode === "system";
+			if (showList) {
 				appsLabel.textContent = i(isSystem ? "screenshare-audio-excluded" : "screenshare-audio-included");
 				appsDesc.textContent = i(isSystem ? "screenshare-audio-mute-desc" : "screenshare-audio-hear-desc");
 			}
