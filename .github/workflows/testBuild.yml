@@ -1,7 +1,16 @@
 name: Test build
 
 on:
-  workflow_dispatch
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "What to build"
+        type: choice
+        options:
+          - app
+          - addon
+          - both
+        default: app
 
 permissions:
   contents: write
@@ -26,6 +35,7 @@ jobs:
 
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
+    if: inputs.target == 'app' || inputs.target == 'both'
     steps:
       - name: Github checkout
         uses: actions/checkout@v4
@@ -66,3 +76,47 @@ jobs:
             dist/**/*.rpm
             dist/**/*.zip
             dist/**/*.dmg
+
+  # Builds ONLY the native WASAPI addon and publishes the .node. Split out from the app matrix
+  # because packaging three desktop platforms takes ~20 min and tells you nothing about the addon.
+  addon:
+    name: wasapi-addon
+    runs-on: windows-latest
+    if: inputs.target == 'addon' || inputs.target == 'both'
+    steps:
+      - name: Github checkout
+        uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24.x"
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+          components: clippy
+
+      - name: Clippy
+        working-directory: native/wasapi-loopback
+        run: cargo clippy --target x86_64-pc-windows-msvc
+
+      - name: Install addon dependencies
+        working-directory: native/wasapi-loopback
+        run: bun install
+
+      - name: Build addon
+        working-directory: native/wasapi-loopback
+        run: bun run build
+
+      - name: Upload addon
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasapi-addon
+          path: native/wasapi-loopback/*.node
+          if-no-files-found: error

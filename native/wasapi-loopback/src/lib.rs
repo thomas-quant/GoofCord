@@ -22,9 +22,9 @@
 
 use std::collections::HashMap;
 use std::mem::{size_of, ManuallyDrop};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Sender};
-use std::sync::{LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::thread::JoinHandle;
 
 use napi::bindgen_prelude::Buffer;
@@ -43,7 +43,8 @@ use windows::Win32::Media::Audio::{
     IActivateAudioInterfaceCompletionHandler, IActivateAudioInterfaceCompletionHandler_Impl,
     IAudioCaptureClient, IAudioClient, IAudioSessionControl, IAudioSessionControl2,
     IAudioSessionEnumerator, IAudioSessionManager2, IMMDevice, IMMDeviceCollection,
-    IMMDeviceEnumerator, AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_SHAREMODE_SHARED,
+    IMMDeviceEnumerator, AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY, AUDCLNT_BUFFERFLAGS_SILENT,
+    AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR, AUDCLNT_SHAREMODE_SHARED,
     AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM, AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
     AUDCLNT_STREAMFLAGS_LOOPBACK, AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
     AUDIOCLIENT_ACTIVATION_PARAMS, AUDIOCLIENT_ACTIVATION_PARAMS_0,
@@ -375,6 +376,8 @@ struct CaptureSession {
     stop_event: HANDLE,
     /// The capture thread join handle (taken by `stop`).
     join: Option<JoinHandle<()>>,
+    /// Live timing counters, shared with the capture thread.
+    stats: Arc<StreamStats>,
 }
 
 // HANDLE is a raw pointer; it is only ever touched under the GLOBAL mutex below and on
@@ -394,6 +397,22 @@ unsafe impl Send for SendHandle {}
 /// silently wrong: a second `start*` call hit the `is_some()` early-return and reported
 /// SUCCESS while capturing nothing. Keying by session id is what makes N concurrent
 /// INCLUDE captures — one per selected app — actually run.
+/// Per-stream timing taken straight from `IAudioCaptureClient::GetBuffer`.
+///
+/// `DevicePosition`/`QPCPosition` are the engine's own accounting: frames-since-stream-start
+/// paired with the performance counter at the moment that frame was recorded. They stay
+/// authoritative even when the FFI queue drops chunks, which is exactly why inferring a rate
+/// from chunk *arrival* cannot work here — `dropped_chunks` counts that failure directly.
+#[derive(Default)]
+struct StreamStats {
+    device_position: AtomicU64,
+    qpc_position: AtomicU64,
+    packets: AtomicU64,
+    dropped_chunks: AtomicU64,
+    discontinuities: AtomicU64,
+    timestamp_errors: AtomicU64,
+}
+
 static SESSIONS: LazyLock<Mutex<HashMap<u32, CaptureSession>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
@@ -410,7 +429,12 @@ static NEXT_SESSION_ID: AtomicU32 = AtomicU32::new(1);
 /// The capture loop. Owns `audio_client` (already Initialize()'d to 48k/stereo/f32).
 /// Batches the device's interleaved-stereo f32 frames into 3840-byte chunks and pushes
 /// each via `on_chunk` (NonBlocking — drops on QueueFull). Exits when `stop_event` fires.
-unsafe fn run_capture_loop(audio_client: IAudioClient, on_chunk: ChunkTsfn, stop_event: HANDLE) {
+unsafe fn run_capture_loop(
+    audio_client: IAudioClient,
+    on_chunk: ChunkTsfn,
+    stop_event: HANDLE,
+    stats: Arc<StreamStats>,
+) {
     // Event the engine signals each period (EVENTCALLBACK mode). Auto-reset, unsignaled.
     let audio_event = match CreateEventW(None, false, false, PCWSTR::null()) {
         Ok(h) => h,
@@ -468,11 +492,34 @@ unsafe fn run_capture_loop(audio_client: IAudioClient, on_chunk: ChunkTsfn, stop
             let mut data_ptr: *mut u8 = std::ptr::null_mut();
             let mut num_frames: u32 = 0;
             let mut flags: u32 = 0;
+            // The two trailing arguments used to be None. They are the engine's timing for this
+            // packet, and discarding them is what forced rate to be guessed from arrival times.
+            let mut device_pos: u64 = 0;
+            let mut qpc_pos: u64 = 0;
             if capture
-                .GetBuffer(&mut data_ptr, &mut num_frames, &mut flags, None, None)
+                .GetBuffer(
+                    &mut data_ptr,
+                    &mut num_frames,
+                    &mut flags,
+                    Some(&mut device_pos),
+                    Some(&mut qpc_pos),
+                )
                 .is_err()
             {
                 break;
+            }
+
+            stats.packets.fetch_add(1, Ordering::Relaxed);
+            if (flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR.0 as u32) != 0 {
+                stats.timestamp_errors.fetch_add(1, Ordering::Relaxed);
+            } else {
+                // Store as a matched pair; a reader may see a torn pair, which costs one sample
+                // of a 500-sample regression and is not worth a lock on the capture thread.
+                stats.device_position.store(device_pos, Ordering::Relaxed);
+                stats.qpc_position.store(qpc_pos, Ordering::Relaxed);
+            }
+            if (flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0 as u32) != 0 {
+                stats.discontinuities.fetch_add(1, Ordering::Relaxed);
             }
 
             let frame_count = num_frames as usize;
@@ -493,7 +540,11 @@ unsafe fn run_capture_loop(audio_client: IAudioClient, on_chunk: ChunkTsfn, stop
                 let chunk: Vec<u8> = acc.drain(..CHUNK_BYTES).collect();
                 // NonBlocking push: QueueFull => the chunk is dropped (drop-oldest at the
                 // FFI boundary). Bounded latency wins over perfect fidelity (locked T4).
-                on_chunk.call(Ok(chunk.into()), ThreadsafeFunctionCallMode::NonBlocking);
+                if on_chunk.call(Ok(chunk.into()), ThreadsafeFunctionCallMode::NonBlocking)
+                    != napi::Status::Ok
+                {
+                    stats.dropped_chunks.fetch_add(1, Ordering::Relaxed);
+                }
             }
         }
     }
@@ -529,6 +580,8 @@ where
 
     let (tx, rx): (Sender<bool>, _) = channel();
     let stop_event_for_thread = SendHandle(stop_event);
+    let stats = Arc::new(StreamStats::default());
+    let stats_for_thread = Arc::clone(&stats);
 
     let join = std::thread::spawn(move || {
         // Capture the whole SendHandle (Send), not its inner HANDLE field — Rust 2021's
@@ -545,7 +598,7 @@ where
             ActivationResult::Activated(client) => {
                 // Report the verdict BEFORE entering the (blocking) capture loop.
                 let _ = tx.send(true);
-                unsafe { run_capture_loop(client, on_chunk, stop_handle.0) };
+                unsafe { run_capture_loop(client, on_chunk, stop_handle.0, stats_for_thread) };
             }
             ActivationResult::Unsupported => {
                 let _ = tx.send(false);
@@ -577,6 +630,7 @@ where
         CaptureSession {
             stop_event,
             join: Some(join),
+            stats,
         },
     );
     Some(id)
@@ -643,6 +697,100 @@ pub fn stop_session(id: u32) {
     if let Some(session) = session {
         teardown_session(session);
     }
+}
+
+/// Engine-reported timing for a live session. Numbers are `f64` because napi has no u64 and
+/// these stay exact well past any realistic session length (2^53 frames is ~5900 years at 48k).
+#[napi(object)]
+pub struct CaptureStats {
+    /// Frames from the start of the stream, for the first frame of the last packet.
+    pub device_position: f64,
+    /// Performance counter at which the engine recorded that frame, in 100 ns units.
+    pub qpc_position100ns: f64,
+    /// Packets pulled from the engine.
+    pub packets: f64,
+    /// Chunks the FFI queue refused (QueueFull). Non-zero means chunk-arrival timing is a lie.
+    pub dropped_chunks: f64,
+    /// Packets flagged AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.
+    pub discontinuities: f64,
+    /// Packets whose reported position was flagged invalid.
+    pub timestamp_errors: f64,
+}
+
+/// Read a live session's timing counters. `None` when the id is not running.
+///
+/// Regressing `device_position` against `qpc_position100ns` across polls gives the stream's true
+/// sample rate against the system performance counter — which is what distinguishes a real clock
+/// difference from packets simply arriving unevenly.
+#[napi(js_name = "getCaptureStats")]
+pub fn get_capture_stats(id: u32) -> Option<CaptureStats> {
+    let guard = SESSIONS.lock().unwrap_or_else(|p| p.into_inner());
+    let s = &guard.get(&id)?.stats;
+    Some(CaptureStats {
+        device_position: s.device_position.load(Ordering::Relaxed) as f64,
+        qpc_position100ns: s.qpc_position.load(Ordering::Relaxed) as f64,
+        packets: s.packets.load(Ordering::Relaxed) as f64,
+        dropped_chunks: s.dropped_chunks.load(Ordering::Relaxed) as f64,
+        discontinuities: s.discontinuities.load(Ordering::Relaxed) as f64,
+        timestamp_errors: s.timestamp_errors.load(Ordering::Relaxed) as f64,
+    })
+}
+
+/// Plain endpoint loopback on one render device — no process filter of any kind.
+///
+/// Diagnostic surface, not a product path. Endpoint-bound capture carrying an EXCLUDE blob was
+/// falsified (the process filter is silently ignored), so this deliberately does not pretend to
+/// filter: it captures the chosen device's whole mix. It exists so endpoint-scoped and
+/// process-scoped capture can be compared on the same box.
+///
+/// `device_id` is an `IMMDevice` id, or `None`/`"default"` for the default console render endpoint.
+#[napi(js_name = "startRenderEndpointLoopback")]
+pub fn start_render_endpoint_loopback(
+    device_id: Option<String>,
+    on_chunk: ChunkTsfn,
+) -> napi::Result<u32> {
+    Ok(
+        spawn_session(
+            move || unsafe { activate_render_endpoint_loopback(device_id.as_deref()) },
+            on_chunk,
+        )
+        .unwrap_or(0),
+    )
+}
+
+/// Resolve an `IMMDevice` and activate plain loopback capture on it.
+unsafe fn activate_render_endpoint_loopback(device_id: Option<&str>) -> ActivationResult {
+    let enumerator: IMMDeviceEnumerator =
+        match CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) {
+            Ok(e) => e,
+            Err(_) => return ActivationResult::Unsupported,
+        };
+
+    let device: IMMDevice = match device_id {
+        None | Some("default") => match enumerator.GetDefaultAudioEndpoint(eRender, eConsole) {
+            Ok(d) => d,
+            Err(_) => return ActivationResult::Unsupported,
+        },
+        Some(id) => {
+            let wide: Vec<u16> = id.encode_utf16().chain(std::iter::once(0)).collect();
+            match enumerator.GetDevice(PCWSTR(wide.as_ptr())) {
+                Ok(d) => d,
+                Err(_) => return ActivationResult::Unsupported,
+            }
+        }
+    };
+
+    // No activation params: a render endpoint activated with a null blob is ordinary loopback.
+    let audio_client: IAudioClient = match device.Activate(CLSCTX_ALL, None) {
+        Ok(c) => c,
+        Err(_) => return ActivationResult::Unsupported,
+    };
+
+    if initialize_loopback_client(&audio_client).is_err() {
+        return ActivationResult::Unsupported;
+    }
+
+    ActivationResult::Activated(audio_client)
 }
 
 /// Stop every live capture session. Used for share teardown and the before-quit path.
