@@ -80,13 +80,22 @@ Switching GoofCord back to Chromium's path would trade the VAC echo for the orig
 everyone-hears-themselves echo. **`SYNTHESIS.md`'s goal-(b) "IMPOSSIBLE" verdict survives this
 test** — the one candidate escape hatch (`restrictOwnAudio`) does not function.
 
-## Loose end, if anyone wants it
+## Loose end — CLOSED
 
-`restrictOwnAudio` was passed as a plain (optional) constraint, which Chromium may ignore silently.
-Passing `{ restrictOwnAudio: { exact: true } }` would throw `OverconstrainedError` if genuinely
-unsupported, distinguishing "unsupported" from "gated behind a feature flag". That distinction is
-worth one more run **only** because Electron controls the Chromium command line — if it is
-flag-gated rather than absent, GoofCord could enable it, and that would be goal (b) for free.
+The remaining question was whether `restrictOwnAudio` was absent, ignored, or merely gated. All
+three vehicles were tried in Brave 151: plain constraint at acquisition, `{exact: true}` (rejected
+outright — `getDisplayMedia` refuses *all* exact constraints, so that test was unusable),
+`applyConstraints` on a live track (resolved as a no-op), and
+`--enable-features=RestrictOwnAudio` in a separate profile with the flag confirmed on the browser
+process and 7 children. `getSettings()` returned `false` every time.
+
+Per the Intent to Ship the Finch feature is `RestrictOwnAudio`, has no `about://flags` entry, ships
+enabled for all users, and is **unsupported on Linux and ChromeOS**. Per MDN it filters audio
+originating from the *capturing document*.
+
+**Electron settles it — see `ELECTRON-SCOPE-FINDINGS.md`.** Electron 41.3.0 / Chromium 146 is
+equally inert, with and without the switch, so this is not a Brave patch, and GoofCord cannot reach
+self-exclusion through Chromium's loopback. Goal (b) stays closed.
 
 ## Reproducing
 

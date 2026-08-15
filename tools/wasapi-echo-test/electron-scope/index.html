@@ -1,0 +1,72 @@
+<!doctype html><meta charset="utf-8"><title>electron scope</title>
+<script>
+const { ipcRenderer } = require("electron");
+const log = (m) => ipcRenderer.send("log", m);
+window.onerror = (m) => log("WINDOW ERROR: " + m);
+
+function goertzel(x, hz, sr) {
+  const k = (2 * Math.PI * hz) / sr, c = 2 * Math.cos(k);
+  let s1 = 0, s2 = 0;
+  for (let i = 0; i < x.length; i++) { const s = x[i] + c * s1 - s2; s2 = s1; s1 = s; }
+  const m = Math.sqrt(Math.max(s1 * s1 + s2 * s2 - c * s1 * s2, 0)) / (x.length / 2);
+  return m > 0 ? 20 * Math.log10(m) : -Infinity;
+}
+
+async function pass(name, requestRestrict) {
+  const out = { pass: name, requested: requestRestrict ? "true" : "(unset)", reported: null, tones: [], seconds: 0 };
+  try {
+    ipcRenderer.send("tones");
+    await new Promise((r) => setTimeout(r, 2000)); // let both players actually open
+    const audio = { echoCancellation: false, noiseSuppression: false, autoGainControl: false };
+    if (requestRestrict) audio.restrictOwnAudio = true;
+    const stream = await navigator.mediaDevices.getDisplayMedia({ audio, video: { frameRate: 5 } });
+    const at = stream.getAudioTracks();
+    if (!at.length) throw new Error("no audio track - handler did not supply loopback audio");
+    out.reported = JSON.stringify(at[0].getSettings().restrictOwnAudio);
+
+    const ctx = new AudioContext();
+    const osc = ctx.createOscillator(), g = ctx.createGain();
+    osc.frequency.value = 1600; g.gain.value = 0.05;
+    osc.connect(g).connect(ctx.destination); osc.start();
+
+    const src = ctx.createMediaStreamSource(stream);
+    const proc = ctx.createScriptProcessor(4096, 1, 1);
+    const chunks = []; let frames = 0;
+    proc.onaudioprocess = (e) => { const d = e.inputBuffer.getChannelData(0); chunks.push(new Float32Array(d)); frames += d.length; };
+    const sink = ctx.createGain(); sink.gain.value = 0;
+    src.connect(proc); proc.connect(sink); sink.connect(ctx.destination);
+
+    await new Promise((r) => setTimeout(r, 6000));
+    proc.disconnect(); src.disconnect(); osc.stop();
+    stream.getTracks().forEach((t) => t.stop());
+
+    const all = new Float32Array(frames); let o = 0;
+    for (const c of chunks) { all.set(c, o); o += c.length; }
+    const sig = all.subarray(Math.floor(ctx.sampleRate * 0.5));
+    out.seconds = all.length / ctx.sampleRate;
+    for (const [hz, label] of [[440, "VLC -> Speakers    (control)"], [997, "VLC -> CABLE Input (device scope)"], [1600, "THIS PAGE          (self-exclusion)"], [700, "noise reference"]])
+      out.tones.push({ hz, label, db: goertzel(sig, hz, ctx.sampleRate) });
+    await ctx.close();
+  } catch (e) { out.error = e.name + ": " + e.message; }
+  return out;
+}
+
+(async () => {
+  try {
+    log("getSupportedConstraints().restrictOwnAudio = " + JSON.stringify(navigator.mediaDevices.getSupportedConstraints().restrictOwnAudio));
+    // --reverse swaps pass order. If own-audio drops in whichever pass runs SECOND, the drop is
+    // an ordering artifact, not the constraint doing anything.
+    const reverse = new URLSearchParams(location.search).get("reverse") === "1";
+    const order = reverse
+      ? [["restrictOwnAudio: true", true], ["baseline, no constraint", false]]
+      : [["baseline, no constraint", false], ["restrictOwnAudio: true", true]];
+    log("pass order: " + order.map((o) => o[0]).join("  ->  "));
+    const results = [];
+    for (let i = 0; i < order.length; i++) {
+      log(`pass ${i + 1}/2: ${order[i][0]}`);
+      results.push(await pass(order[i][0], order[i][1]));
+    }
+    ipcRenderer.send("done", results);
+  } catch (e) { log("FATAL: " + e); ipcRenderer.send("done", []); }
+})();
+</script>
