@@ -1,0 +1,119 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Chromium capture-scope probe</title>
+<style>
+ body{font:15px/1.5 system-ui;margin:40px;max-width:44rem}
+ button{font:inherit;padding:.7em 1.4em;cursor:pointer}
+ #log{white-space:pre-wrap;background:#111;color:#0f0;padding:1em;margin-top:1em;font-family:ui-monospace,monospace;font-size:13px}
+ b{color:#c00}
+</style>
+<h1>Chromium capture-scope probe</h1>
+<p>Uses <b>Discord's exact getDisplayMedia constraints</b>. Three tones are in play:</p>
+<ul>
+  <li><b>440 Hz</b> &rarr; Speakers, from VLC (another app, default device) &mdash; the control</li>
+  <li><b>997 Hz</b> &rarr; CABLE Input, from VLC (another app, other device) &mdash; tests device scope</li>
+  <li><b>1600 Hz</b> &rarr; played by <em>this page</em>, i.e. by Chrome itself &mdash; tests self-exclusion</li>
+</ul>
+<p>Click, then pick <b>Entire Screen</b> and tick <b>Share system audio</b>.</p>
+<button id="go">Start</button>
+<div id="log"></div>
+<script>
+const log = (m) => { document.getElementById('log').textContent += m + "\n"; };
+
+function wav(f32, rate) {
+  const d = new DataView(new ArrayBuffer(44 + f32.length * 2));
+  const s = (o, t) => { for (let i = 0; i < t.length; i++) d.setUint8(o + i, t.charCodeAt(i)); };
+  s(0, 'RIFF'); d.setUint32(4, 36 + f32.length * 2, true); s(8, 'WAVE'); s(12, 'fmt ');
+  d.setUint32(16, 16, true); d.setUint16(20, 1, true); d.setUint16(22, 1, true);
+  d.setUint32(24, rate, true); d.setUint32(28, rate * 2, true); d.setUint16(32, 2, true);
+  d.setUint16(34, 16, true); s(36, 'data'); d.setUint32(40, f32.length * 2, true);
+  for (let i = 0; i < f32.length; i++) d.setInt16(44 + i * 2, Math.max(-1, Math.min(1, f32[i])) * 32767, true);
+  return new Blob([d], { type: 'audio/wav' });
+}
+
+document.getElementById('go').onclick = async () => {
+  try {
+    log('asking server to start the out-of-tree tone players...');
+    await fetch('/start', { method: 'POST' });
+
+    // Discord's constraints, verbatim from web.js DesktopInput.get().
+    // ?restrict=1 adds restrictOwnAudio, the Chromium setting that showed up in getSettings()
+    // as false. If it works, this is device-scoped AND self-excluding in one call.
+    const mode = new URLSearchParams(location.search).get('restrict');
+    const restrict = mode === '1' || mode === 'exact' || mode === 'apply';
+
+    // Free, needs no permission: does this build even know the constraint?
+    const sup = navigator.mediaDevices.getSupportedConstraints();
+    log('getSupportedConstraints().restrictOwnAudio = ' + JSON.stringify(sup.restrictOwnAudio));
+    log('  (for comparison, echoCancellation = ' + JSON.stringify(sup.echoCancellation) + ')');
+
+    const audio = { echoCancellation: false, noiseSuppression: false, autoGainControl: false };
+    if (mode === 'exact') audio.restrictOwnAudio = { exact: true };
+    else if (mode === '1') audio.restrictOwnAudio = true;
+    log('requesting with restrictOwnAudio=' + (mode === 'exact' ? '{exact:true}' : mode === '1' ? 'true' : '(unset)'));
+    const stream = await navigator.mediaDevices.getDisplayMedia({ audio, video: { frameRate: 30 } });
+    const at = stream.getAudioTracks();
+    log('audio tracks: ' + at.length);
+    if (!at.length) { log('NO AUDIO TRACK — you did not tick "Share system audio". Reload and retry.'); return; }
+    log('track label: ' + at[0].label);
+    log('settings: ' + JSON.stringify(at[0].getSettings()));
+
+    // The untested vehicle: some constraints only take on an already-live track.
+    if (mode === 'apply') {
+      try {
+        await at[0].applyConstraints({ restrictOwnAudio: true });
+        log('applyConstraints({restrictOwnAudio:true}) RESOLVED');
+      } catch (e) {
+        log('applyConstraints REJECTED: ' + e.name + ': ' + e.message);
+      }
+      log('settings after: ' + JSON.stringify(at[0].getSettings()));
+    }
+
+    const ctx = new AudioContext();
+    log('context rate: ' + ctx.sampleRate);
+
+    // This page renders its own 1600 Hz tone -> Chrome's own audio, the "Discord call" analogue.
+    const osc = ctx.createOscillator(), g = ctx.createGain();
+    osc.frequency.value = 1600; g.gain.value = 0.05;
+    osc.connect(g).connect(ctx.destination); osc.start();
+    log('page is now playing 1600 Hz through Chrome itself');
+
+    const src = ctx.createMediaStreamSource(stream);
+    const proc = ctx.createScriptProcessor(4096, 1, 1);
+    const chunks = []; let frames = 0, peak = 0;
+    proc.onaudioprocess = (e) => {
+      const d = e.inputBuffer.getChannelData(0);
+      chunks.push(new Float32Array(d)); frames += d.length;
+      for (let i = 0; i < d.length; i++) { const a = Math.abs(d[i]); if (a > peak) peak = a; }
+    };
+    // A ScriptProcessor only runs if it reaches the destination. A dangling GainNode is NOT in
+    // the render graph, so onaudioprocess never fires and you silently record nothing.
+    const sink = ctx.createGain(); sink.gain.value = 0;
+    src.connect(proc); proc.connect(sink); sink.connect(ctx.destination);
+
+    log('track muted=' + at[0].muted + ' readyState=' + at[0].readyState);
+    log('recording 8s...');
+    const tick = setInterval(() => log('  ...' + (frames / ctx.sampleRate).toFixed(1) + 's, peak ' + peak.toFixed(4)), 2000);
+    await new Promise((r) => setTimeout(r, 8000));
+    clearInterval(tick);
+    proc.disconnect(); src.disconnect(); osc.stop();
+    stream.getTracks().forEach((t) => t.stop());
+
+    const all = new Float32Array(frames); let o = 0;
+    for (const c of chunks) { all.set(c, o); o += c.length; }
+    log('captured ' + (all.length / ctx.sampleRate).toFixed(2) + 's, peak ' + peak.toFixed(4));
+    if (!frames) log('*** ZERO FRAMES — nothing was captured. ***');
+
+    await fetch('/upload?rate=' + ctx.sampleRate + (mode ? '&restrict=' + mode : ''), { method: 'POST', body: wav(all, ctx.sampleRate) });
+    log('uploaded. Done — go back to the terminal.');
+    await fetch('/stop', { method: 'POST' }).catch(() => {});
+  } catch (err) {
+    log('ERROR: ' + err.name + ': ' + err.message);
+    await fetch('/stop', { method: 'POST' }).catch(() => {});
+    if (err.name === 'OverconstrainedError') {
+      log('>>> OverconstrainedError on ' + err.constraint + ' — the constraint is genuinely');
+      log('>>> UNSUPPORTED in this build, not merely ignored. Door shut.');
+    }
+  }
+};
+</script>

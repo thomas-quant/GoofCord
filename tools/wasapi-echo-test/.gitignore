@@ -1,0 +1,5 @@
+# Recorded audio and captured tones — regenerate by running the harnesses.
+*.wav
+# Prebuilt addon copied here with `cp -L` (bun symlinks node_modules into its store,
+# which Windows node.exe cannot follow).
+addon-under-test.node

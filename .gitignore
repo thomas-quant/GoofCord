@@ -8,3 +8,5 @@ ts-out
 assets/lang/test-TEST.json
 assets/native/
 scratchpad/
+# HAR captures (large browser network dumps)
+*.har
