@@ -41,6 +41,15 @@ const PAIR_WAIT_MS: u32 = 20;
 pub(crate) struct PairShared {
     status: Mutex<Status>,
     endpoint_id: Mutex<String>,
+    timing: Mutex<PairTiming>,
+}
+
+#[derive(Clone, Default)]
+struct PairTiming {
+    endpoint_buffer_frames: u32,
+    reference_buffer_frames: u32,
+    route_guard_max_ms: f64,
+    route_guard_calls: u32,
 }
 
 impl PairShared {
@@ -48,6 +57,7 @@ impl PairShared {
         PairShared {
             status: Mutex::new(Status::default()),
             endpoint_id: Mutex::new(String::new()),
+            timing: Mutex::new(PairTiming::default()),
         }
     }
 
@@ -90,12 +100,17 @@ pub struct SubtractionStatus {
     pub discontinuities: f64,
     pub timeline_gaps: f64,
     pub dropped_chunks: f64,
+    pub endpoint_buffer_frames: u32,
+    pub reference_buffer_frames: u32,
+    pub route_guard_max_ms: f64,
+    pub route_guard_calls: u32,
 }
 
 impl SubtractionStatus {
     fn from_shared(shared: &PairShared) -> Self {
         let s = shared.status.lock().unwrap_or_else(|p| p.into_inner()).clone();
         let endpoint_id = shared.endpoint_id.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        let timing = shared.timing.lock().unwrap_or_else(|p| p.into_inner()).clone();
         SubtractionStatus {
             state: s.phase.as_str().to_string(),
             reason: s.reason,
@@ -120,6 +135,10 @@ impl SubtractionStatus {
             discontinuities: s.discontinuities as f64,
             timeline_gaps: s.timeline_gaps as f64,
             dropped_chunks: s.dropped_chunks as f64,
+            endpoint_buffer_frames: timing.endpoint_buffer_frames,
+            reference_buffer_frames: timing.reference_buffer_frames,
+            route_guard_max_ms: timing.route_guard_max_ms,
+            route_guard_calls: timing.route_guard_calls,
         }
     }
 }
@@ -490,6 +509,11 @@ unsafe fn run_pair(
 ) {
     let PairSetup { enumerator, endpoint, reference, endpoint_id, follow_default } = pair;
     let mut engine = Engine::new(Config::default());
+    {
+        let mut timing = shared.timing.lock().unwrap_or_else(|p| p.into_inner());
+        timing.endpoint_buffer_frames = endpoint.audio_client.GetBufferSize().unwrap_or(0);
+        timing.reference_buffer_frames = reference.audio_client.GetBufferSize().unwrap_or(0);
+    }
 
     let (job_tx, job_rx) = sync_channel::<AlignJob>(1);
     let (result_tx, result_rx) = channel::<AlignResult>();
@@ -567,7 +591,14 @@ unsafe fn run_pair(
 
         if last_guard.elapsed() >= ROUTE_GUARD_INTERVAL {
             last_guard = Instant::now();
-            if let Err(why) = route_guard(&enumerator, &endpoint_id, root_pid, follow_default) {
+            let guard_started = Instant::now();
+            let guard_result = route_guard(&enumerator, &endpoint_id, root_pid, follow_default);
+            {
+                let mut timing = shared.timing.lock().unwrap_or_else(|p| p.into_inner());
+                timing.route_guard_calls += 1;
+                timing.route_guard_max_ms = timing.route_guard_max_ms.max(guard_started.elapsed().as_secs_f64() * 1000.0);
+            }
+            if let Err(why) = guard_result {
                 failure = Some((why, E_FAIL));
                 break;
             }
