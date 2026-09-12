@@ -17,15 +17,21 @@
 // Task 2: the event-driven WASAPI capture loop on a dedicated thread + the napi
 // ThreadsafeFunction NonBlocking push of 480-frame (3840-byte) f32 chunks (drop-oldest
 // backpressure) + an idempotent `stop` that signals the thread and joins with a timeout.
+//
+// Startup contract: a start* call returns a session id only once the stream is RUNNING
+// (activation, Initialize, SetEventHandle, GetService and Start all succeeded), and it never
+// blocks longer than STARTUP_TIMEOUT_MS. A stream that dies later (device invalidated, …) ends
+// its thread and reports one error through the chunk callback instead of spinning forever.
 
 #![cfg(windows)]
 
 use std::collections::HashMap;
 use std::mem::{size_of, ManuallyDrop};
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{channel, Sender};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 use std::thread::JoinHandle;
+use std::time::Duration;
 
 use napi::bindgen_prelude::Buffer;
 use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
@@ -34,12 +40,9 @@ use napi_derive::napi;
 // The `#[implement]` macro emits absolute `::windows_core::` paths, so windows-core is a
 // direct dependency (see Cargo.toml). `windows` also re-exports it as `windows::core`.
 use windows::core::{implement, w, IUnknown, Interface, GUID, HRESULT, PCWSTR, PWSTR};
-use windows::Win32::Foundation::{
-    CloseHandle, GetLastError, ERROR_PROC_NOT_FOUND, E_FAIL, HANDLE, S_OK, WAIT_OBJECT_0,
-    WAIT_TIMEOUT,
-};
+use windows::Win32::Foundation::{CloseHandle, E_FAIL, HANDLE, S_OK, WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows::Win32::Media::Audio::{
-    ActivateAudioInterfaceAsync, IActivateAudioInterfaceAsyncOperation,
+    IActivateAudioInterfaceAsyncOperation,
     IActivateAudioInterfaceCompletionHandler, IActivateAudioInterfaceCompletionHandler_Impl,
     IAudioCaptureClient, IAudioClient, IAudioSessionControl, IAudioSessionControl2,
     IAudioSessionEnumerator, IAudioSessionManager2, IMMDevice, IMMDeviceCollection,
@@ -69,7 +72,7 @@ use windows::Win32::System::Com::{
 use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
 use windows::Win32::System::Threading::{
     CreateEventW, GetCurrentProcessId, OpenProcess, QueryFullProcessImageNameW, SetEvent,
-    WaitForSingleObject, INFINITE, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+    WaitForSingleObject, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows::Win32::System::Variant::{VT_BLOB, VT_LPWSTR};
 
@@ -124,6 +127,14 @@ type ChunkTsfn = ThreadsafeFunction<
 // (composes with the JS wrapper's before-quit Promise.race).
 const STOP_JOIN_TIMEOUT_MS: u64 = 1500;
 
+// Bounded wait for the async activation callback. Activation normally completes in well under
+// 100 ms; a wedged audio service must not hang the JS thread that called start*.
+const ACTIVATION_TIMEOUT_MS: u32 = 3000;
+
+// Bounded wait in `spawn_session` for the capture thread's verdict (activation + Initialize +
+// stream start). Longer than the activation timeout so a slow-but-finishing activation still wins.
+const STARTUP_TIMEOUT_MS: u64 = ACTIVATION_TIMEOUT_MS as u64 + 2000;
+
 /// Build the hardcoded 48k/stereo/f32 WAVEFORMATEXTENSIBLE.
 fn build_wave_format() -> WAVEFORMATEXTENSIBLE {
     WAVEFORMATEXTENSIBLE {
@@ -164,10 +175,31 @@ enum ActivationResult {
 // completion on an IActivateAudioInterfaceCompletionHandler. We implement the handler
 // to set a Win32 event, then WaitForSingleObject on that event before reading the
 // activation result (Pitfall 4 — treating activation as synchronous yields a null client).
+//
+// LIFETIME: the wait is bounded, so the caller may give up and return while activation is still
+// in flight. Everything the activation can still touch — the completion event, the activation
+// params and the PROPVARIANT pointing at them — is therefore owned by the handler, not the
+// caller's stack. The pending operation holds a COM reference to the handler until it completes,
+// so these are freed (Drop below) only once nothing can use them any more.
 
 #[implement(IActivateAudioInterfaceCompletionHandler)]
 struct CompletionHandler {
     done: HANDLE,
+    params: *mut AUDIOCLIENT_ACTIVATION_PARAMS,
+    prop: *mut ManuallyDrop<PROPVARIANT>,
+}
+
+impl Drop for CompletionHandler {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = CloseHandle(self.done);
+            // Freed through ManuallyDrop: PropVariantClear must NEVER run on this PROPVARIANT,
+            // because for VT_BLOB it would CoTaskMemFree `params`, which Rust allocated
+            // (the 0xc0000374 heap-corruption crash).
+            drop(Box::from_raw(self.prop));
+            drop(Box::from_raw(self.params));
+        }
+    }
 }
 
 impl IActivateAudioInterfaceCompletionHandler_Impl for CompletionHandler_Impl {
@@ -187,12 +219,9 @@ impl IActivateAudioInterfaceCompletionHandler_Impl for CompletionHandler_Impl {
 // ─── Dynamic resolution of ActivateAudioInterfaceAsync ──────────────────────────────
 //
 // Resolve the entry point at runtime via LoadLibraryW + GetProcAddress (NOT a static
-// import) so the .node LOADS on every Windows build; only where the symbol is present
-// does activation proceed. A null GetProcAddress => Unsupported (graceful, ECHO-03).
-//
-// NOTE: the `windows` crate also exposes a statically-bound `ActivateAudioInterfaceAsync`
-// (imported above and used for its type signatures); the dynamic probe below is the
-// load-bearing availability gate — if the export is absent we never reach the call.
+// import) and call it through the resolved pointer, so the .node carries no import of the
+// symbol and LOADS on every Windows build; only where the symbol is present does activation
+// proceed. A null GetProcAddress => Unsupported (graceful, ECHO-03).
 
 type ActivateAudioInterfaceAsyncFn = unsafe extern "system" fn(
     deviceinterfacepath: PCWSTR,
@@ -202,28 +231,16 @@ type ActivateAudioInterfaceAsyncFn = unsafe extern "system" fn(
     activationoperation: *mut *mut core::ffi::c_void,
 ) -> HRESULT;
 
-/// Returns true if `ActivateAudioInterfaceAsync` is resolvable on this build.
-fn process_loopback_entrypoint_present() -> bool {
-    unsafe {
-        // mmdevapi.dll exports ActivateAudioInterfaceAsync on builds that support it.
-        let module = match LoadLibraryW(w!("mmdevapi.dll")) {
-            Ok(h) if !h.is_invalid() => h,
-            _ => return false,
-        };
-        let proc = GetProcAddress(module, windows::core::s!("ActivateAudioInterfaceAsync"));
+/// `ActivateAudioInterfaceAsync` from mmdevapi.dll, or `None` where this build lacks it.
+/// Resolved once; the module is deliberately never freed so the pointer stays valid.
+fn resolve_activate_fn() -> Option<ActivateAudioInterfaceAsyncFn> {
+    static RESOLVED: OnceLock<Option<ActivateAudioInterfaceAsyncFn>> = OnceLock::new();
+    *RESOLVED.get_or_init(|| unsafe {
+        let module = LoadLibraryW(w!("mmdevapi.dll")).ok().filter(|h| !h.is_invalid())?;
         // (s! builds a null-terminated PCSTR literal — windows-core macro, no path import.)
-        // If GetProcAddress is null the API is unavailable on this build -> Unsupported.
-        if proc.is_none() {
-            // Distinguish the "old build" case in logs if ever needed.
-            let _ = GetLastError() == ERROR_PROC_NOT_FOUND;
-            return false;
-        }
-        // We keep the statically-bound symbol for the actual call (same export); this
-        // probe is purely the availability gate so the .node still loads pre-2004.
-        let _resolved: ActivateAudioInterfaceAsyncFn =
-            std::mem::transmute::<_, ActivateAudioInterfaceAsyncFn>(proc.unwrap());
-        true
-    }
+        let proc = GetProcAddress(module, windows::core::s!("ActivateAudioInterfaceAsync"))?;
+        Some(std::mem::transmute::<unsafe extern "system" fn() -> isize, ActivateAudioInterfaceAsyncFn>(proc))
+    })
 }
 
 // ─── Activation ─────────────────────────────────────────────────────────────────────
@@ -268,12 +285,18 @@ unsafe fn initialize_loopback_client(audio_client: &IAudioClient) -> windows::co
 /// entry point, non-S_OK activate result, or COM error) — never panics, never throws.
 unsafe fn activate_process_tree(mode: PROCESS_LOOPBACK_MODE, target_pid: u32) -> ActivationResult {
     // 1. Dynamic-load gate: if the entry point is absent, this build doesn't support it.
-    if !process_loopback_entrypoint_present() {
+    let Some(activate) = resolve_activate_fn() else {
         return ActivationResult::Unsupported;
-    }
+    };
+
+    // Completion event: manual-reset, unsignaled. Owned by the handler from step 4 on.
+    let done = match CreateEventW(None, true, false, PCWSTR::null()) {
+        Ok(h) => h,
+        Err(_) => return ActivationResult::Unsupported,
+    };
 
     // 2. Build the activation params for the supplied process tree in the requested mode.
-    let mut activation_params = AUDIOCLIENT_ACTIVATION_PARAMS {
+    let params = Box::into_raw(Box::new(AUDIOCLIENT_ACTIVATION_PARAMS {
         ActivationType: AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
         Anonymous: AUDIOCLIENT_ACTIVATION_PARAMS_0 {
             ProcessLoopbackParams: AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS {
@@ -283,54 +306,53 @@ unsafe fn activate_process_tree(mode: PROCESS_LOOPBACK_MODE, target_pid: u32) ->
                 ProcessLoopbackMode: mode,
             },
         },
-    };
+    }));
 
     // 3. Wrap the params in a PROPVARIANT (VT_BLOB) for the activation call.
     //
     // HEAP-CORRUPTION FIX (0xc0000374): windows-rs's PROPVARIANT is an OWNING type — its Drop
-    // calls PropVariantClear, which for VT_BLOB does CoTaskMemFree(blob.pBlobData). Here pBlobData
-    // borrows the STACK `activation_params` (the PROPVARIANT owns NOTHING), so letting it drop would
-    // CoTaskMemFree a stack pointer → heap corruption → hard crash inside start(). The C++
-    // ApplicationLoopback sample uses a raw PROPVARIANT with no destructor; mirror that exactly by
-    // wrapping in ManuallyDrop so PropVariantClear NEVER runs. No leak: the blob is stack memory
-    // released with the stack frame, and the async activation completes (we wait) before we return.
+    // calls PropVariantClear, which for VT_BLOB does CoTaskMemFree(blob.pBlobData). pBlobData
+    // borrows `params` (the PROPVARIANT owns NOTHING), so letting it drop would CoTaskMemFree a
+    // Rust allocation → heap corruption → hard crash inside start(). The C++ ApplicationLoopback
+    // sample uses a raw PROPVARIANT with no destructor; mirror that with ManuallyDrop so
+    // PropVariantClear NEVER runs.
     let mut prop = ManuallyDrop::new(PROPVARIANT::default());
     {
         let pv = &mut prop.Anonymous.Anonymous;
         pv.vt = VT_BLOB;
         pv.Anonymous.blob = BLOB {
             cbSize: size_of::<AUDIOCLIENT_ACTIVATION_PARAMS>() as u32,
-            pBlobData: &mut activation_params as *mut _ as *mut u8,
+            pBlobData: params as *mut u8,
         };
     }
+    let prop = Box::into_raw(Box::new(prop));
 
-    // 4. Create the completion event + handler (async activation, Pitfall 4).
-    //    CreateEventW(attrs, bManualReset, bInitialState, name): manual-reset, unsignaled.
-    let done = match CreateEventW(None, true, false, PCWSTR::null()) {
-        Ok(h) => h,
-        Err(_) => return ActivationResult::Unsupported,
-    };
+    // 4. The handler takes ownership of the event, params and PROPVARIANT (see LIFETIME above).
     let handler: IActivateAudioInterfaceCompletionHandler =
-        CompletionHandler { done }.into();
+        CompletionHandler { done, params, prop }.into();
 
-    // 5. Fire the async activation against the process-loopback magic device.
-    let operation: IActivateAudioInterfaceAsyncOperation = match ActivateAudioInterfaceAsync(
+    // 5. Fire the async activation against the process-loopback magic device, through the
+    //    resolved pointer.
+    let mut operation_raw: *mut core::ffi::c_void = std::ptr::null_mut();
+    let hr = activate(
         VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
         &IAudioClient::IID,
-        Some(&*prop),
-        &handler,
-    ) {
-        Ok(op) => op,
-        Err(_) => {
-            let _ = CloseHandle(done);
-            return ActivationResult::Unsupported;
-        }
+        prop as *const PROPVARIANT,
+        handler.as_raw(),
+        &mut operation_raw,
+    );
+    // Take ownership of any returned operation so it is released on every path.
+    let operation = (!operation_raw.is_null())
+        .then(|| IActivateAudioInterfaceAsyncOperation::from_raw(operation_raw));
+    let operation = match operation {
+        Some(op) if hr.is_ok() => op,
+        _ => return ActivationResult::Unsupported,
     };
 
-    // 6. Wait for completion, then read the activation result. ANY non-S_OK => Unsupported.
-    let wait = WaitForSingleObject(done, INFINITE);
-    let _ = CloseHandle(done);
-    if wait != WAIT_OBJECT_0 {
+    // 6. Wait (bounded) for completion, then read the activation result. ANY non-S_OK =>
+    //    Unsupported. On timeout we just drop our references: the pending operation keeps the
+    //    handler — and with it the event and params — alive until it completes.
+    if WaitForSingleObject(done, ACTIVATION_TIMEOUT_MS) != WAIT_OBJECT_0 {
         return ActivationResult::Unsupported;
     }
 
@@ -390,6 +412,101 @@ unsafe impl Send for CaptureSession {}
 struct SendHandle(HANDLE);
 unsafe impl Send for SendHandle {}
 
+const FLAG_SILENT: u32 = AUDCLNT_BUFFERFLAGS_SILENT.0 as u32;
+const FLAG_DATA_DISCONTINUITY: u32 = AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0 as u32;
+const FLAG_TIMESTAMP_ERROR: u32 = AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR.0 as u32;
+
+/// Per-stream timing taken straight from `IAudioCaptureClient::GetBuffer`, published as ONE
+/// coherent snapshot (under a lock) so a reader never pairs fields from different packets.
+/// Diagnostics only — nothing here drives capture or subtraction.
+///
+/// `captured_frames` counts every frame the engine handed us (silent packets included), so it is
+/// our own monotonic stream clock and it survives the FFI queue dropping chunks — which is why
+/// inferring a rate from chunk *arrival* cannot work (`dropped_chunks` counts that directly).
+/// The timing pair is (`timing_frame`, `timing_qpc_100ns`): the captured-frame index of the
+/// first frame of the last packet with a valid timestamp, and the performance counter at which
+/// the engine recorded it. `DevicePosition` is kept raw but is NOT trusted: process loopback has
+/// been seen reporting 0 throughout, so `device_position_advances` says whether it ever moved.
+#[derive(Clone, Copy, Default, Debug, PartialEq)]
+struct TimingSnapshot {
+    /// Bumped on every update; an unchanged value across polls means nothing new happened.
+    sequence: u64,
+    running: bool,
+    /// HRESULT that ended the stream, 0 while running or after a requested stop.
+    error_hresult: i32,
+    packets: u64,
+    captured_frames: u64,
+    last_packet_frames: u32,
+    silent_packets: u64,
+    discontinuities: u64,
+    timestamp_errors: u64,
+    delivered_chunks: u64,
+    dropped_chunks: u64,
+    timing_valid: bool,
+    timing_frame: u64,
+    timing_qpc_100ns: u64,
+    timing_device_position: u64,
+    device_position_advances: u64,
+}
+
+impl TimingSnapshot {
+    fn record_packet(&mut self, frames: u32, flags: u32, device_position: u64, qpc_position: u64) {
+        self.sequence += 1;
+        self.packets += 1;
+        let first_frame = self.captured_frames;
+        self.captured_frames += u64::from(frames);
+        self.last_packet_frames = frames;
+        if flags & FLAG_SILENT != 0 {
+            self.silent_packets += 1;
+        }
+        if flags & FLAG_DATA_DISCONTINUITY != 0 {
+            self.discontinuities += 1;
+        }
+        if flags & FLAG_TIMESTAMP_ERROR != 0 {
+            self.timestamp_errors += 1;
+            return; // keep the previous valid pair
+        }
+        if qpc_position == 0 {
+            return;
+        }
+        if self.timing_valid && device_position > self.timing_device_position {
+            self.device_position_advances += 1;
+        }
+        self.timing_valid = true;
+        self.timing_frame = first_frame;
+        self.timing_qpc_100ns = qpc_position;
+        self.timing_device_position = device_position;
+    }
+
+    fn record_chunk(&mut self, delivered: bool) {
+        self.sequence += 1;
+        if delivered {
+            self.delivered_chunks += 1;
+        } else {
+            self.dropped_chunks += 1;
+        }
+    }
+
+    fn finish(&mut self, failure: Option<HRESULT>) {
+        self.sequence += 1;
+        self.running = false;
+        self.error_hresult = failure.map_or(0, |hr| hr.0);
+    }
+}
+
+#[derive(Default)]
+struct StreamStats(Mutex<TimingSnapshot>);
+
+impl StreamStats {
+    fn update(&self, f: impl FnOnce(&mut TimingSnapshot)) {
+        f(&mut self.0.lock().unwrap_or_else(|p| p.into_inner()));
+    }
+
+    fn snapshot(&self) -> TimingSnapshot {
+        *self.0.lock().unwrap_or_else(|p| p.into_inner())
+    }
+}
+
 /// All live capture sessions, keyed by the id handed back to JS.
 ///
 /// This used to be a single `Mutex<Option<CaptureSession>>`. That singleton made multi-app
@@ -397,22 +514,6 @@ unsafe impl Send for SendHandle {}
 /// silently wrong: a second `start*` call hit the `is_some()` early-return and reported
 /// SUCCESS while capturing nothing. Keying by session id is what makes N concurrent
 /// INCLUDE captures — one per selected app — actually run.
-/// Per-stream timing taken straight from `IAudioCaptureClient::GetBuffer`.
-///
-/// `DevicePosition`/`QPCPosition` are the engine's own accounting: frames-since-stream-start
-/// paired with the performance counter at the moment that frame was recorded. They stay
-/// authoritative even when the FFI queue drops chunks, which is exactly why inferring a rate
-/// from chunk *arrival* cannot work here — `dropped_chunks` counts that failure directly.
-#[derive(Default)]
-struct StreamStats {
-    device_position: AtomicU64,
-    qpc_position: AtomicU64,
-    packets: AtomicU64,
-    dropped_chunks: AtomicU64,
-    discontinuities: AtomicU64,
-    timestamp_errors: AtomicU64,
-}
-
 static SESSIONS: LazyLock<Mutex<HashMap<u32, CaptureSession>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
@@ -426,46 +527,61 @@ static NEXT_SESSION_ID: AtomicU32 = AtomicU32::new(1);
 // (SetEventHandle -> GetService(IAudioCaptureClient) -> Start -> wait-on-event ->
 // GetNextPacketSize / GetBuffer / ReleaseBuffer). Re-expressed via windows-rs.
 
-/// The capture loop. Owns `audio_client` (already Initialize()'d to 48k/stereo/f32).
-/// Batches the device's interleaved-stereo f32 frames into 3840-byte chunks and pushes
-/// each via `on_chunk` (NonBlocking — drops on QueueFull). Exits when `stop_event` fires.
-unsafe fn run_capture_loop(
+/// A started stream: the client is running and signalling `audio_event` each period.
+struct RunningStream {
     audio_client: IAudioClient,
+    capture: IAudioCaptureClient,
+    audio_event: HANDLE,
+}
+
+/// SetEventHandle -> GetService -> Start on an Initialize()'d client. `None` if any step fails;
+/// only a `Some` means the session may be reported as started.
+unsafe fn start_stream(audio_client: IAudioClient) -> Option<RunningStream> {
+    // Event the engine signals each period (EVENTCALLBACK mode). Auto-reset, unsignaled.
+    let audio_event = CreateEventW(None, false, false, PCWSTR::null()).ok()?;
+    if audio_client.SetEventHandle(audio_event).is_ok() {
+        if let Ok(capture) = audio_client.GetService::<IAudioCaptureClient>() {
+            if audio_client.Start().is_ok() {
+                return Some(RunningStream {
+                    audio_client,
+                    capture,
+                    audio_event,
+                });
+            }
+        }
+    }
+    // Release the client (which holds the event) before closing the event.
+    drop(audio_client);
+    let _ = CloseHandle(audio_event);
+    None
+}
+
+/// The capture loop over a started stream. Batches the device's interleaved-stereo f32 frames
+/// into 3840-byte chunks and pushes each via `on_chunk` (NonBlocking — drops on QueueFull).
+/// Exits when `stop_event` fires, or on the first capture-client error: a device error is
+/// terminal (it repeats every period), so it ends the session and is reported once through
+/// `on_chunk` as an error rather than looping forever producing nothing.
+unsafe fn run_capture_loop(
+    stream: RunningStream,
     on_chunk: ChunkTsfn,
     stop_event: HANDLE,
     stats: Arc<StreamStats>,
 ) {
-    // Event the engine signals each period (EVENTCALLBACK mode). Auto-reset, unsignaled.
-    let audio_event = match CreateEventW(None, false, false, PCWSTR::null()) {
-        Ok(h) => h,
-        Err(_) => return,
-    };
-    if audio_client.SetEventHandle(audio_event).is_err() {
-        let _ = CloseHandle(audio_event);
-        return;
-    }
-
-    let capture: IAudioCaptureClient = match audio_client.GetService() {
-        Ok(c) => c,
-        Err(_) => {
-            let _ = CloseHandle(audio_event);
-            return;
-        }
-    };
-
-    if audio_client.Start().is_err() {
-        let _ = CloseHandle(audio_event);
-        return;
-    }
+    let RunningStream {
+        audio_client,
+        capture,
+        audio_event,
+    } = stream;
 
     // Accumulator: fill to exactly CHUNK_BYTES (3840), flush, repeat. WASAPI packets do
     // not align to 480 frames, so we re-chunk across packet boundaries.
     let mut acc: Vec<u8> = Vec::with_capacity(CHUNK_BYTES * 2);
+    let mut failure: Option<HRESULT> = None;
 
     // Wait on BOTH the audio event and the stop event; WaitForMultipleObjects would be
     // ideal, but a short timed wait on the audio event + a stop-event poll keeps the
     // dependency surface minimal and the teardown latency bounded.
-    loop {
+    'capture: loop {
         // Stop requested? (non-blocking poll.) Exit on ANYTHING that is not "still unsignaled".
         //
         // This deliberately treats WAIT_FAILED as "stop" too. If `stop()` hits its join timeout
@@ -477,13 +593,20 @@ unsafe fn run_capture_loop(
         }
 
         // Wait up to ~100 ms for the next audio period; a timeout just re-polls stop.
-        let _ = WaitForSingleObject(audio_event, 100);
+        let woke = WaitForSingleObject(audio_event, 100);
+        if woke != WAIT_OBJECT_0 && woke != WAIT_TIMEOUT {
+            failure = Some(E_FAIL);
+            break;
+        }
 
         // Drain every packet currently available.
         loop {
             let packet_frames = match capture.GetNextPacketSize() {
                 Ok(n) => n,
-                Err(_) => break,
+                Err(e) => {
+                    failure = Some(e.code());
+                    break 'capture;
+                }
             };
             if packet_frames == 0 {
                 break;
@@ -496,35 +619,22 @@ unsafe fn run_capture_loop(
             // packet, and discarding them is what forced rate to be guessed from arrival times.
             let mut device_pos: u64 = 0;
             let mut qpc_pos: u64 = 0;
-            if capture
-                .GetBuffer(
-                    &mut data_ptr,
-                    &mut num_frames,
-                    &mut flags,
-                    Some(&mut device_pos),
-                    Some(&mut qpc_pos),
-                )
-                .is_err()
-            {
-                break;
+            if let Err(e) = capture.GetBuffer(
+                &mut data_ptr,
+                &mut num_frames,
+                &mut flags,
+                Some(&mut device_pos),
+                Some(&mut qpc_pos),
+            ) {
+                failure = Some(e.code());
+                break 'capture;
             }
 
-            stats.packets.fetch_add(1, Ordering::Relaxed);
-            if (flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR.0 as u32) != 0 {
-                stats.timestamp_errors.fetch_add(1, Ordering::Relaxed);
-            } else {
-                // Store as a matched pair; a reader may see a torn pair, which costs one sample
-                // of a 500-sample regression and is not worth a lock on the capture thread.
-                stats.device_position.store(device_pos, Ordering::Relaxed);
-                stats.qpc_position.store(qpc_pos, Ordering::Relaxed);
-            }
-            if (flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0 as u32) != 0 {
-                stats.discontinuities.fetch_add(1, Ordering::Relaxed);
-            }
+            stats.update(|s| s.record_packet(num_frames, flags, device_pos, qpc_pos));
 
             let frame_count = num_frames as usize;
             let byte_count = frame_count * BYTES_PER_FRAME;
-            if (flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32) != 0 || data_ptr.is_null() {
+            if (flags & FLAG_SILENT) != 0 || data_ptr.is_null() {
                 // Silent packet: the engine says "treat as silence" — append zeros so the
                 // timeline stays monotonic (the renderer expects continuous f32 frames).
                 acc.resize(acc.len() + byte_count, 0u8);
@@ -533,26 +643,43 @@ unsafe fn run_capture_loop(
                 acc.extend_from_slice(slice);
             }
 
-            let _ = capture.ReleaseBuffer(num_frames);
+            if let Err(e) = capture.ReleaseBuffer(num_frames) {
+                failure = Some(e.code());
+                break 'capture;
+            }
 
             // Flush as many full 3840-byte chunks as we now have.
             while acc.len() >= CHUNK_BYTES {
                 let chunk: Vec<u8> = acc.drain(..CHUNK_BYTES).collect();
                 // NonBlocking push: QueueFull => the chunk is dropped (drop-oldest at the
                 // FFI boundary). Bounded latency wins over perfect fidelity (locked T4).
-                if on_chunk.call(Ok(chunk.into()), ThreadsafeFunctionCallMode::NonBlocking)
-                    != napi::Status::Ok
-                {
-                    stats.dropped_chunks.fetch_add(1, Ordering::Relaxed);
-                }
+                let delivered = on_chunk
+                    .call(Ok(chunk.into()), ThreadsafeFunctionCallMode::NonBlocking)
+                    == napi::Status::Ok;
+                stats.update(|s| s.record_chunk(delivered));
             }
         }
     }
 
-    // Teardown: stop the client and release the per-loop event.
+    // Teardown: stop the client, release the COM references on this thread, and only then close
+    // the event the client was signalling.
     let _ = audio_client.Stop();
+    drop(capture);
+    drop(audio_client);
     let _ = CloseHandle(audio_event);
-    // `capture` and `audio_client` drop here, releasing the COM references on this thread.
+    stats.update(|s| s.finish(failure));
+
+    // Tell JS this session is gone for good (best-effort: NonBlocking may hit QueueFull, and a
+    // Blocking call here could wedge against a caller joining this thread).
+    if let Some(hr) = failure {
+        let _ = on_chunk.call(
+            Err(napi::Error::new(
+                napi::Status::GenericFailure,
+                format!("WASAPI capture stream ended: HRESULT 0x{:08X}", hr.0 as u32),
+            )),
+            ThreadsafeFunctionCallMode::NonBlocking,
+        );
+    }
 }
 
 // ─── Session spawner (shared by every capture mode) ─────────────────────────────────
@@ -594,13 +721,19 @@ where
         let com = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
         let com_ok = com.is_ok();
 
-        match activate() {
-            ActivationResult::Activated(client) => {
-                // Report the verdict BEFORE entering the (blocking) capture loop.
+        // Success is reported only once the stream is actually running — activation, Initialize,
+        // SetEventHandle, GetService and Start all succeeded — then the capture loop takes over.
+        let stream = match activate() {
+            ActivationResult::Activated(client) => unsafe { start_stream(client) },
+            ActivationResult::Unsupported => None,
+        };
+        match stream {
+            Some(stream) => {
+                stats_for_thread.update(|s| s.running = true);
                 let _ = tx.send(true);
-                unsafe { run_capture_loop(client, on_chunk, stop_handle.0, stats_for_thread) };
+                unsafe { run_capture_loop(stream, on_chunk, stop_handle.0, stats_for_thread) };
             }
-            ActivationResult::Unsupported => {
+            None => {
                 let _ = tx.send(false);
             }
         }
@@ -610,29 +743,28 @@ where
         }
     });
 
-    if !rx.recv().unwrap_or(false) {
-        // Activation failed. The thread is already exiting; join it, THEN reclaim the event.
-        // Closing is safe here (unlike the detach path in `stop`) precisely because the join
-        // completed — nothing can be waiting on this handle afterwards.
-        unsafe {
-            let _ = SetEvent(stop_event);
-        }
-        let _ = join.join();
-        unsafe {
-            let _ = CloseHandle(stop_event);
-        }
+    let started = rx
+        .recv_timeout(Duration::from_millis(STARTUP_TIMEOUT_MS))
+        .unwrap_or(false);
+    let session = CaptureSession {
+        stop_event,
+        join: Some(join),
+        stats,
+    };
+
+    if !started {
+        // Failed, or hung past the startup bound. teardown_session signals the thread (a late
+        // start then exits at its first stop poll), joins with a bound, and closes the stop
+        // event only if the thread is provably gone — otherwise it is leaked, never recycled.
+        teardown_session(session);
         return None;
     }
 
     let id = NEXT_SESSION_ID.fetch_add(1, Ordering::Relaxed);
-    SESSIONS.lock().unwrap_or_else(|p| p.into_inner()).insert(
-        id,
-        CaptureSession {
-            stop_event,
-            join: Some(join),
-            stats,
-        },
-    );
+    SESSIONS
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .insert(id, session);
     Some(id)
 }
 
@@ -699,13 +831,15 @@ pub fn stop_session(id: u32) {
     }
 }
 
-/// Engine-reported timing for a live session. Numbers are `f64` because napi has no u64 and
-/// these stay exact well past any realistic session length (2^53 frames is ~5900 years at 48k).
+/// Engine-reported timing for a session — one coherent snapshot (see `TimingSnapshot`).
+/// Counters are `f64` because napi has no u64 and these stay exact well past any realistic
+/// session length (2^53 frames is ~5900 years at 48k).
 #[napi(object)]
 pub struct CaptureStats {
-    /// Frames from the start of the stream, for the first frame of the last packet.
+    /// Raw DevicePosition of the timing packet. May stay 0 on process loopback — check
+    /// `device_position_advances` before using it.
     pub device_position: f64,
-    /// Performance counter at which the engine recorded that frame, in 100 ns units.
+    /// Performance counter at which the engine recorded the timing packet, in 100 ns units.
     pub qpc_position100ns: f64,
     /// Packets pulled from the engine.
     pub packets: f64,
@@ -715,25 +849,58 @@ pub struct CaptureStats {
     pub discontinuities: f64,
     /// Packets whose reported position was flagged invalid.
     pub timestamp_errors: f64,
+    /// Bumped on every update; unchanged across polls ⇒ nothing new was published.
+    pub sequence: f64,
+    /// False once the capture thread has exited.
+    pub running: bool,
+    /// HRESULT that ended the stream (0 if running or stopped on request).
+    pub error_hresult: i32,
+    /// Total frames read from the engine (silent packets included) — monotonic.
+    pub captured_frames: f64,
+    pub last_packet_frames: u32,
+    pub silent_packets: f64,
+    /// Chunks accepted by the FFI queue.
+    pub delivered_chunks: f64,
+    /// Whether `timing_frame`/`qpc_position100ns` hold a valid pair yet.
+    pub timing_valid: bool,
+    /// `captured_frames` index of the timing packet's first frame (pairs with the QPC).
+    pub timing_frame: f64,
+    /// Valid packets whose DevicePosition moved forward. 0 ⇒ DevicePosition is unusable.
+    pub device_position_advances: f64,
 }
 
-/// Read a live session's timing counters. `None` when the id is not running.
+impl From<TimingSnapshot> for CaptureStats {
+    fn from(s: TimingSnapshot) -> Self {
+        CaptureStats {
+            device_position: s.timing_device_position as f64,
+            qpc_position100ns: s.timing_qpc_100ns as f64,
+            packets: s.packets as f64,
+            dropped_chunks: s.dropped_chunks as f64,
+            discontinuities: s.discontinuities as f64,
+            timestamp_errors: s.timestamp_errors as f64,
+            sequence: s.sequence as f64,
+            running: s.running,
+            error_hresult: s.error_hresult,
+            captured_frames: s.captured_frames as f64,
+            last_packet_frames: s.last_packet_frames,
+            silent_packets: s.silent_packets as f64,
+            delivered_chunks: s.delivered_chunks as f64,
+            timing_valid: s.timing_valid,
+            timing_frame: s.timing_frame as f64,
+            device_position_advances: s.device_position_advances as f64,
+        }
+    }
+}
+
+/// Read a session's timing snapshot. `None` when the id is unknown (never started or stopped).
 ///
-/// Regressing `device_position` against `qpc_position100ns` across polls gives the stream's true
-/// sample rate against the system performance counter — which is what distinguishes a real clock
-/// difference from packets simply arriving unevenly.
+/// Regressing `timing_frame` against `qpc_position100ns` across polls gives the stream's rate
+/// against the system performance counter — distinguishing a real clock difference from packets
+/// arriving unevenly. Discard windows where `discontinuities` or `timestamp_errors` moved.
 #[napi(js_name = "getCaptureStats")]
 pub fn get_capture_stats(id: u32) -> Option<CaptureStats> {
     let guard = SESSIONS.lock().unwrap_or_else(|p| p.into_inner());
-    let s = &guard.get(&id)?.stats;
-    Some(CaptureStats {
-        device_position: s.device_position.load(Ordering::Relaxed) as f64,
-        qpc_position100ns: s.qpc_position.load(Ordering::Relaxed) as f64,
-        packets: s.packets.load(Ordering::Relaxed) as f64,
-        dropped_chunks: s.dropped_chunks.load(Ordering::Relaxed) as f64,
-        discontinuities: s.discontinuities.load(Ordering::Relaxed) as f64,
-        timestamp_errors: s.timestamp_errors.load(Ordering::Relaxed) as f64,
-    })
+    Some(guard.get(&id)?.stats.snapshot().into())
 }
 
 /// Plain endpoint loopback on one render device — no process filter of any kind.
@@ -1156,5 +1323,62 @@ unsafe fn endpoint_friendly_name(device: &IMMDevice) -> Option<String> {
         None
     } else {
         Some(trimmed.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn captured_frames_count_every_packet_including_silent_and_untimed() {
+        let mut s = TimingSnapshot::default();
+        s.record_packet(480, 0, 0, 1_000);
+        s.record_packet(441, FLAG_SILENT, 0, 1_100);
+        s.record_packet(480, FLAG_TIMESTAMP_ERROR, 0, 0);
+        assert_eq!(s.captured_frames, 480 + 441 + 480);
+        assert_eq!(s.packets, 3);
+        assert_eq!(s.silent_packets, 1);
+        assert_eq!(s.timestamp_errors, 1);
+        assert_eq!(s.last_packet_frames, 480);
+    }
+
+    #[test]
+    fn timestamp_error_keeps_the_previous_valid_pair() {
+        let mut s = TimingSnapshot::default();
+        s.record_packet(480, 0, 0, 5_000);
+        s.record_packet(480, FLAG_TIMESTAMP_ERROR, 0, 9_999);
+        assert!(s.timing_valid);
+        assert_eq!((s.timing_frame, s.timing_qpc_100ns), (0, 5_000));
+        s.record_packet(480, 0, 0, 5_200);
+        assert_eq!((s.timing_frame, s.timing_qpc_100ns), (960, 5_200));
+    }
+
+    #[test]
+    fn a_device_position_that_never_moves_is_reported_as_unusable() {
+        let mut s = TimingSnapshot::default();
+        for i in 0..10 {
+            s.record_packet(480, 0, 0, 1_000 + i * 100);
+        }
+        assert_eq!(s.device_position_advances, 0);
+        let mut t = TimingSnapshot::default();
+        for i in 0..10u64 {
+            t.record_packet(480, 0, i * 480, 1_000 + i * 100);
+        }
+        assert_eq!(t.device_position_advances, 9);
+    }
+
+    #[test]
+    fn zero_qpc_is_not_a_timing_sample_and_every_update_bumps_sequence() {
+        let mut s = TimingSnapshot::default();
+        s.record_packet(480, 0, 0, 0);
+        assert!(!s.timing_valid);
+        s.record_chunk(true);
+        s.record_chunk(false);
+        s.finish(Some(E_FAIL));
+        assert_eq!(s.sequence, 4);
+        assert_eq!((s.delivered_chunks, s.dropped_chunks), (1, 1));
+        assert!(!s.running);
+        assert_eq!(s.error_hresult, E_FAIL.0);
     }
 }

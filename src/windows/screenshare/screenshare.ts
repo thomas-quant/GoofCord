@@ -3,7 +3,7 @@ import path from "node:path";
 import { hasPipewirePulse, patchcordList, patchcordStartApp, patchcordStartSystem } from "@root/src/modules/native/patchcord.ts";
 // Windows WASAPI screenshare audio (the #46 fix). Additive 3-way audio gate:
 // Linux patchcord → win32 native capture (INCLUDE per app / EXCLUDE self) → "loopback" fallback.
-import { isWasapiAvailable, listWasapiAudioApps, startWasapiCapture } from "@root/src/modules/native/wasapiLoopback.ts";
+import { currentWasapiCaptureId, isWasapiAvailable, listWasapiAudioApps, startWasapiCapture, stopWasapiLoopback } from "@root/src/modules/native/wasapiLoopback.ts";
 import { BrowserWindow, desktopCapturer, ipcMain, session } from "electron";
 import type { ShareableNode } from "patchcord";
 import pc from "picocolors";
@@ -16,6 +16,9 @@ interface ActiveRequest {
 	window: BrowserWindow;
 	frame: any;
 	initialPromise?: Promise<any>;
+	// The Windows native capture that was live when this picker opened. A share this request
+	// creates replaces it; a capture started after the request opened belongs to someone else.
+	wasapiCaptureAtOpen?: number;
 }
 
 const activeRequests = new Map<number, ActiveRequest>();
@@ -66,12 +69,21 @@ export function registerScreenshareHandler() {
 		if (!req) return;
 
 		activeRequests.delete(event.sender.id);
-		const { callback, window, frame } = req;
+		const { callback, window, frame, wasapiCaptureAtOpen } = req;
 
+		// Cancel: no new stream replaces the running one (e.g. an aborted "change source"), so its
+		// audio is left alone.
 		if (!id) {
 			callback({});
 			if (!window.isDestroyed()) window.close();
 			return;
+		}
+
+		// A share WITHOUT audio still replaces the previous share: stop the capture this request
+		// superseded so its track can't be swapped into the new stream. Scoped by id, so a capture
+		// started after this picker opened is untouched.
+		if (audioConfig.mode === "none" && process.platform === "win32" && wasapiCaptureAtOpen !== undefined) {
+			await stopWasapiLoopback(wasapiCaptureAtOpen);
 		}
 
 		if (frame) {
@@ -146,7 +158,7 @@ export function registerScreenshareHandler() {
 
 		const wcId = capturerWindow.webContents.id;
 
-		activeRequests.set(wcId, { callback, window: capturerWindow, frame: request.frame, initialPromise: fetchScreenshareData(false) });
+		activeRequests.set(wcId, { callback, window: capturerWindow, frame: request.frame, initialPromise: fetchScreenshareData(false), wasapiCaptureAtOpen: currentWasapiCaptureId() });
 
 		capturerWindow.once("closed", () => {
 			if (activeRequests.has(wcId)) {

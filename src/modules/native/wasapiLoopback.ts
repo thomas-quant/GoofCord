@@ -24,6 +24,17 @@
 // N INCLUDE sessions run concurrently (one per selected app) and are mixed in the renderer;
 // each chunk is tagged with its source index so the feeder can sum them.
 //
+// SESSION PROTOCOL (one capture at a time, each with a monotonically increasing captureId):
+//   1. native sessions start; only if at least one does is a MessageChannelMain created and
+//      port2 posted as webContents.postMessage("wasapi:pcm-port", { captureId }, [port2]);
+//   2. the renderer builds fresh per-capture state and replies { type: "ready", captureId };
+//      until then PCM is dropped. No ack within READY_TIMEOUT_MS ⇒ the attempt is torn down and
+//      the caller falls back exactly as if native activation had failed;
+//   3. PCM flows as { index, pcm: ArrayBuffer };
+//   4. on stop/replacement/device loss main posts { type: "stopped", captureId } and closes.
+// stopWasapiLoopback(captureId) ignores ids that are not current, so a late stop from an old
+// share cannot kill a newer one.
+//
 // Load model: the addon ships at ts-out/native/wasapi-loopback-<plat>-<arch>.node (placed there by
 // build.ts via a HOST-AGNOSTIC fs copy — NOT Bun's `native-module:` file-loader, which silently
 // fails to emit the .node when the BUILD HOST is Windows). createRequire + a --no-wasapi guard load
@@ -47,6 +58,9 @@ const require = createRequire(import.meta.url);
 
 const LOG_PREFIX = pc.cyan("[Screenshare]");
 
+// How long startWasapiCapture waits for the renderer's ready ack before giving up.
+const READY_TIMEOUT_MS = 2000;
+
 // An app with a live audio session, offered in the picker's per-app list.
 export interface WasapiAudioApp {
 	processId: number;
@@ -58,12 +72,13 @@ export interface WasapiAudioApp {
 // a non-zero session id means capturing, 0 means "unavailable/failed" (never throws).
 interface WasapiAddon {
 	// onChunk is a napi CalleeHandled ThreadsafeFunction → JS is invoked as (err, chunk):
-	// the error slot is the FIRST arg (null on Ok), the audio Buffer is the SECOND.
+	// the error slot is the FIRST arg (null on Ok), the audio Buffer is the SECOND. A non-null
+	// err means that session's stream died (device invalidated etc.) and will send nothing more.
 	startExcludeProcessTree(excludeRootPid: number, onChunk: (err: unknown, chunk: Buffer) => void): number;
 	startIncludeProcessTree(targetPid: number, onChunk: (err: unknown, chunk: Buffer) => void): number;
-	stopSession(id: number): void;
+	stopSession?(id: number): void;
 	stopAll(): void;
-	listAudioApps(): WasapiAudioApp[];
+	listAudioApps?(): WasapiAudioApp[];
 }
 
 // ── Addon load (mirror obtainVenbind: load-once flag + --no-wasapi guard + null-on-failure) ──
@@ -94,6 +109,12 @@ function obtainWasapiLoopback(): WasapiAddon | undefined {
 	return addon;
 }
 
+/** Test seam: inject a fake addon (the real one only loads on Windows from ts-out). */
+export function __setWasapiAddonForTesting(fake: WasapiAddon | undefined) {
+	addon = fake;
+	addonLoadAttempted = true;
+}
+
 // Whether the native Windows capture path is usable at all.
 function wasapiAvailable(): boolean {
 	return process.platform === "win32" && !process.argv.includes("--no-wasapi");
@@ -122,6 +143,22 @@ export function shouldInjectWasapiTransport<IPCOn>() {
 }
 
 /**
+ * PIDs an INCLUDE capture must never target: our main process, every Electron child (the
+ * "Audio Service" utility process is the one that actually plays the call), and our parent —
+ * INCLUDE takes a whole process TREE, so including the process that launched us would include us.
+ */
+function ownProcessIds(): Set<number> {
+	const own = new Set<number>([process.pid]);
+	if (process.ppid > 0) own.add(process.ppid);
+	try {
+		for (const m of app.getAppMetrics()) own.add(m.pid);
+	} catch {
+		// metrics unavailable; main + parent are still excluded
+	}
+	return own;
+}
+
+/**
  * Apps with a live audio session, for the picker's per-app include list. This is the Windows
  * counterpart of `patchcordList()` on Linux — it is what makes the 3-mode picker (none / system /
  * app) meaningful on Windows instead of a bare on-off toggle.
@@ -135,16 +172,66 @@ export function listWasapiAudioApps(): WasapiAudioApp[] {
 	try {
 		// Never offer ourselves as an include target: capturing GoofCord's own tree is the echo
 		// we are here to remove.
-		return wasapi.listAudioApps().filter((a) => a.processId !== process.pid);
+		const own = ownProcessIds();
+		return wasapi.listAudioApps().filter((a) => !own.has(a.processId));
 	} catch (e: unknown) {
 		console.error(LOG_PREFIX, "listAudioApps failed:", e);
 		return [];
 	}
 }
 
-// ── State (cleared by stopWasapiLoopback; safe to call stop twice) ────────────────────────
-let port1: MessagePortMain | undefined;
-let sessionIds: number[] = [];
+/**
+ * Turn the picker's PID list into INCLUDE targets: integers only, deduped, never one of ours,
+ * and only PIDs that still have an audio session right now. A PID remembered from an earlier
+ * picker may since have exited and been reused by an unrelated process — or by one of our own
+ * children — so anything the addon no longer lists is dropped rather than captured.
+ */
+function resolveIncludeTargets(pids: unknown, wasapi: WasapiAddon): number[] {
+	const own = ownProcessIds();
+	let listed: Set<number> | undefined;
+	if (typeof wasapi.listAudioApps === "function") {
+		try {
+			listed = new Set(wasapi.listAudioApps().map((a) => a.processId));
+		} catch {
+			listed = new Set(); // can't verify anything ⇒ capture nothing
+		}
+	}
+
+	const targets: number[] = [];
+	for (const pid of Array.isArray(pids) ? pids : []) {
+		if (!Number.isInteger(pid) || pid <= 0 || pid > 0xffffffff || targets.includes(pid)) continue;
+		if (own.has(pid)) {
+			console.warn(LOG_PREFIX, `Refusing to INCLUDE-capture our own process ${pid}`);
+			continue;
+		}
+		if (listed && !listed.has(pid)) {
+			console.warn(LOG_PREFIX, `Dropping stale include target ${pid} (no audio session any more)`);
+			continue;
+		}
+		targets.push(pid);
+	}
+	return targets;
+}
+
+// ── Capture state ─────────────────────────────────────────────────────────────────────────
+interface Capture {
+	captureId: number;
+	sessionIds: number[];
+	// Source indices whose native stream is still alive.
+	live: Set<number>;
+	port?: MessagePortMain;
+	ready: boolean;
+	closed: boolean;
+	settle?: (why: "ready" | "closed") => void;
+}
+
+let current: Capture | undefined;
+let lastCaptureId = 0;
+
+/** The captureId of the running (or starting) capture, if any. */
+export function currentWasapiCaptureId(): number | undefined {
+	return current?.captureId;
+}
 
 // The addon's onChunk delivers a napi Buffer (480-frame / stereo / f32 = 3840 bytes); forward its
 // bytes down the kept MessagePort. COPY into a fresh ArrayBuffer (the Buffer may share/reuse V8
@@ -155,6 +242,49 @@ function toArrayBuffer(chunk: Buffer): ArrayBuffer {
 	return out;
 }
 
+function stopNativeSessions(ids: number[]) {
+	const wasapi = addon;
+	if (!wasapi) return;
+	for (const id of ids) {
+		try {
+			if (typeof wasapi.stopSession === "function") wasapi.stopSession(id);
+			else wasapi.stopAll(); // pre-per-session addon: one capture at a time anyway
+		} catch {
+			// best-effort; stops are idempotent with a bounded native join
+		}
+	}
+}
+
+/**
+ * Tear one capture down. Native first so no more chunks are produced; then tell the renderer
+ * (unless it is the side that went away) and close the port. Idempotent.
+ */
+function stopCapture(cap: Capture, reason: string, notifyRenderer = true) {
+	if (cap.closed) return;
+	cap.closed = true;
+	if (current === cap) current = undefined;
+
+	stopNativeSessions(cap.sessionIds);
+
+	const port = cap.port;
+	if (port) {
+		if (notifyRenderer) {
+			try {
+				port.postMessage({ type: "stopped", captureId: cap.captureId });
+			} catch {
+				// already closed
+			}
+		}
+		try {
+			port.close();
+		} catch {
+			// already closed
+		}
+	}
+	cap.settle?.("closed");
+	console.log(LOG_PREFIX, `WASAPI capture ${cap.captureId} stopped (${reason})`);
+}
+
 /** What the screenshare picker sends us. `pids` is only meaningful in "app" mode. */
 export interface WasapiAudioConfig {
 	mode: "none" | "system" | "app";
@@ -163,126 +293,180 @@ export interface WasapiAudioConfig {
 
 /**
  * Outcome of a capture attempt:
- *   "started"       — native capture running; caller must NOT also request Chromium "loopback".
+ *   "started"       — native capture running and the renderer holds its port; caller must NOT
+ *                     also request Chromium "loopback".
  *   "unsupported"   — nothing started; caller may fall back to Chromium "loopback".
- *   "failed-closed" — app mode was requested and could not be honoured. The caller must leave
- *                     audio UNSET rather than fall back: falling back to system-wide "loopback"
- *                     when the user explicitly asked for one app is a privacy inversion (it would
- *                     broadcast every app plus the call itself).
+ *   "failed-closed" — app mode was requested and could not be honoured, or this attempt was
+ *                     superseded by a newer one. The caller must leave audio UNSET rather than fall
+ *                     back: falling back to system-wide "loopback" when the user explicitly asked for
+ *                     one app is a privacy inversion (it would broadcast every app plus the call
+ *                     itself), and next to a newer native capture it is the concurrent-loopback crash.
  */
 export type WasapiStartResult = "started" | "unsupported" | "failed-closed";
 
 /**
- * Start native capture for the requested mode behind the proven MessageChannelMain transport.
- *
- * On success the addon's ThreadsafeFunction pushes 480-frame/3840-byte f32 buffers, which we
- * forward down `port1` tagged with their source index so the renderer can mix N app streams.
+ * Start native capture for the requested mode behind the MessageChannelMain transport, replacing
+ * any current capture. Resolves "started" only once the renderer has acknowledged this capture,
+ * so the display-media callback (and Discord's getDisplayMedia) resolves after the page knows it.
  */
-export async function startWasapiCapture(audioConfig: WasapiAudioConfig): Promise<WasapiStartResult> {
-	if (!wasapiAvailable() || audioConfig.mode === "none") return "unsupported";
+export async function startWasapiCapture(audioConfig: WasapiAudioConfig, options: { readyTimeoutMs?: number } = {}): Promise<WasapiStartResult> {
+	const mode = audioConfig?.mode;
+	if (!wasapiAvailable() || (mode !== "system" && mode !== "app")) return "unsupported";
+	const fallback: WasapiStartResult = mode === "app" ? "failed-closed" : "unsupported";
 
 	const wasapi = obtainWasapiLoopback();
-	if (!wasapi) return audioConfig.mode === "app" ? "failed-closed" : "unsupported";
+	if (!wasapi) return fallback;
 
-	// App mode with nothing selected has no meaning — treat it as "user asked for app audio and
-	// we have none", i.e. fail closed rather than silently broadcasting the whole system.
-	const targets = audioConfig.mode === "app" ? audioConfig.pids.filter((p) => Number.isInteger(p) && p > 0 && p !== process.pid) : [];
-	if (audioConfig.mode === "app" && targets.length === 0) return "failed-closed";
+	// One capture at a time: whatever was running belongs to a share this request replaces.
+	const captureId = ++lastCaptureId;
+	if (current) stopCapture(current, "replaced");
+
+	// App mode with nothing (valid) selected has no meaning — treat it as "user asked for app
+	// audio and we have none", i.e. fail closed rather than silently broadcasting the whole system.
+	const targets = mode === "app" ? resolveIncludeTargets(audioConfig.pids, wasapi) : [];
+	if (mode === "app" && targets.length === 0) return "failed-closed";
+
+	const cap: Capture = { captureId, sessionIds: [], live: new Set(), ready: false, closed: false };
+
+	// One chunk sink per source index. Chunks are dropped until the renderer has acked this
+	// capture and after it stops; never let a throw inside the threadsafe callback become an
+	// uncaught main-process exception.
+	const sink = (index: number) => (err: unknown, chunk: Buffer) => {
+		if (cap.closed) return;
+		if (err) {
+			console.warn(LOG_PREFIX, `WASAPI source ${index} of capture ${captureId} ended:`, err);
+			cap.live.delete(index);
+			if (cap.live.size === 0) stopCapture(cap, "native stream ended");
+			return;
+		}
+		if (!cap.ready || !cap.port || !chunk) return;
+		try {
+			// Electron's MAIN-process MessagePortMain.postMessage transfer list accepts ONLY
+			// MessagePortMain instances — NOT ArrayBuffers (unlike the renderer/DOM MessagePort).
+			// Send the buffer as the MESSAGE (structured-cloned, ~384 KB/s per source).
+			cap.port.postMessage({ index, pcm: toArrayBuffer(chunk) });
+		} catch {
+			stopCapture(cap, "port failed", false);
+		}
+	};
 
 	try {
-		// Make start idempotent across re-clicks: tear down any prior session/port first.
-		await stopWasapiLoopback();
-
-		// Hop-1: create the channel, keep port1, transfer port2 to the renderer's preload
-		// (isolated world). MessageChannelMain is the canonical Electron zero-copy audio path —
-		// NEVER per-frame ipcRenderer.send of raw PCM (locked anti-pattern T2).
-		const channel = new MessageChannelMain();
-		port1 = channel.port1;
-		mainWindow.webContents.postMessage("wasapi:pcm-port", null, [channel.port2]);
-		port1.start();
-
-		// One chunk sink per source index. Guard on err/chunk so a stray error frame can't crash
-		// the callback, and never let a throw inside the threadsafe callback become an uncaught
-		// main-process exception.
-		const sink = (index: number) => (err: unknown, chunk: Buffer) => {
-			const port = port1;
-			if (!port || err || !chunk) return;
-			try {
-				// Electron's MAIN-process MessagePortMain.postMessage transfer list accepts ONLY
-				// MessagePortMain instances — NOT ArrayBuffers (unlike the renderer/DOM MessagePort).
-				// Send the buffer as the MESSAGE (structured-cloned, ~384 KB/s per source).
-				port.postMessage({ index, pcm: toArrayBuffer(chunk) });
-			} catch {
-				void stopWasapiLoopback();
-			}
+		const add = (index: number, id: number) => {
+			if (!id) return false;
+			cap.sessionIds.push(id);
+			cap.live.add(index);
+			return true;
 		};
-
-		const started: number[] = [];
-		if (audioConfig.mode === "app") {
+		if (mode === "app") {
 			// INCLUDE one session per selected app — the VAC-immune allowlist path.
 			targets.forEach((pid, i) => {
-				const id = wasapi.startIncludeProcessTree(pid, sink(i));
-				if (id) started.push(id);
-				else console.warn(LOG_PREFIX, `WASAPI INCLUDE capture failed for pid ${pid}`);
+				if (!add(i, wasapi.startIncludeProcessTree(pid, sink(i)))) console.warn(LOG_PREFIX, `WASAPI INCLUDE capture failed for pid ${pid}`);
 			});
 		} else {
 			// EXCLUDE our own tree — "share whole screen" audio. EXCLUDE_TARGET_PROCESS_TREE covers
 			// the separate "Audio Service" utility child, so our own call playback never re-enters.
-			const id = wasapi.startExcludeProcessTree(process.pid, sink(0));
-			if (id) started.push(id);
+			add(0, wasapi.startExcludeProcessTree(process.pid, sink(0)));
 		}
-
-		sessionIds = started;
-
-		if (started.length === 0) {
-			await stopWasapiLoopback();
-			return audioConfig.mode === "app" ? "failed-closed" : "unsupported";
-		}
-
-		console.log(LOG_PREFIX, audioConfig.mode === "app" ? `WASAPI INCLUDE capture streaming (${started.length}/${targets.length} app${targets.length === 1 ? "" : "s"})` : "WASAPI EXCLUDE-tree capture streaming over MessageChannelMain");
-		return "started";
 	} catch (e: unknown) {
 		console.error(LOG_PREFIX, "WASAPI capture failed to start:", e);
-		await stopWasapiLoopback();
-		return audioConfig.mode === "app" ? "failed-closed" : "unsupported";
+		stopCapture(cap, "start threw");
+		return fallback;
 	}
+	if (cap.sessionIds.length === 0) {
+		cap.closed = true;
+		return fallback;
+	}
+
+	// Native capture is actually running — only now hand the renderer a port. MessageChannelMain
+	// is the canonical Electron zero-copy audio path — NEVER per-frame ipcRenderer.send of raw PCM.
+	const webContents = mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : undefined;
+	if (!webContents || webContents.isDestroyed()) {
+		stopCapture(cap, "no main window");
+		return fallback;
+	}
+
+	const channel = new MessageChannelMain();
+	cap.port = channel.port1;
+	current = cap;
+
+	const timeoutMs = options.readyTimeoutMs ?? READY_TIMEOUT_MS;
+	const readiness = new Promise<"ready" | "closed" | "timeout">((resolve) => {
+		const timer = setTimeout(() => resolve("timeout"), timeoutMs);
+		cap.settle = (why) => {
+			clearTimeout(timer);
+			cap.settle = undefined;
+			resolve(why);
+		};
+	});
+
+	cap.port.on("message", (e) => {
+		const data = e.data;
+		if (cap.closed || cap.ready || data?.type !== "ready" || data.captureId !== captureId) return;
+		cap.ready = true;
+		cap.settle?.("ready");
+	});
+	// The renderer end disappearing (page reload/crash) ends the capture; nobody is listening.
+	cap.port.on("close", () => stopCapture(cap, "renderer port closed", false));
+	cap.port.start();
+
+	try {
+		webContents.postMessage("wasapi:pcm-port", { captureId }, [channel.port2]);
+	} catch (e: unknown) {
+		console.error(LOG_PREFIX, "Failed to hand the WASAPI port to the renderer:", e);
+		stopCapture(cap, "port transfer failed", false);
+		return fallback;
+	}
+
+	const outcome = await readiness;
+	if (outcome === "ready" && current === cap && !cap.closed) {
+		console.log(LOG_PREFIX, mode === "app" ? `WASAPI INCLUDE capture ${captureId} streaming (${cap.sessionIds.length}/${targets.length} app${targets.length === 1 ? "" : "s"})` : `WASAPI EXCLUDE-tree capture ${captureId} streaming`);
+		return "started";
+	}
+	if (outcome === "timeout") {
+		console.warn(LOG_PREFIX, `Renderer never acknowledged WASAPI capture ${captureId}`);
+		stopCapture(cap, "ready timeout");
+	}
+	// Superseded by a newer attempt: that one owns audio now, so no fallback of any kind.
+	return lastCaptureId !== captureId ? "failed-closed" : fallback;
 }
 
 /**
- * Idempotent teardown: stop every native session, close the kept port, null state.
- * Safe to call twice (mirrors stopPatchcord; composes with the single-owner finishRequest).
+ * Stop native capture. With a captureId, only that capture is stopped and a stale id (an
+ * earlier share, a late renderer teardown) is ignored. Without one it is a full shutdown.
+ * Idempotent.
  */
-export async function stopWasapiLoopback<IPCHandle>() {
-	// Stop the native capture FIRST so no more chunks arrive after we drop the port. stopAll() is
-	// idempotent with a bounded internal join; obtain (cached) without re-loading.
-	const wasapi = addon;
-	if (wasapi) {
+export async function stopWasapiLoopback<IPCHandle>(captureId?: number) {
+	if (captureId === undefined || captureId === null) {
+		if (current) stopCapture(current, "stop requested");
 		try {
-			wasapi.stopAll();
+			addon?.stopAll();
 		} catch {
 			// best-effort; stopAll() is idempotent and a throw here is non-fatal
 		}
+		return;
 	}
-	sessionIds = [];
-
-	const port = port1;
-	port1 = undefined;
-	if (port) {
-		try {
-			port.close();
-		} catch {
-			// already closed
-		}
-		console.log(LOG_PREFIX, "WASAPI capture stopped");
-	}
+	if (typeof captureId !== "number" || !Number.isSafeInteger(captureId)) return;
+	if (current && current.captureId === captureId) stopCapture(current, "stop requested");
 }
 
 // A hung native stop must not wedge quit (mirror patchcord.ts:168-184 Promise.race([dispose, timeout])).
+// Only a running capture defers quit, so the app.quit() below re-enters with nothing to do
+// instead of looping forever on "the addon is loaded".
+let quitStopInFlight = false;
 app.on("before-quit", (event) => {
-	if (!port1 && !addon) return;
+	if (quitStopInFlight) {
+		event.preventDefault();
+		return;
+	}
+	if (!current) return;
 
 	event.preventDefault();
+	quitStopInFlight = true;
 	Promise.race([stopWasapiLoopback(), new Promise((resolve) => setTimeout(resolve, 1500))])
 		.catch((err) => console.error(LOG_PREFIX, "WASAPI stop failed:", err))
-		.finally(() => app.quit());
+		.finally(() => {
+			quitStopInFlight = false;
+			current = undefined;
+			app.quit();
+		});
 });
