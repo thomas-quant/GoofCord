@@ -358,6 +358,13 @@ export function installWasapiTransport(): void {
 	const md = win.navigator.mediaDevices;
 	const originalGDM = md.getDisplayMedia.bind(md);
 	md.getDisplayMedia = async function (opts?: DisplayMediaStreamOptions): Promise<MediaStream> {
+		// The port handshake has no request token. Never let two pending requests
+		// compete for the same capture, or a cancelled picker can steal its audio.
+		if (pendingRequests !== 0) {
+			const error = new Error("A screen-share request is already pending");
+			error.name = "InvalidStateError";
+			throw error;
+		}
 		// Only a session whose port arrived AFTER this request began can belong to it: main acks the
 		// port before resolving the request, so ours is here by the time the stream is. A request
 		// with no session (audio "none", unsupported, failed-closed) keeps its stream untouched.

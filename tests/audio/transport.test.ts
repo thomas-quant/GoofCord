@@ -336,7 +336,7 @@ describe("main-world transport", () => {
 		expect(env.intervals.size).toBe(0);
 	});
 
-	test("rejected request stops its capture, but not while another request is pending", async () => {
+	test("rejected requests clean up and overlapping requests cannot steal a capture", async () => {
 		const env = makeEnv();
 
 		const rejected = env.gdm();
@@ -346,12 +346,15 @@ describe("main-world transport", () => {
 		expect(port1.closed).toBe(true);
 		expect(env.stops).toEqual([1]);
 
-		// concurrent: A pending, B pending; B rejects, A's session must survive and attach
+		// Reject B before opening another picker: A must retain its capture.
 		const a = env.gdm();
 		const b = env.gdm();
+		await expect(b).rejects.toMatchObject({
+			name: "InvalidStateError",
+			message: "A screen-share request is already pending",
+		});
+		expect(env.gdmCalls).toHaveLength(2);
 		const port2 = env.port(2);
-		env.gdmCalls[2].reject(new DOMException("cancelled", "AbortError"));
-		await expect(b).rejects.toThrow("cancelled");
 		env.fireTimeouts(); // claim timeout must not reap while A is still pending
 		expect(port2.closed).toBe(false);
 		const { stream } = videoStream();

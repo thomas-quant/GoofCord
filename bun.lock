@@ -25,7 +25,7 @@
       "optionalDependencies": {
         "patchcord": "github:Milkshiift/patchcord",
         "venbind": "0.1.7",
-        "wasapi-loopback": "github:thomas-quant/wasapi-loopback",
+        "wasapi-loopback": "github:thomas-quant/wasapi-loopback#8a80e668ed916025da7c19b3a78d925039056e35",
       },
       "peerDependencies": {
         "@typescript/native-preview": "^7.0.0-dev.20260425.1",
@@ -748,7 +748,7 @@
 
     "verror": ["verror@1.10.1", "", { "dependencies": { "assert-plus": "^1.0.0", "core-util-is": "1.0.2", "extsprintf": "^1.2.0" } }, "sha512-veufcmxri4e3XSrT0xwfUR7kguIkaxBeosDg00yDWhk49wdwkSUrvvsm7nc75e1PUyvIeZj6nS8VQRYz2/S4Xg=="],
 
-    "wasapi-loopback": ["wasapi-loopback@github:thomas-quant/wasapi-loopback#1ecb8ec", {}, "thomas-quant-wasapi-loopback-1ecb8ec", "sha512-HHsevusMl4Cyv88LszkSHZm/98Sg8m7kfEQoAfBIiWz5fvUgBs5BFNn57DRoZzH4wWO3P+Y7VqhGd9V8YOjEGg=="],
+    "wasapi-loopback": ["wasapi-loopback@github:thomas-quant/wasapi-loopback#8a80e66", {}, "thomas-quant-wasapi-loopback-8a80e66", "sha512-+OJoH7hmUZj7mDnF6xD+zvm5O/j6KBaFEMFllLb9/tFbY4DXriAzPZYyDVX5klDhQ46RvypwBrKqQw1tBjIo5Q=="],
 
     "wcwidth": ["wcwidth@1.0.1", "", { "dependencies": { "defaults": "^1.0.3" } }, "sha512-XHPEwS0q6TaxcvG85+8EYkbiCux2XtWG2mkc47Ng2A77BQu9+DqIOJldST4HgPkuea7dvKSj5VgX3P1d4rW8Tg=="],
 

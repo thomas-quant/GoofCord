@@ -43,5 +43,5 @@ export function registerAllHandlers() {
   ipcMain.handle("venbind:isVenbindLoaded", async (event) => { return await ___modules_native_venbind_isVenbindLoaded(); });
   ipcMain.handle("venbind:setKeybinds", async (event, keybinds) => { return await ___modules_native_venbind_setKeybinds(keybinds); });
   ipcMain.on("wasapiLoopback:shouldInjectWasapiTransport", (event) => { event.returnValue = ___modules_native_wasapiLoopback_shouldInjectWasapiTransport(); });
-  ipcMain.handle("wasapiLoopback:stopWasapiLoopback", async (event) => { return await ___modules_native_wasapiLoopback_stopWasapiLoopback(); });
+  ipcMain.handle("wasapiLoopback:stopWasapiLoopback", async (event, captureId) => { return await ___modules_native_wasapiLoopback_stopWasapiLoopback(captureId); });
 }
