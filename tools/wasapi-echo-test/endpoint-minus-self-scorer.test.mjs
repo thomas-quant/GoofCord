@@ -93,6 +93,26 @@ test("scorePreservation passes on a delayed unity-ish copy of the other signal a
 	assert.equal(quiet.pass, false);
 });
 
+for (const [lag, capturedFrames] of [
+	[17, 1100],
+	[-17, 1100],
+	[17, 900],
+	[-17, 900],
+]) {
+	test(`scorePreservation uses the correlation overlap with lag ${lag} and ${capturedFrames} captured frames`, () => {
+		const { left: reference } = generateBroadbandStereo(71, 72, 1000, 0.3);
+		const captured = new Float32Array(capturedFrames);
+		for (let i = 0; i < captured.length; i++) captured[i] = (reference[i - lag] ?? 0) * 0.75;
+
+		const result = scorePreservation({ captured, otherReference: reference, maxLagFrames: 32 });
+		assert.equal(result.lagFrames, lag);
+		assert.ok(result.normCorr > 0.999);
+		assert.ok(Number.isFinite(result.gain), `gain must be finite: ${JSON.stringify(result)}`);
+		assert.ok(Math.abs(result.gain - 0.75) < 1e-6, `expected gain 0.75, got ${result.gain}`);
+		assert.equal(result.pass, true);
+	});
+}
+
 test("scoreCrossWiring passes on clean absence and fails on an L/R swap", () => {
 	const { left: refL, right: refR } = generateBroadbandStereo(21, 22, 48000, 0.25);
 	const { left: capL, right: capR } = generateBroadbandStereo(23, 24, 48000, 0.25);

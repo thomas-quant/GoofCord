@@ -23,7 +23,8 @@ root container) the harness detects that and adds `--no-sandbox` for you.
 
 Key options (all have defaults — see the top of `endpoint-minus-self-harness.mjs`):
 `--calibration-seconds`, `--holdout-seconds`, `--other-margin-seconds`, `--lead-in-seconds`,
-`--align-timeout-seconds`, `--trim-ms`, `--max-lag-frames`, `--peak-amplitude`, `--seed-*`.
+`--align-timeout-seconds`, `--trim-ms`, `--max-lag-frames`, `--peak-amplitude`, `--seed-*`,
+`--diagnostic-raw`.
 
 Everything a run produces — `schedule.json`, `self-manifest.json`, `other-manifest.json`,
 `captured.f32`, `captured-index.ndjson`, `status-log.ndjson`, `other-reference-{left,right}.f32`,
@@ -67,6 +68,113 @@ The harness (`endpoint-minus-self-harness.mjs`) exits:
   was **skipped** for an environment reason (not Windows, addon missing/incompatible, etc) — this
   is reported as `SKIPPED`, never as a pass;
 - `1` — one or more gates failed, or a harness-level error occurred.
+
+## Concurrent raw diagnostics
+
+Add `--diagnostic-raw` and use a fresh `--out` directory. The self process records
+`raw-endpoint.f32`, `raw-self.f32`, per-stream `*-index.ndjson`, `raw-stats.ndjson`,
+`raw-manifest.json`, and generated self reference files alongside unchanged
+`captured.f32`. No native rebuild is required. Capture errors/refusals are preserved;
+only sessions created by this diagnostic are stopped.
+
+**Windows constraint:** two INCLUDE clients targeting the same root PID were refused
+on this machine. Subtraction still targets the main tree; the independent self tap
+targets the identified Chromium Audio Service child. Its PID and Electron process
+metrics are saved. This narrower tap is a positive control for these Web Audio
+buffers, not proof of coverage of every possible GoofCord process. Failure to find
+the Audio Service is an error, not permission to capture some other process.
+
+Analyze a completed default-duration run (Python with NumPy/SciPy):
+
+```sh
+OPENBLAS_NUM_THREADS=1 python3 tools/wasapi-echo-test/endpoint-minus-self-raw-analysis.py dist/audio-validation/subtraction-raw-3
+```
+
+This writes `raw-analysis.json`, never a replacement capture or a rewritten
+`report.json`. The analysis locates self in the independent raw taps and other in
+the endpoint/output, then checks the arithmetic identity against the **actual native
+output**. It uses fixed exploratory windows 3–7 s and 8.25–11.5 s after self onset;
+these are not full-run acceptance gates. The analyzer requires positive stereo
+waveform matches and enough recording coverage, and reports raw counters and all
+observed state transitions.
+
+## Concurrent hardware finding — subtraction arithmetic verified in sampled windows
+
+Two completed captures on the default Realtek speakers endpoint:
+`dist/audio-validation/subtraction-raw-2/` and `subtraction-raw-3/`.
+
+- In **each run**, native output equals independently captured endpoint minus self
+  **bit-for-bit at float32 precision** over 192,000 self-only-scheduled frames and
+  156,000 mixed hold-out frames: **7.25 seconds**, both channels, zero mismatches.
+  No gain, filter, or fractional correction was fitted/applied to native output.
+  Run 2 established these exploratory windows; run 3 repeated them unchanged.
+- Raw self matches the generated calibration and disjoint hold-out buffers with
+  maximum absolute sample error **6.985e-10** (not byte-identical). Self content is
+  positively identified in raw endpoint too. This is stronger evidence than low
+  output correlation at an assumed timestamp.
+- Other-audio output gains were **0.9993 / 1.0006** (run 2 L/R) and
+  **1.0038 / 1.0076** (run 3), with correlations **0.8271 / 0.8306** and
+  **0.8165 / 0.7949** respectively. These are read-only diagnostics, not corrected
+  audio or confidence intervals.
+- The supposedly self-only endpoint was **not quiet**: before self playback its
+  RMS was **0.2724 / 0.2728** (run 2) and **0.0260 / 0.0198** (run 3), while the
+  independent self tap was around **2.46e-10 RMS**. Post-lock native residual equals
+  the raw endpoint content remaining after self subtraction. Thus total residual
+  energy cannot be attributed to failed self cancellation in these runs.
+- Both independent taps recorded zero dropped chunks, timestamp errors and callback
+  errors. The paired session had startup discontinuities/timeline resets. Run 2
+  also returned to aligning and re-locked after its first lock; run 3 remained
+  running after its initial lock. These transitions are not hidden by the identity
+  windows. Initial per-generation offset stability is not a full-session check.
+
+**What this changes:** wrong subtraction arithmetic is ruled out in the compared
+windows. The original cancellation-energy FAIL is not a valid isolated-self verdict
+when unrelated endpoint content is present. This does not retroactively prove the
+older `subtraction-run-2` recording (no raw taps) was correct, and its unexplained
+46 Hz component has not been individually identified.
+
+**What remains:** startup/re-lock behavior, arbitrary real call audio, device changes,
+endpoint DSP, and sustained operation still need validation. An exact arithmetic
+identity alone does not rule out self-dependent endpoint processing. The existing
+ZIP remains experimental; no product/native code was changed in this diagnostic.
+Original reports remain FAIL, rather than being relabeled as whole-feature PASS.
+
+## Earlier hardware validation status — timing investigation
+
+`dist/audio-validation/subtraction-run-2/report.json` remains an overall **FAIL**. The
+experimental ZIP in `dist/audio-validation/subtraction-app/` is not certified by the
+synthetic unit tests below or by this investigation.
+
+Offline investigation of the unchanged run-2 recording found:
+
+- The independent other-audio waveform begins at capture frame **563,776** in both
+  channels. Wall-clock windowing implies frame **559,728**, a difference of **4,048
+  frames / 84.33 ms** at 48 kHz. The report's ±480-frame search cannot reach that
+  reference alignment. The 250 ms trim guards segment boundaries; it does not align
+  the reference samples inside those boundaries.
+- With the reference indexed to that observed onset, the original 168,000-frame
+  hold-out capture window gives diagnostic other-audio gains **0.9993 L / 1.0023 R**
+  and correlations **0.9541 L / 0.9656 R**, within the existing preservation bounds.
+  Only the reference indexing changes; the captured output is not corrected,
+  rescaled, or re-subtracted. This explains the original preservation failure, not
+  the cancellation failure, and is not a new full-run PASS.
+- The calibration-window residual remains **−11.05 dB L / −12.98 dB R** relative to
+  the generated self reference, versus the existing **−45 dB** gate. Its spectrum
+  has prominent energy around 46 Hz. Without a raw endpoint/self baseline this
+  cannot be attributed to self leakage versus unrelated endpoint content.
+- The original low-correlation leakage/cross-wiring passes do **not** certify self
+  removal: self playback needs an independently validated capture timeline and
+  positive evidence it reached the selected endpoint. The observed other-audio
+  offset must not simply be assumed to be the self-audio offset.
+
+A separate scorer arithmetic bug has been fixed: preservation gain now uses the
+same valid sample overlap as its correlation search for either lag sign and unequal
+buffer lengths. Four regression cases cover it; two failed before the fix. This
+repairs the measuring code, not the native subtraction implementation.
+
+The concurrent raw tests above now provide that evidence for two **new** recordings,
+not retroactively for this older recording. No thresholds have been relaxed; the
+original report and capture remain unchanged.
 
 ## Known limitations (read before trusting a PASS or a FAIL)
 

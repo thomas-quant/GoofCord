@@ -27,6 +27,9 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { createRequire } = require("node:module");
 
+const { startRawDiagnostics } = require("./endpoint-minus-self-raw.cjs");
+let rawDiagnostics;
+
 const REQUIRED_EXPORTS = ["startEndpointMinusSelf", "getSubtractionStatus", "stopSession"];
 
 function argValue(flag) {
@@ -74,6 +77,7 @@ function writeManifest() {
 }
 
 function bail(code, reason) {
+	rawDiagnostics?.close();
 	manifest.fatalError = reason;
 	if (code === 3) {
 		manifest.skipped = true;
@@ -172,6 +176,7 @@ async function run(addon) {
 	let sawFailure = null;
 	const statusSamples = [];
 	const statusTimer = setInterval(() => {
+		rawDiagnostics?.poll();
 		let status;
 		try {
 			status = addon.getSubtractionStatus(sessionId);
@@ -188,13 +193,24 @@ async function run(addon) {
 	}, pollIntervalMs);
 
 	// ── Own-audio playback: hidden window, real Web Audio, deterministic + bounded ───────────
-	const { SIGNAL_SOURCE } = await import("./endpoint-minus-self-signal.mjs");
+	const { SIGNAL_SOURCE, generateBroadbandStereo } = await import("./endpoint-minus-self-signal.mjs");
 	const win = new BrowserWindow({ show: false, webPreferences: { contextIsolation: false, nodeIntegration: true, backgroundThrottling: false } });
 	await win.loadURL("data:text/html,<html><body></body></html>");
 	await win.webContents.executeJavaScript(SIGNAL_SOURCE);
 
 	const calibFrames = Math.round(calibration.seconds * sampleRate);
 	const holdoutFrames = Math.round(holdout.seconds * sampleRate);
+	if (schedule.diagnosticRaw) {
+		for (const [name, segment] of [
+			["calibration", calibration],
+			["holdout", holdout],
+		]) {
+			const reference = generateBroadbandStereo(segment.seedL, segment.seedR, Math.round(segment.seconds * sampleRate), segment.peakAmplitude);
+			for (const channel of ["left", "right"]) {
+				fs.writeFileSync(path.join(outDir, `${name}-reference-${channel}.f32`), Buffer.from(reference[channel].buffer), { flag: "wx" });
+			}
+		}
+	}
 	await win.webContents.executeJavaScript(`
 		const ctx = new AudioContext({ sampleRate: ${sampleRate} });
 		const calib = generateBroadbandStereo(${calibration.seedL}, ${calibration.seedR}, ${calibFrames}, ${calibration.peakAmplitude});
@@ -219,6 +235,24 @@ async function run(addon) {
 		};
 		void 0;
 	`);
+
+	if (schedule.diagnosticRaw) {
+		// Windows refuses two INCLUDE clients for the identical root PID. Observe the
+		// actual Chromium Audio Service child instead; the paired engine still owns
+		// the main-tree INCLUDE. Record this narrower scope explicitly, never fall back.
+		const deadline = Date.now() + 5000;
+		let audioProcess;
+		do {
+			const metrics = app.getAppMetrics();
+			audioProcess = metrics.find((m) => m.serviceName === "audio.mojom.AudioService" || m.name === "Audio Service");
+			manifest.processMetrics = metrics;
+			if (!audioProcess) await new Promise((resolve) => setTimeout(resolve, 50));
+		} while (!audioProcess && Date.now() < deadline);
+		if (!audioProcess) throw new Error("raw diagnostic cannot identify the Chromium Audio Service child");
+		rawDiagnostics = startRawDiagnostics({ addon, rootPid: process.pid, selfPid: audioProcess.pid, deviceId, outDir });
+		manifest.rawDiagnostics = "raw-manifest.json";
+		writeManifest();
+	}
 
 	const barrierDelayMs = Math.max(0, schedule.selfBarrierEpochMs + leadInSeconds * 1000 - Date.now());
 	await new Promise((resolve) => setTimeout(resolve, barrierDelayMs));
@@ -275,6 +309,7 @@ async function run(addon) {
 	manifest.statusSampleCount = statusSamples.length;
 
 	clearInterval(statusTimer);
+	rawDiagnostics?.close();
 	flushIndex();
 	capturedStream.end();
 	try {

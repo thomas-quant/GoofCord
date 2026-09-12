@@ -84,10 +84,15 @@ const config = {
 	},
 };
 
+if (process.argv.includes("--diagnostic-raw") && ["schedule.json", "captured.f32", "raw-manifest.json", "raw-endpoint.f32", "raw-self.f32"].some((name) => existsSync(join(outDir, name)))) {
+	console.error(`diagnostic output directory already contains capture evidence: ${outDir}; choose a fresh --out`);
+	process.exit(2);
+}
 mkdirSync(outDir, { recursive: true });
 
 const startAtEpochMs = Date.now() + config.spawnLeadMs;
 const schedule = {
+	diagnosticRaw: process.argv.includes("--diagnostic-raw"),
 	sampleRate: config.sampleRate,
 	selfBarrierEpochMs: startAtEpochMs,
 	leadInSeconds: config.leadInSeconds,

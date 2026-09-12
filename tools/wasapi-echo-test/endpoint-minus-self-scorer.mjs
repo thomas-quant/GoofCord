@@ -117,7 +117,8 @@ export function scoreMissingOutput({ captured, minRmsDbfs = -70 }) {
 export function scorePreservation({ captured, otherReference, maxLagFrames = 64, minNormCorr = 0.5, minGain = 0.4, maxGain = 2.5 }) {
 	const { lagFrames, normCorr } = crossCorrelateLag(otherReference, captured, maxLagFrames);
 	const start = Math.max(0, lagFrames);
-	const end = Math.min(otherReference.length, captured.length + lagFrames);
+	// Same captured-index overlap as crossCorrelateLag: reference[i - lag] vs captured[i].
+	const end = Math.min(otherReference.length + lagFrames, captured.length);
 	let dot = 0;
 	let refEnergy = 0;
 	for (let i = start; i < end; i++) {
