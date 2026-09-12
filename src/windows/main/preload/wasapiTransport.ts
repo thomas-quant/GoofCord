@@ -1,102 +1,192 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Windows WASAPI EXCLUDE-tree echo fix (the #46 fix) — renderer-side PCM feeder + swap seam.
 //
-// The main process (wasapiLoopback.ts) captures the EXCLUDE-tree PCM and forwards it over a
-// MessagePort. This file is the renderer half: a MessagePort-fed MediaStreamTrackGenerator feeder
-// that reconstructs a live audio track and swaps it into Discord's getDisplayMedia stream at the
-// proven seam, so the viewer hears shared desktop audio but NOT the Discord call echoed back.
+// The main process (wasapiLoopback.ts) captures the PCM and forwards it over a MessagePort. This file
+// is the renderer half: a MessagePort-fed MediaStreamTrackGenerator feeder that reconstructs a live
+// audio track and swaps it into Discord's getDisplayMedia stream, so the viewer hears shared desktop
+// audio but NOT the Discord call echoed back.
 //
 // CI-PACKAGING NOTE: this file lives in the main preload bundle (ts-out/**, which electron-builder
 // packages). preload.mts injects installWasapiTransport into the Discord page MAIN WORLD via
 // webFrame.executeJavaScript (serialized to a string via `.toString()`) ONLY when the wasapi gate is
-// on — NOT placed in the runtime-downloaded postVencord.js. The injected function closes over the
-// page's own globals (MediaStreamTrackGenerator, AudioData, window) which only exist in the main world.
+// on — NOT placed in the runtime-downloaded postVencord.js. Because it is serialized, the function
+// must be fully self-contained: no references to module scope, and every page global goes through
+// `window` (which is also what lets the tests run the exact serialized string against fakes).
 //
-// HOP-2 (preload isolated world → page main world): preload.mts receives the MessagePort (hop-1) and
-// forwards it via window.postMessage(..., [port]) AFTER this main-world script posts
-// "goofcord:wasapi-ready" (the load-bearing readiness handshake: a port forwarded before the listener
-// exists silently loses the port + first chunks → viewer hears silence).
+// SESSION PROTOCOL (one capture = one session, never reused):
+//   main   → preload   webContents.postMessage("wasapi:pcm-port", { captureId }, [port])  (only after
+//                      native capture started)
+//   preload → page     window.postMessage({ type: "goofcord:wasapi-pcm-port", captureId }, "*", [port])
+//                      once the page has posted "goofcord:wasapi-ready"
+//   page   → main      port.postMessage({ type: "ready", captureId }) once a fresh generator + handlers
+//                      exist; main waits for this before resolving the display-media request
+//   main   → page      { index, pcm: ArrayBuffer } chunks, then { type: "stopped", captureId } before
+//                      closing the port on stop/failure/replacement
+//   page   → main      goofcord.stopWasapiLoopback(captureId) when the page ends the session itself
 // ─────────────────────────────────────────────────────────────────────────────
+
+const READY_MESSAGE = "goofcord:wasapi-ready";
+const PORT_MESSAGE = "goofcord:wasapi-pcm-port";
 
 // The entire main-world feeder. Authored as ONE function so it can be serialized with `.toString()`
 // and executed in the page main world (where MediaStreamTrackGenerator, AudioData, and the
-// getDisplayMedia stream live). It reaches the preload bridge via `window.goofcord`
-// (stopWasapiLoopback, to tear the main-process capture down when the share ends).
+// getDisplayMedia stream live). It reaches the preload bridge via `window.goofcord`.
 export function installWasapiTransport(): void {
 	interface TransportBridge {
-		stopWasapiLoopback: () => unknown;
+		stopWasapiLoopback: (captureId?: number) => unknown;
 	}
-	const bridge = (globalThis as { goofcord?: TransportBridge }).goofcord;
+	type GenTrack = MediaStreamTrack & { writable: WritableStream<unknown> };
+	// Every page global goes through this one object (see header).
+	interface TransportWindow {
+		goofcord?: TransportBridge;
+		MediaStreamTrackGenerator?: new (init: { kind: string }) => GenTrack;
+		AudioData?: new (init: Record<string, unknown>) => { close?: () => void };
+		__goofcordWasapiTransportInstalled?: boolean;
+		Event: typeof Event;
+		location: { origin: string };
+		navigator: { mediaDevices: MediaDevices };
+		setInterval(fn: () => void, ms: number): number;
+		clearInterval(id: number): void;
+		setTimeout(fn: () => void, ms: number): number;
+		clearTimeout(id: number): void;
+		addEventListener(type: string, listener: (e: MessageEvent) => void): void;
+		postMessage(message: unknown, targetOrigin: string): void;
+	}
+	interface Session {
+		captureId: number;
+		port: MessagePort;
+		gen: GenTrack;
+		stopGen: () => void; // the generator's own stop(), from before we intercepted it
+		writer: WritableStreamDefaultWriter<unknown>;
+		rings: Map<number, ArrayBuffer[]>;
+		timer?: number;
+		claimTimer?: number;
+		tsUs: number;
+		inflight: number;
+		arrival: number; // ordinal of this port's arrival, compared against request start ordinals
+		claimed: boolean;
+		ended: boolean;
+	}
+
+	const win = window as unknown as TransportWindow;
 
 	// Idempotence guard on the page window — injection runs once per page.
-	const flag = "__goofcordWasapiTransportInstalled";
-	if ((globalThis as Record<string, unknown>)[flag]) return;
-	(globalThis as Record<string, unknown>)[flag] = true;
-	if (!bridge) return; // no bridge ⇒ no teardown signal channel; bail (page stays byte-identical)
+	if (win.__goofcordWasapiTransportInstalled) return;
+	win.__goofcordWasapiTransportInstalled = true;
+
+	const bridge = win.goofcord;
+	const GenCtor = win.MediaStreamTrackGenerator;
+	const AudioDataCtor = win.AudioData;
+	// No bridge ⇒ no teardown channel; no Insertable Streams ⇒ cannot feed. Either way leave the page
+	// untouched and never post readiness, so main's ack wait times out and it falls back.
+	if (!bridge || typeof GenCtor !== "function" || typeof AudioDataCtor !== "function") return;
 
 	const SAMPLE_RATE = 48000;
 	const CHANNELS = 2;
 	const FRAMES = 480; // 10ms @ 48k → ~100 chunks/sec
-	// T4: bounded ring, latency-first. 4-chunk (~40ms) depth absorbs jitter between the main-
-	// process post cadence and the MSTG writer.write() consumption without latency creep.
+	const MIX_LEN = CHANNELS * FRAMES;
+	const FRAME_US = Math.round((FRAMES / SAMPLE_RATE) * 1e6);
+	const INTERVAL_MS = (FRAMES / SAMPLE_RATE) * 1000;
+	// Bounded ring per source, latency-first: ~40ms absorbs post-cadence jitter without creep.
 	const RING_DEPTH = 4;
+	// Writes allowed in flight before the drain loop stops consuming. While it waits, the rings keep
+	// dropping their oldest chunk, so a stalled writer can never grow an unbounded queue.
+	const MAX_INFLIGHT = 2;
+	// A session nothing has claimed by now (and no request is pending to claim it) is an orphan.
+	const CLAIM_TIMEOUT_MS = 10000;
 
-	// ── MSTG feeder fed externally from a MessagePort ────────────────────────────────────
-	const MSTG = (globalThis as { MediaStreamTrackGenerator?: unknown }).MediaStreamTrackGenerator;
-	const AD = (globalThis as { AudioData?: unknown }).AudioData;
-	if (typeof MSTG === "undefined" || typeof AD === "undefined") {
-		return; // Insertable Streams unavailable on this build — cannot feed; leave the page untouched.
+	let current: Session | undefined;
+	let lastCaptureId = 0;
+	let arrivals = 0;
+	let pendingRequests = 0;
+
+	function fromThisPage(e: MessageEvent): boolean {
+		const source: unknown = e.source;
+		return source === win || e.origin === win.location.origin;
 	}
-	const GenCtor = MSTG as new (init: { kind: string }) => MediaStreamTrack & { writable: WritableStream };
-	const AudioDataCtor = AD as new (init: Record<string, unknown>) => unknown;
 
-	const gen = new GenCtor({ kind: "audio" });
-	const writer = gen.writable.getWriter() as WritableStreamDefaultWriter<unknown>;
-	let tsUs = 0; // timestamp MUST be microseconds, monotonic (else frames silently garble)
+	function isArrayBuffer(v: unknown): v is ArrayBuffer {
+		return Object.prototype.toString.call(v) === "[object ArrayBuffer]";
+	}
 
-	// One bounded ring PER SOURCE (each chunk = 480*2 interleaved f32 = 3840 bytes). "app" mode
-	// runs one WASAPI INCLUDE session per selected app, so several independent streams arrive
-	// interleaved on the same port, tagged with their source index; they are summed on drain.
-	// "system" mode simply has a single source (index 0).
-	const rings = new Map<number, ArrayBuffer[]>();
-	let drainTimer: ReturnType<typeof setInterval> | undefined;
-	let activePort: MessagePort | undefined;
+	function stopNative(captureId: number): void {
+		try {
+			Promise.resolve(bridge?.stopWasapiLoopback(captureId)).catch(() => {});
+		} catch {
+			// best-effort
+		}
+	}
 
-	function pushChunk(index: number, ab: ArrayBuffer): void {
-		let ring = rings.get(index);
+	// MediaStreamTrack.stop() never fires "ended", so a consumer stopping our track is otherwise
+	// invisible. Shadow stop() on this one instance only — never on the MediaStreamTrack prototype.
+	function interceptStop(track: MediaStreamTrack, onStop: () => void): void {
+		const own = track.stop;
+		Object.defineProperty(track, "stop", {
+			configurable: true,
+			writable: true,
+			value: () => {
+				own.call(track);
+				onStop();
+			},
+		});
+	}
+
+	function endSession(s: Session, notifyMain: boolean): void {
+		if (s.ended) return;
+		s.ended = true;
+		if (current === s) current = undefined;
+		if (s.timer !== undefined) win.clearInterval(s.timer);
+		if (s.claimTimer !== undefined) win.clearTimeout(s.claimTimer);
+		s.rings.clear();
+		s.port.onmessage = null;
+		try {
+			s.port.close();
+		} catch {
+			// already closed
+		}
+		// We are ending the track, not its consumer: stop it and dispatch "ended" ourselves (stop()
+		// won't), so Discord learns its audio track died. Stopping first also means a native "ended"
+		// can no longer fire, so consumers see exactly one.
+		if (s.gen.readyState !== "ended") {
+			s.stopGen();
+			s.gen.dispatchEvent(new win.Event("ended"));
+		}
+		try {
+			s.writer.abort().catch(() => {});
+		} catch {
+			// already released
+		}
+		if (notifyMain) stopNative(s.captureId);
+	}
+
+	function closeAudioData(ad: { close?: () => void }): void {
+		// AudioData.close() is idempotent. The generator closes frames it consumes, but a rejected
+		// write may never have handed the frame over, so release it here either way.
+		try {
+			ad.close?.();
+		} catch {
+			// best-effort
+		}
+	}
+
+	function pushChunk(s: Session, index: number, ab: ArrayBuffer): void {
+		let ring = s.rings.get(index);
 		if (ring === undefined) {
 			ring = [];
-			rings.set(index, ring);
+			s.rings.set(index, ring);
 		}
-		if (ring.length >= RING_DEPTH) {
-			ring.shift(); // drop-oldest on overflow (T4)
-		}
+		if (ring.length >= RING_DEPTH) ring.shift(); // drop-oldest on overflow
 		ring.push(ab);
 	}
 
-	function writeAudioData(data: Float32Array): void {
-		const ad = new AudioDataCtor({
-			format: "f32",
-			sampleRate: SAMPLE_RATE,
-			numberOfFrames: FRAMES,
-			numberOfChannels: CHANNELS,
-			timestamp: tsUs,
-			data,
-		});
-		tsUs += Math.round((FRAMES / SAMPLE_RATE) * 1e6); // advance ~10000us, monotonic
-		void writer.write(ad);
-	}
+	// Drain: one chunk per source per ~10ms, SUMMED into one frame. A source with nothing queued
+	// contributes silence, so the generator timeline stays monotonic with 0, 1, or N sources.
+	function tick(s: Session): void {
+		if (s.ended || s.inflight >= MAX_INFLIGHT) return;
 
-	// Drain loop: consume one chunk per source per ~10ms and SUM them into a single frame. A
-	// source that has nothing queued contributes silence, so the MSTG timeline stays monotonic
-	// whether we have zero, one, or several live sources.
-	const intervalMs = (FRAMES / SAMPLE_RATE) * 1000; // ≈10ms
-	const MIX_LEN = CHANNELS * FRAMES;
-	drainTimer = setInterval(() => {
 		const mixed = new Float32Array(MIX_LEN);
 		let contributors = 0;
-
-		for (const ring of rings.values()) {
+		for (const ring of s.rings.values()) {
 			const ab = ring.shift();
 			if (ab === undefined) continue;
 			const src = new Float32Array(ab);
@@ -104,8 +194,6 @@ export function installWasapiTransport(): void {
 			for (let i = 0; i < MIX_LEN; i++) mixed[i] += src[i];
 			contributors++;
 		}
-
-		// Summing independent streams can exceed [-1, 1] when several apps are loud at once.
 		// Hard-clamp rather than normalise: a moving gain would pump audibly as apps start/stop.
 		if (contributors > 1) {
 			for (let i = 0; i < MIX_LEN; i++) {
@@ -114,109 +202,226 @@ export function installWasapiTransport(): void {
 			}
 		}
 
-		writeAudioData(mixed);
-	}, intervalMs);
+		let ad: { close?: () => void };
+		try {
+			ad = new AudioDataCtor!({
+				format: "f32",
+				sampleRate: SAMPLE_RATE,
+				numberOfFrames: FRAMES,
+				numberOfChannels: CHANNELS,
+				timestamp: s.tsUs, // microseconds, monotonic per session (else frames silently garble)
+				data: mixed,
+			});
+		} catch {
+			endSession(s, true);
+			return;
+		}
+		s.tsUs += FRAME_US;
+		s.inflight++;
 
-	function teardown(): void {
-		if (drainTimer) {
-			clearInterval(drainTimer);
-			drainTimer = undefined;
-		}
-		rings.clear();
+		let write: Promise<unknown>;
 		try {
-			activePort?.close();
-		} catch {
-			// already closed
+			write = s.writer.write(ad);
+		} catch (err) {
+			write = Promise.reject(err);
 		}
-		activePort = undefined;
-		try {
-			writer.releaseLock();
-		} catch {
-			// already released
-		}
-		try {
-			void bridge?.stopWasapiLoopback();
-		} catch {
-			// best-effort
-		}
+		write.then(
+			() => {
+				s.inflight--;
+				closeAudioData(ad);
+			},
+			() => {
+				s.inflight--;
+				closeAudioData(ad);
+				endSession(s, true);
+			},
+		);
 	}
 
-	// Publish the reconstructed track + the feeder API on the page window so the swap seam below
-	// (same main world) can swap the track in and tear down on STREAM_CLOSE.
-	interface WasapiFeeder {
-		track: MediaStreamTrack;
-		teardown: () => void;
-	}
-	(globalThis as { __goofcordWasapiFeeder?: WasapiFeeder }).__goofcordWasapiFeeder = {
-		track: gen as MediaStreamTrack,
-		teardown,
-	};
+	function openSession(port: MessagePort, captureId: number): void {
+		// One current capture: main replaced the old one (and told its port "stopped").
+		if (current) endSession(current, false);
 
-	// ── HOP-2 receiver: the zero-copy port-forward path ──────────────────────────────────
-	// The preload forwards the MessagePort via window.postMessage(..., [port]) AFTER it sees our
-	// "goofcord:wasapi-ready" handshake below. activePort is set ONLY here — i.e. only after the
-	// main process forwarded the port, which it does only when startWasapiCapture() succeeded.
-	window.addEventListener("message", (e: MessageEvent) => {
-		if (e.data !== "goofcord:wasapi-pcm-port") return;
-		const port = e.ports[0];
-		if (!port) return;
-		activePort = port;
-		port.onmessage = (msg: MessageEvent) => {
-			// { index, pcm } — index identifies the capture session so N app streams can be mixed.
-			const data = msg.data as { index?: number; pcm?: unknown } | null;
-			if (data == null || !(data.pcm instanceof ArrayBuffer)) return;
-			pushChunk(typeof data.index === "number" ? data.index : 0, data.pcm);
+		let gen: GenTrack;
+		let writer: WritableStreamDefaultWriter<unknown>;
+		try {
+			gen = new GenCtor!({ kind: "audio" });
+			writer = gen.writable.getWriter();
+		} catch {
+			// No ack ⇒ main's readiness wait fails and it keeps the original audio path.
+			try {
+				port.close();
+			} catch {
+				// already closed
+			}
+			return;
+		}
+
+		const s: Session = {
+			captureId,
+			port,
+			gen,
+			stopGen: gen.stop.bind(gen),
+			writer,
+			rings: new Map(),
+			tsUs: 0,
+			inflight: 0,
+			arrival: ++arrivals,
+			claimed: false,
+			ended: false,
 		};
+		interceptStop(gen, () => endSession(s, true));
+		gen.addEventListener("ended", () => endSession(s, true));
+		writer.closed.then(
+			() => endSession(s, true),
+			() => endSession(s, true),
+		);
+
+		port.onmessage = (msg: MessageEvent) => {
+			if (s.ended) return;
+			const data = msg.data as { type?: unknown; captureId?: unknown; index?: unknown; pcm?: unknown } | null;
+			if (data == null || typeof data !== "object") return;
+			if (data.type === "stopped") {
+				if (data.captureId === s.captureId) endSession(s, false);
+				return;
+			}
+			if (!isArrayBuffer(data.pcm)) return;
+			pushChunk(s, typeof data.index === "number" ? data.index : 0, data.pcm);
+		};
+		port.addEventListener?.("close", () => endSession(s, true));
 		port.start();
-	});
 
-	// ── SWAP SEAM: wrap getDisplayMedia HERE, in this preload-injected main-world script —
-	// NOT in screensharePatch.ts. postVencord.js is fetched at runtime from upstream `main`
-	// (settingsSchema PostVencord URL), so fork edits to screensharePatch.ts would silently not
-	// ship; only this ts-out-packaged preload reliably reaches the artifact. Injection only happens
-	// when the wasapi gate is on, so with the gate OFF this script is never injected ⇒ the page is
-	// byte-identical to upstream.
-	const md = navigator.mediaDevices;
-	const originalGDM = md.getDisplayMedia.bind(md);
-	md.getDisplayMedia = async function (this: MediaDevices, opts?: DisplayMediaStreamOptions): Promise<MediaStream> {
-		const stream = await originalGDM(opts);
+		current = s;
+		s.timer = win.setInterval(() => tick(s), INTERVAL_MS);
+		s.claimTimer = win.setTimeout(() => {
+			if (!s.claimed && pendingRequests === 0) endSession(s, true);
+		}, CLAIM_TIMEOUT_MS);
 
-		// ECHO-03 (D-11): only swap when capture is actually active. activePort is set only after
-		// startWasapiCapture() succeeded and the main process forwarded the port. If it's unset
-		// (unsupported build / --no-wasapi / activation returned false), leave the original Chromium
-		// "loopback" track in place so the viewer hears audio instead of a silence-filled gen track.
-		if (!activePort) return stream;
+		// Handlers and fresh state exist: tell main it may now resolve the display-media request.
+		port.postMessage({ type: "ready", captureId });
+	}
 
+	// A session left unclaimed once no request is pending belongs to no share (its request was
+	// rejected, or the port arrived too late). Kill it rather than let a later share inherit it.
+	function reapOrphan(): void {
+		if (pendingRequests === 0 && current && !current.claimed) endSession(current, true);
+	}
+
+	function attach(s: Session, stream: MediaStream): void {
 		try {
-			// On Windows the upstream path leaves the captured "loopback" audio track in the stream
-			// (no virtmic), which is what echoes the call back to viewers. Swap it for the
-			// reconstructed transport track (fed from the main-process MessagePort).
+			// Chromium should add no audio when native capture started; drop any it did, since a
+			// second loopback track is exactly the echo we are removing.
 			for (const t of stream.getAudioTracks()) {
 				t.stop();
 				stream.removeTrack(t);
 			}
-			stream.addTrack(gen as MediaStreamTrack);
-
-			// Teardown trigger: FluxDispatcher STREAM_CLOSE is unavailable in preload-injected
-			// main-world code, so the swapped track or the video track ending tears the feeder + the
-			// main-process native capture down.
-			const videoTrack = stream.getVideoTracks()[0];
-			const onEnd = () => teardown();
-			(gen as MediaStreamTrack).addEventListener("ended", onEnd);
-			if (videoTrack) videoTrack.addEventListener("ended", onEnd);
+			stream.addTrack(s.gen);
 		} catch {
-			// Swap failed; leave the original stream as captured (never break the share).
+			return; // leave the stream as captured; the unclaimed session gets reaped
 		}
+		s.claimed = true;
+		if (s.claimTimer !== undefined) win.clearTimeout(s.claimTimer);
+		// The share is over when its video ends: source gone ("ended") or Discord stopping it.
+		for (const v of stream.getVideoTracks()) {
+			v.addEventListener("ended", () => endSession(s, true));
+			interceptStop(v, () => endSession(s, true));
+		}
+	}
+
+	// ── HOP-2 receiver: a port arrives only after main's native capture started ──────────────
+	win.addEventListener("message", (e: MessageEvent) => {
+		if (!fromThisPage(e)) return;
+		const data = e.data as { type?: unknown; captureId?: unknown } | null;
+		if (data == null || typeof data !== "object" || data.type !== "goofcord:wasapi-pcm-port") return;
+		const port = e.ports?.[0];
+		if (!port) return;
+		const captureId = data.captureId;
+		if (typeof captureId !== "number" || !(captureId > lastCaptureId)) {
+			try {
+				port.close(); // malformed or older than what we already have: never let it feed
+			} catch {
+				// already closed
+			}
+			return;
+		}
+		lastCaptureId = captureId;
+		openSession(port, captureId);
+	});
+
+	// Reload/navigation: end the capture rather than orphan it in main.
+	win.addEventListener("pagehide", () => {
+		if (current) endSession(current, true);
+	});
+
+	// ── SWAP SEAM: wrap getDisplayMedia HERE, not in screensharePatch.ts — postVencord.js is fetched
+	// at runtime from upstream, so fork edits there would silently not ship.
+	const md = win.navigator.mediaDevices;
+	const originalGDM = md.getDisplayMedia.bind(md);
+	md.getDisplayMedia = async function (opts?: DisplayMediaStreamOptions): Promise<MediaStream> {
+		// Only a session whose port arrived AFTER this request began can belong to it: main acks the
+		// port before resolving the request, so ours is here by the time the stream is. A request
+		// with no session (audio "none", unsupported, failed-closed) keeps its stream untouched.
+		const since = arrivals;
+		pendingRequests++;
+		let stream: MediaStream;
+		try {
+			stream = await originalGDM(opts);
+		} catch (err) {
+			pendingRequests--;
+			reapOrphan();
+			throw err;
+		}
+		pendingRequests--;
+		const s = current;
+		if (s && !s.claimed && !s.ended && s.arrival > since) attach(s, stream);
+		reapOrphan();
 		return stream;
 	};
 
-	// READINESS HANDSHAKE (load-bearing): now that the message listener, the feeder, AND the
-	// getDisplayMedia swap seam are registered, signal the preload that the main world is ready to
-	// receive the port. The preload buffers the port until it sees this.
-	window.postMessage("goofcord:wasapi-ready", "*");
+	// READINESS HANDSHAKE (load-bearing): the listener and the seam are registered, so the preload
+	// may now forward ports.
+	win.postMessage("goofcord:wasapi-ready", "*");
 }
 
 // Self-contained main-world script string: serialize the feeder and self-invoke it. preload.mts
-// passes this to webFrame.executeJavaScript ONLY when the wasapi gate is on, so it ships from
-// ts-out/** (packaged) yet runs in the page main world.
+// passes this to webFrame.executeJavaScript ONLY when the wasapi gate is on.
 export const wasapiTransportMainWorldSource = `(${installWasapiTransport.toString()})();`;
+
+/**
+ * Preload (isolated world) half of hop-2. Holds the newest port until the page main world posts
+ * READY_MESSAGE — a port forwarded before its listener exists is silently lost — then forwards it
+ * zero-copy. A port superseded while still waiting is closed, never delivered late.
+ */
+export function createWasapiPortForwarder(win: Window): (port: MessagePort, captureId: unknown) => void {
+	let pending: { port: MessagePort; captureId: number } | undefined;
+	let ready = false;
+
+	function flush() {
+		if (!ready || !pending) return;
+		const { port, captureId } = pending;
+		pending = undefined;
+		win.postMessage({ type: PORT_MESSAGE, captureId }, "*", [port]);
+	}
+
+	win.addEventListener("message", (e: MessageEvent) => {
+		if (e.data !== READY_MESSAGE || !(e.source === win || e.origin === win.location.origin)) return;
+		ready = true;
+		flush();
+	});
+
+	return (port, captureId) => {
+		if (typeof captureId !== "number") {
+			port.close();
+			return;
+		}
+		if (pending) {
+			try {
+				pending.port.close();
+			} catch {
+				// already closed
+			}
+		}
+		pending = { port, captureId };
+		flush();
+	};
+}

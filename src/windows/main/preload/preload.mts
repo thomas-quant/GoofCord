@@ -8,7 +8,7 @@ import { loadScripts, loadStyles } from "./assets.ts";
 import { startKeybindWatcher } from "./keybinds.ts";
 import { injectFlashbar } from "./titlebarFlash.ts";
 // Windows WASAPI EXCLUDE-tree echo fix (the #46 fix): the main-world PCM feeder + getDisplayMedia swap seam.
-import { wasapiTransportMainWorldSource } from "./wasapiTransport.ts";
+import { createWasapiPortForwarder, wasapiTransportMainWorldSource } from "./wasapiTransport.ts";
 
 const preloadStart = performance.now();
 
@@ -37,33 +37,16 @@ function init() {
 function injectWasapiTransport() {
 	if (!sendSync("wasapiLoopback:shouldInjectWasapiTransport")) return;
 
-	// Buffer the hop-1 port until the main world posts "goofcord:wasapi-ready"; then forward it
-	// zero-copy (DEFAULT mechanism). A port forwarded before the listener exists silently loses
-	// the port + first chunks (Pitfall 1) → viewer hears silence.
-	let pendingPort: MessagePort | undefined;
-	let mainWorldReady = false;
+	// Holds the newest port until the main world posts "goofcord:wasapi-ready", then forwards it
+	// with its captureId. Registered before injection so the readiness message can't be missed.
+	const forwardPort = createWasapiPortForwarder(window);
 
-	function forwardPort() {
-		if (!mainWorldReady || !pendingPort) return;
-		const port = pendingPort;
-		pendingPort = undefined;
-		// Zero-copy port→port forward into the injected main world.
-		window.postMessage("goofcord:wasapi-pcm-port", "*", [port]);
-	}
-
-	window.addEventListener("message", (e) => {
-		if (e.data !== "goofcord:wasapi-ready") return;
-		mainWorldReady = true;
-		forwardPort();
-	});
-
-	// Electron delivers the main-process webContents.postMessage (with the transferred port)
-	// to the preload's ipcRenderer. The event carries a native DOM MessagePort in this world.
-	ipcRenderer.on("wasapi:pcm-port", (event) => {
+	// Electron delivers the main-process webContents.postMessage (message { captureId } + the
+	// transferred port) to the preload's ipcRenderer as a native DOM MessagePort in this world.
+	ipcRenderer.on("wasapi:pcm-port", (event, message: { captureId?: unknown } | null) => {
 		const port = (event as unknown as { ports: MessagePort[] }).ports[0];
 		if (!port) return;
-		pendingPort = port;
-		forwardPort();
+		forwardPort(port, message?.captureId);
 	});
 
 	webFrame
