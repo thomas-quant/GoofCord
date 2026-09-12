@@ -152,7 +152,16 @@ async function run(addon) {
 	const sessionId = addon.startEndpointMinusSelf(process.pid, deviceId ?? null, onChunk);
 	if (!sessionId) {
 		flushIndex();
-		bail(6, "startEndpointMinusSelf returned a falsy session id — addon refused to start capture");
+		// Optional, addon-specific diagnostic (not part of the required contract): some builds
+		// expose why the start was refused (unsupported endpoint format, own-tree already active
+		// on another endpoint, etc). Use it when present, but never require it.
+		let startError;
+		try {
+			startError = typeof addon.getLastSubtractionStartError === "function" ? addon.getLastSubtractionStartError() : undefined;
+		} catch {
+			// best-effort only
+		}
+		bail(6, `startEndpointMinusSelf returned a falsy session id — addon refused to start capture${startError ? `: ${startError}` : ""}`);
 		return;
 	}
 	manifest.sessionId = sessionId;
