@@ -10,6 +10,7 @@ on:
           - app
           - addon
           - both
+          - windows
         default: app
 
 permissions:
@@ -119,4 +120,53 @@ jobs:
         with:
           name: wasapi-addon
           path: native/wasapi-loopback/*.node
+          if-no-files-found: error
+
+  # Focused Windows x64 build for iterating on the WASAPI echo fix without paying for the full
+  # linux/win/mac `app` matrix (~20 min). Runs the audio regression suite + typecheck, then packages
+  # win32/x64 only and re-checks the addon that actually landed in the packaged app.asar.unpacked
+  # output (build.ts's validateWasapiAddon() only checks the pre-package staged copy).
+  windows:
+    name: windows (focused)
+    runs-on: windows-latest
+    if: inputs.target == 'windows'
+    steps:
+      - name: Github checkout
+        uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24.x"
+
+      - name: Install Node dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Type check
+        run: bun run check
+
+      - name: Audio regression tests
+        run: bun test tests/audio
+
+      - name: Install electron-builder globally
+        run: bun add electron-builder -g
+
+      - name: Build GoofCord
+        run: bun run build --skipTypecheck
+
+      - name: Package GoofCord (win32 x64 only)
+        run: electron-builder --x64 --win zip --publish=never
+
+      - name: Verify packaged addon (asar.unpacked, real API load)
+        run: bun build/validateWasapiPackaged.ts
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64-artifacts
+          path: dist/**/*.zip
           if-no-files-found: error

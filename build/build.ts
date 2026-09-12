@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { parseArgs } from "node:util";
 
@@ -8,6 +9,7 @@ import { genIpcHandlers } from "./genIpcHandlers.ts";
 import { genSettingsLangFile } from "./genSettingsLangFile.ts";
 import { globImporterPlugin } from "./globbyGlob.ts";
 import { nativeModulePlugin } from "./nativeImport";
+import { removeStaleAddonFile, validateWasapiAddon } from "./validateWasapiAddon.ts";
 
 const ROOT_DIR = process.cwd();
 const OUT_DIR = path.join(ROOT_DIR, "ts-out");
@@ -240,11 +242,25 @@ async function copyNativeModules() {
 			const ext = path.extname(src);
 			const dest = path.join(nativeDir, `${mod.name}-${prebuild.platform}-${prebuild.arch}${ext}`);
 
-			return copyFile(src, dest).catch(() => {});
+			// A failed copy must not leave behind a stale addon staged by a PREVIOUS build (this
+			// directory is never cleaned): copyNativeAddonsToOutDir() would otherwise happily ship
+			// an old .node as if it were the current build's.
+			return copyFile(src, dest).catch(() => removeStaleAddonFile(dest));
 		});
 	});
 
 	await Promise.all(tasks);
+
+	// Only win32/x64 ships a wasapi-loopback prebuild; anywhere else, no addon is expected and
+	// this is a no-op. On win32/x64 a missing or incompatible addon must fail the build loudly —
+	// the alternative is wasapiLoopback.ts silently falling back to the echoing capture path.
+	validateWasapiAddon({
+		targetPlatform: TARGET_PLATFORM,
+		targetArch: TARGET_ARCH,
+		addonPath: path.join(nativeDir, "wasapi-loopback-win32-x64.node"),
+		loadAddon: (p) => createRequire(import.meta.url)(p),
+	});
+
 	return true;
 }
 
