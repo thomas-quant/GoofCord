@@ -59,10 +59,15 @@ const config = {
 	sampleRate: 48000,
 	spawnLeadMs: argNumber("--spawn-lead-ms", 4000),
 	leadInSeconds: argNumber("--lead-in-seconds", 0.5),
-	calibrationSeconds: argNumber("--calibration-seconds", 3),
+	// The real addon's lock procedure needs a 250ms search window plus a held-out per-channel
+	// verification that can take up to ~10s to reach a tight-enough confidence interval even with
+	// no interference (see native/wasapi-loopback/SUBTRACTION.md on branch feat/endpoint-minus-self,
+	// "Held-out verification" / "Timeout"), and its own internal fault threshold is 20s of no lock.
+	// These defaults give it real room instead of the harness itself becoming the bottleneck.
+	calibrationSeconds: argNumber("--calibration-seconds", 8),
 	holdoutSeconds: argNumber("--holdout-seconds", 4),
 	otherMarginSeconds: argNumber("--other-margin-seconds", 1.5),
-	alignTimeoutSeconds: argNumber("--align-timeout-seconds", 5),
+	alignTimeoutSeconds: argNumber("--align-timeout-seconds", 30),
 	pollIntervalMs: argNumber("--poll-interval-ms", 50),
 	watchdogSeconds: argNumber("--watchdog-seconds", 120),
 	trimMs: argNumber("--trim-ms", 250),
