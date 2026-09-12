@@ -38,7 +38,7 @@ app.whenReady().then(async () => {
 	try {
 		// Dynamic import: the shared generator is an ESM module (see endpoint-minus-self-signal.mjs
 		// for why it must stay plain, toString()-able source) but this harness process is CJS.
-		const { SIGNAL_SOURCE, generateBroadbandStereo } = await import(path.join(__dirname, "endpoint-minus-self-signal.mjs"));
+		const { SIGNAL_SOURCE, generateBroadbandStereo } = await import("./endpoint-minus-self-signal.mjs");
 
 		// Save the ground-truth reference BEFORE playback even starts. This is the "independently
 		// identifiable content" the design calls for: known ahead of time, not reconstructed after

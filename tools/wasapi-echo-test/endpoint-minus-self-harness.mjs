@@ -109,7 +109,7 @@ const schedule = {
 const schedulePath = join(outDir, "schedule.json");
 writeFileSync(schedulePath, JSON.stringify(schedule, null, 2));
 
-const electronBin = join(repoRoot, "node_modules", ".bin", "electron");
+const electronBin = argValue("--electron", join(repoRoot, "node_modules", ".bin", "electron"));
 if (!existsSync(electronBin)) {
 	console.error(`electron binary not found at ${electronBin} — run bun install at the repo root first.`);
 	process.exit(2);

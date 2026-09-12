@@ -188,7 +188,7 @@ async function run(addon) {
 	}, pollIntervalMs);
 
 	// ── Own-audio playback: hidden window, real Web Audio, deterministic + bounded ───────────
-	const { SIGNAL_SOURCE } = await import(path.join(__dirname, "endpoint-minus-self-signal.mjs"));
+	const { SIGNAL_SOURCE } = await import("./endpoint-minus-self-signal.mjs");
 	const win = new BrowserWindow({ show: false, webPreferences: { contextIsolation: false, nodeIntegration: true, backgroundThrottling: false } });
 	await win.loadURL("data:text/html,<html><body></body></html>");
 	await win.webContents.executeJavaScript(SIGNAL_SOURCE);
