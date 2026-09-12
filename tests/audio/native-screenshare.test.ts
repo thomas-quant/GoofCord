@@ -31,10 +31,30 @@ describe("selectScreenshareSource ↔ WASAPI ownership", () => {
 		expect(wasapi.currentWasapiCaptureId()).toBeDefined();
 	});
 
-	test("unsupported native capture falls back to Chromium loopback", async () => {
-		addon.failExclude = true;
+	test("a refused subtraction ships the share without audio, never Chromium loopback", async () => {
+		addon.failSubtract = "process-loopback INCLUDE unavailable";
 		const res = await openRequest().select("screen:0", { mode: "system", pids: [] });
-		expect(res.audio).toBe("loopback");
+		expect(res.video.id).toBe("screen:0");
+		expect(res.audio).toBeUndefined();
+		expect(addon.calls.some((c) => c.startsWith("exclude:"))).toBe(false);
+	});
+
+	test("an addon without the subtraction API ships the share without audio", async () => {
+		(addon as any).startEndpointMinusSelf = undefined;
+		const res = await openRequest().select("screen:0", { mode: "system", pids: [] });
+		expect(res.audio).toBeUndefined();
+		expect(wasapi.currentWasapiCaptureId()).toBeUndefined();
+	});
+
+	test("only the explicit --no-wasapi override uses Chromium loopback", async () => {
+		process.argv.push("--no-wasapi");
+		try {
+			const res = await openRequest().select("screen:0", { mode: "system", pids: [] });
+			expect(res.audio).toBe("loopback");
+		} finally {
+			process.argv.splice(process.argv.indexOf("--no-wasapi"), 1);
+		}
+		expect(addon.calls).toEqual([]);
 	});
 
 	test("choosing no audio stops the capture that was live when this request opened", async () => {

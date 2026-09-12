@@ -12,7 +12,7 @@
 //
 //   Ours:
 //     audioConfig.mode === "app"    -> startIncludeProcessTree(pid) per selected app
-//     audioConfig.mode === "system" -> startExcludeProcessTree(ourPid)
+//     audioConfig.mode === "system" -> startEndpointMinusSelf(ourPid, default endpoint)
 //
 // WHY THE INCLUDE MODE MATTERS: EXCLUDE is a denylist, and the WASAPI activation struct has
 // exactly ONE TargetProcessId — so it can drop OUR audio or a virtual cable's, never both. A
@@ -20,6 +20,15 @@
 // and viewers hear the sharer twice. INCLUDE is an allowlist: a VAC that was never added simply
 // cannot appear. That is the entire reason Discord's window-share is echo-free, and it is the
 // mode GoofCord was missing.
+//
+// WHY SYSTEM MODE IS ENDPOINT MINUS SELF (native/wasapi-loopback/SUBTRACTION.md): plain loopback
+// of the default render endpoint is device-scoped (a VAC that never reaches the speakers stays
+// out), and our own tree's INCLUDE capture is subtracted from it at a verified integer offset.
+// Until that offset is verified the share audio is MUTED ("aligning"); "running" means the offset
+// passed a statistical gain/delay gate, not that cancellation is proven exact. There is NO
+// fallback: if subtraction is unavailable, refused or faults, the share has no audio. Falling back
+// to EXCLUDE or Chromium "loopback" would broadcast the call and the VAC — the privacy scope the
+// user picked. Only the explicit --no-wasapi override keeps the old Chromium path.
 //
 // N INCLUDE sessions run concurrently (one per selected app) and are mixed in the renderer;
 // each chunk is tagged with its source index so the feeder can sum them.
@@ -29,7 +38,7 @@
 //      port2 posted as webContents.postMessage("wasapi:pcm-port", { captureId }, [port2]);
 //   2. the renderer builds fresh per-capture state and replies { type: "ready", captureId };
 //      until then PCM is dropped. No ack within READY_TIMEOUT_MS ⇒ the attempt is torn down and
-//      the caller falls back exactly as if native activation had failed;
+//      fails closed exactly as if native activation had failed;
 //   3. PCM flows as { index, pcm: ArrayBuffer };
 //   4. on stop/replacement/device loss main posts { type: "stopped", captureId } and closes.
 // stopWasapiLoopback(captureId) ignores ids that are not current, so a late stop from an old
@@ -41,15 +50,15 @@
 // it; every addon entry point returns a falsy/0 result rather than throwing when the API is
 // unavailable on this build.
 //
-// On non-win32 / --no-wasapi / addon-not-loaded, startWasapiCapture returns "unsupported"
-// immediately so the normal "loopback" path stays byte-identical to upstream.
+// On non-win32 / --no-wasapi, startWasapiCapture returns "unsupported" immediately so the normal
+// "loopback" path stays byte-identical to upstream. On win32 without a usable addon it fails closed.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 
-import { app, MessageChannelMain, type MessagePortMain } from "electron";
+import { app, MessageChannelMain, type MessagePortMain, Notification } from "electron";
 import pc from "picocolors";
 
 import { mainWindow } from "../../windows/main/main.ts";
@@ -60,6 +69,9 @@ const LOG_PREFIX = pc.cyan("[Screenshare]");
 
 // How long startWasapiCapture waits for the renderer's ready ack before giving up.
 const READY_TIMEOUT_MS = 2000;
+
+// How often a system capture's subtraction state is read, to log aligning ⇄ running transitions.
+const STATUS_POLL_MS = 1000;
 
 // An app with a live audio session, offered in the picker's per-app list.
 export interface WasapiAudioApp {
@@ -74,12 +86,66 @@ interface WasapiAddon {
 	// onChunk is a napi CalleeHandled ThreadsafeFunction → JS is invoked as (err, chunk):
 	// the error slot is the FIRST arg (null on Ok), the audio Buffer is the SECOND. A non-null
 	// err means that session's stream died (device invalidated etc.) and will send nothing more.
-	startExcludeProcessTree(excludeRootPid: number, onChunk: (err: unknown, chunk: Buffer) => void): number;
 	startIncludeProcessTree(targetPid: number, onChunk: (err: unknown, chunk: Buffer) => void): number;
+	// Endpoint loopback minus our own tree's INCLUDE capture (SUBTRACTION.md). deviceId null = the
+	// eConsole default endpoint. 0 = refused; getLastSubtractionStartError() says why.
+	startEndpointMinusSelf?(rootPid: number, deviceId: string | null, onChunk: (err: unknown, chunk: Buffer) => void): number;
+	getSubtractionStatus?(id: number): WasapiSubtractionStatus | null;
+	getLastSubtractionStartError?(): string | null;
 	stopSession?(id: number): void;
 	stopAll(): void;
 	listAudioApps?(): WasapiAudioApp[];
 }
+
+/**
+ * The native subtraction state (subset of SUBTRACTION.md's SubtractionStatus).
+ *   "aligning" — share audio is muted (or passed through only where our own audio is provably
+ *                silent) until the own-audio offset is verified. NOT verified audio.
+ *   "running"  — subtracting at `offsetFrames`, which passed a statistical gain/delay gate. A
+ *                heuristic lock, not proof that cancellation is exact on this device.
+ *   "failed"   — the session ended; `reason` says why.
+ */
+export interface WasapiSubtractionStatus {
+	state: "aligning" | "running" | "failed";
+	reason: string;
+	offsetFrames: number;
+	locked: boolean;
+	generation: number;
+	endpointId: string;
+	coarseOffsetFrames?: number;
+}
+
+function hasSubtractionApi(wasapi: WasapiAddon): boolean {
+	return typeof wasapi.startEndpointMinusSelf === "function" && typeof wasapi.getSubtractionStatus === "function";
+}
+
+function readSubtractionStatus(wasapi: WasapiAddon | undefined, id: number): WasapiSubtractionStatus | undefined {
+	try {
+		return wasapi?.getSubtractionStatus?.(id) ?? undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function lastSubtractionStartError(wasapi: WasapiAddon): string | undefined {
+	try {
+		return wasapi.getLastSubtractionStartError?.() || undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+// The user has no console on Windows: a system-audio share that ends up silent must say so, and why.
+function notifyAudioProblem(title: string, body: string) {
+	console.warn(LOG_PREFIX, `${title}: ${body}`);
+	try {
+		new Notification({ title, body, timeoutType: "default" }).show();
+	} catch {
+		// notifications unavailable; the log line above still records it
+	}
+}
+
+const RETRY_HINT = "The share continues without audio. Share again to retry, or pick specific apps under Audio.";
 
 // ── Addon load (mirror obtainVenbind: load-once flag + --no-wasapi guard + null-on-failure) ──
 let addon: WasapiAddon | undefined;
@@ -98,10 +164,12 @@ function obtainWasapiLoopback(): WasapiAddon | undefined {
 	addonLoadAttempted = true;
 	try {
 		addon = require(wasapiPath) as WasapiAddon;
-		if (!addon || typeof addon.startExcludeProcessTree !== "function" || typeof addon.startIncludeProcessTree !== "function" || typeof addon.stopAll !== "function") {
+		if (!addon || typeof addon.startIncludeProcessTree !== "function" || typeof addon.stopAll !== "function") {
 			throw new Error("wasapi-loopback addon missing start/stop exports");
 		}
 		console.log(pc.green("[WASAPI]"), "Loaded wasapi-loopback addon");
+		// App mode still works without it; system mode fails closed (never falls back).
+		if (!hasSubtractionApi(addon)) console.warn(pc.green("[WASAPI]"), "Addon has no startEndpointMinusSelf/getSubtractionStatus; system-audio shares will have no audio");
 	} catch (e: unknown) {
 		addon = undefined;
 		console.error("Failed to import wasapi-loopback", e);
@@ -124,10 +192,9 @@ function wasapiAvailable(): boolean {
  * Whether Windows native capture is available, so the picker can offer the 3-mode audio UI
  * (none / system / app) instead of the bare on-off toggle.
  *
- * NOTE the asymmetry with Linux: patchcord can capture "system MINUS these apps", but WASAPI
- * cannot — `AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS` carries a single `TargetProcessId`, which we
- * must spend excluding ourselves. So Windows supports per-app INCLUDE but NOT per-app exclude,
- * and the picker must not offer an exclusion list it cannot honour.
+ * NOTE the asymmetry with Linux: patchcord can capture "system MINUS these apps", but Windows
+ * system mode subtracts only our own tree (endpoint minus self). So Windows supports per-app
+ * INCLUDE but NOT per-app exclude, and the picker must not offer an exclusion list it cannot honour.
  */
 export function isWasapiAvailable(): boolean {
 	return wasapiAvailable() && obtainWasapiLoopback() !== undefined;
@@ -223,6 +290,10 @@ interface Capture {
 	ready: boolean;
 	closed: boolean;
 	settle?: (why: "ready" | "closed") => void;
+	// System mode only: the endpoint-minus-self session and its status poll.
+	subtractionId?: number;
+	statusTimer?: ReturnType<typeof setInterval>;
+	lastState?: string;
 }
 
 let current: Capture | undefined;
@@ -231,6 +302,46 @@ let lastCaptureId = 0;
 /** The captureId of the running (or starting) capture, if any. */
 export function currentWasapiCaptureId(): number | undefined {
 	return current?.captureId;
+}
+
+/**
+ * Live subtraction state of the current system-audio capture; undefined for app mode or when
+ * nothing is capturing. See WasapiSubtractionStatus: "aligning" is muted, not verified audio.
+ */
+export function currentWasapiSubtractionStatus(): WasapiSubtractionStatus | undefined {
+	if (current?.subtractionId === undefined) return undefined;
+	return readSubtractionStatus(addon, current.subtractionId);
+}
+
+function describeSubtraction(captureId: number, st: WasapiSubtractionStatus): string {
+	if (st.state === "running") {
+		return `WASAPI endpoint-minus-self capture ${captureId} subtracting at offset ${st.offsetFrames} frames (packet-timing estimate ${st.coarseOffsetFrames ?? "n/a"}, generation ${st.generation}, endpoint ${st.endpointId || "default"}); statistical gain/delay lock, not proof of exact cancellation`;
+	}
+	return `WASAPI endpoint-minus-self capture ${captureId} aligning: share audio muted until our own audio's offset is verified${st.reason ? ` (${st.reason})` : ""}`;
+}
+
+/** A system-audio session faulted: say why (status keeps the reason until stopSession), then stop. */
+function failSubtraction(cap: Capture, reason: string) {
+	if (cap.closed) return;
+	notifyAudioProblem("Screenshare audio stopped", `System audio subtraction failed: ${reason}. ${RETRY_HINT}`);
+	stopCapture(cap, `subtraction failed: ${reason}`);
+}
+
+function watchSubtraction(cap: Capture, wasapi: WasapiAddon, pollMs: number) {
+	const poll = () => {
+		if (cap.closed || cap.subtractionId === undefined) return;
+		const st = readSubtractionStatus(wasapi, cap.subtractionId);
+		if (!st) return;
+		if (st.state === "failed") {
+			failSubtraction(cap, st.reason || "native session failed");
+			return;
+		}
+		if (st.state === cap.lastState) return;
+		cap.lastState = st.state;
+		console.log(LOG_PREFIX, describeSubtraction(cap.captureId, st));
+	};
+	cap.statusTimer = setInterval(poll, pollMs);
+	cap.statusTimer.unref?.();
 }
 
 // The addon's onChunk delivers a napi Buffer (480-frame / stereo / f32 = 3840 bytes); forward its
@@ -263,6 +374,7 @@ function stopCapture(cap: Capture, reason: string, notifyRenderer = true) {
 	if (cap.closed) return;
 	cap.closed = true;
 	if (current === cap) current = undefined;
+	if (cap.statusTimer !== undefined) clearInterval(cap.statusTimer);
 
 	stopNativeSessions(cap.sessionIds);
 
@@ -295,12 +407,15 @@ export interface WasapiAudioConfig {
  * Outcome of a capture attempt:
  *   "started"       — native capture running and the renderer holds its port; caller must NOT
  *                     also request Chromium "loopback".
- *   "unsupported"   — nothing started; caller may fall back to Chromium "loopback".
- *   "failed-closed" — app mode was requested and could not be honoured, or this attempt was
- *                     superseded by a newer one. The caller must leave audio UNSET rather than fall
- *                     back: falling back to system-wide "loopback" when the user explicitly asked for
- *                     one app is a privacy inversion (it would broadcast every app plus the call
- *                     itself), and next to a newer native capture it is the concurrent-loopback crash.
+ *                     In system mode that includes "aligning" (muted) — see WasapiSubtractionStatus.
+ *   "unsupported"   — native capture is off (non-win32 or --no-wasapi); caller may use Chromium
+ *                     "loopback", which is what that explicit override asks for.
+ *   "failed-closed" — the requested capture could not be honoured (no addon, subtraction
+ *                     unavailable/refused, transport failure), or this attempt was superseded by a
+ *                     newer one. The caller must leave audio UNSET rather than fall back: Chromium
+ *                     "loopback" (or EXCLUDE) would broadcast the call and the VAC — for app mode every
+ *                     other app too — a privacy inversion, and next to a newer native capture it is the
+ *                     concurrent-loopback crash.
  */
 export type WasapiStartResult = "started" | "unsupported" | "failed-closed";
 
@@ -309,13 +424,15 @@ export type WasapiStartResult = "started" | "unsupported" | "failed-closed";
  * any current capture. Resolves "started" only once the renderer has acknowledged this capture,
  * so the display-media callback (and Discord's getDisplayMedia) resolves after the page knows it.
  */
-export async function startWasapiCapture(audioConfig: WasapiAudioConfig, options: { readyTimeoutMs?: number } = {}): Promise<WasapiStartResult> {
+export async function startWasapiCapture(audioConfig: WasapiAudioConfig, options: { readyTimeoutMs?: number; statusPollMs?: number } = {}): Promise<WasapiStartResult> {
 	const mode = audioConfig?.mode;
 	if (!wasapiAvailable() || (mode !== "system" && mode !== "app")) return "unsupported";
-	const fallback: WasapiStartResult = mode === "app" ? "failed-closed" : "unsupported";
 
 	const wasapi = obtainWasapiLoopback();
-	if (!wasapi) return fallback;
+	if (!wasapi) {
+		if (mode === "system") notifyAudioProblem("Screenshare audio unavailable", `GoofCord's Windows audio addon could not be loaded, so system audio can't be captured without echo. ${RETRY_HINT} Reinstalling GoofCord restores the addon.`);
+		return "failed-closed";
+	}
 
 	// One capture at a time: whatever was running belongs to a share this request replaces.
 	const captureId = ++lastCaptureId;
@@ -334,6 +451,10 @@ export async function startWasapiCapture(audioConfig: WasapiAudioConfig, options
 	const sink = (index: number) => (err: unknown, chunk: Buffer) => {
 		if (cap.closed) return;
 		if (err) {
+			if (cap.subtractionId !== undefined) {
+				failSubtraction(cap, readSubtractionStatus(wasapi, cap.subtractionId)?.reason || (err instanceof Error ? err.message : String(err)));
+				return;
+			}
 			console.warn(LOG_PREFIX, `WASAPI source ${index} of capture ${captureId} ended:`, err);
 			cap.live.delete(index);
 			if (cap.live.size === 0) stopCapture(cap, "native stream ended");
@@ -350,6 +471,12 @@ export async function startWasapiCapture(audioConfig: WasapiAudioConfig, options
 		}
 	};
 
+	if (mode === "system" && !hasSubtractionApi(wasapi)) {
+		notifyAudioProblem("Screenshare audio unavailable", `This build's Windows audio addon has no system-audio subtraction (startEndpointMinusSelf), so system audio can't be captured without echo. ${RETRY_HINT} Updating GoofCord fixes this.`);
+		return "failed-closed";
+	}
+
+	let startError: string | undefined;
 	try {
 		const add = (index: number, id: number) => {
 			if (!id) return false;
@@ -363,26 +490,31 @@ export async function startWasapiCapture(audioConfig: WasapiAudioConfig, options
 				if (!add(i, wasapi.startIncludeProcessTree(pid, sink(i)))) console.warn(LOG_PREFIX, `WASAPI INCLUDE capture failed for pid ${pid}`);
 			});
 		} else {
-			// EXCLUDE our own tree — "share whole screen" audio. EXCLUDE_TARGET_PROCESS_TREE covers
-			// the separate "Audio Service" utility child, so our own call playback never re-enters.
-			add(0, wasapi.startExcludeProcessTree(process.pid, sink(0)));
+			// Default render endpoint MINUS our own tree ("share whole screen" audio). The INCLUDE
+			// reference covers the separate "Audio Service" child, so our call playback is subtracted.
+			const id = wasapi.startEndpointMinusSelf(process.pid, null, sink(0));
+			if (add(0, id)) cap.subtractionId = id;
+			else startError = lastSubtractionStartError(wasapi) ?? "the native addon refused to start without giving a reason";
 		}
 	} catch (e: unknown) {
 		console.error(LOG_PREFIX, "WASAPI capture failed to start:", e);
 		stopCapture(cap, "start threw");
-		return fallback;
+		if (mode === "system") notifyAudioProblem("Screenshare audio unavailable", `System audio failed to start: ${e instanceof Error ? e.message : String(e)}. ${RETRY_HINT}`);
+		return "failed-closed";
 	}
 	if (cap.sessionIds.length === 0) {
 		cap.closed = true;
-		return fallback;
+		if (startError) notifyAudioProblem("Screenshare audio unavailable", `System audio could not start: ${startError}. ${RETRY_HINT}`);
+		return "failed-closed";
 	}
+	if (cap.subtractionId !== undefined) watchSubtraction(cap, wasapi, options.statusPollMs ?? STATUS_POLL_MS);
 
 	// Native capture is actually running — only now hand the renderer a port. MessageChannelMain
 	// is the canonical Electron zero-copy audio path — NEVER per-frame ipcRenderer.send of raw PCM.
 	const webContents = mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : undefined;
 	if (!webContents || webContents.isDestroyed()) {
 		stopCapture(cap, "no main window");
-		return fallback;
+		return "failed-closed";
 	}
 
 	const channel = new MessageChannelMain();
@@ -414,20 +546,28 @@ export async function startWasapiCapture(audioConfig: WasapiAudioConfig, options
 	} catch (e: unknown) {
 		console.error(LOG_PREFIX, "Failed to hand the WASAPI port to the renderer:", e);
 		stopCapture(cap, "port transfer failed", false);
-		return fallback;
+		return "failed-closed";
 	}
 
 	const outcome = await readiness;
 	if (outcome === "ready" && current === cap && !cap.closed) {
-		console.log(LOG_PREFIX, mode === "app" ? `WASAPI INCLUDE capture ${captureId} streaming (${cap.sessionIds.length}/${targets.length} app${targets.length === 1 ? "" : "s"})` : `WASAPI EXCLUDE-tree capture ${captureId} streaming`);
+		if (mode === "app") {
+			console.log(LOG_PREFIX, `WASAPI INCLUDE capture ${captureId} streaming (${cap.sessionIds.length}/${targets.length} app${targets.length === 1 ? "" : "s"})`);
+		} else {
+			// Never log a fresh subtraction as "streaming": until it locks, the share audio is muted.
+			const st = readSubtractionStatus(wasapi, cap.subtractionId);
+			cap.lastState = st?.state;
+			console.log(LOG_PREFIX, st ? describeSubtraction(captureId, st) : `WASAPI endpoint-minus-self capture ${captureId} started (status unavailable)`);
+		}
 		return "started";
 	}
 	if (outcome === "timeout") {
 		console.warn(LOG_PREFIX, `Renderer never acknowledged WASAPI capture ${captureId}`);
 		stopCapture(cap, "ready timeout");
+		if (mode === "system") notifyAudioProblem("Screenshare audio unavailable", `Discord's page did not accept the audio stream. ${RETRY_HINT} Reloading Discord (Ctrl+R) may help.`);
 	}
-	// Superseded by a newer attempt: that one owns audio now, so no fallback of any kind.
-	return lastCaptureId !== captureId ? "failed-closed" : fallback;
+	// Superseded by a newer attempt (that one owns audio now) or failed: no fallback of any kind.
+	return "failed-closed";
 }
 
 /**

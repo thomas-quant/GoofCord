@@ -3,21 +3,23 @@
 // (github:thomas-quant/wasapi-loopback) that build.ts's copyNativeModules() stages into
 // assets/native/ on a best-effort basis (a missing prebuild off-Windows must never fail the
 // build). That best-effort copy means an incompatible or absent win32/x64 addon previously went
-// unnoticed until runtime, where wasapiLoopback.ts falls back to the echoing "loopback" path
-// SILENTLY (Pitfall 3) — exactly the bug this fix exists to remove. This module makes that failure
-// happen loudly, at build time, only for the one target that ships a prebuild at all.
+// unnoticed until runtime, where wasapiLoopback.ts now fails closed — every Windows system-audio
+// share silently loses its audio. This module makes that failure happen loudly, at build time,
+// only for the one target that ships a prebuild at all.
 //
 // "Required" vs "diagnostic" exports are split by actual product usage (grepped from src/):
-// listAudioApps backs the per-app include picker and startExcludeProcessTree/
-// startIncludeProcessTree/stopSession/stopAll back capture start/stop — all product-required.
-// listRenderEndpoints and getCaptureStats are only ever called from tools/wasapi-echo-test and
-// research harnesses, never from src/, so their absence is a diagnostics regression, not a
-// shippability one.
+// listAudioApps backs the per-app include picker, startIncludeProcessTree backs app mode,
+// startEndpointMinusSelf/getSubtractionStatus/getLastSubtractionStartError back system mode
+// (start, aligning/running status, refusal reason) and stopSession/stopAll back stop — all
+// product-required. startExcludeProcessTree (no longer used by src/ — system mode never falls
+// back to EXCLUDE), listRenderEndpoints and getCaptureStats are only called from
+// tools/wasapi-echo-test and research harnesses, so their absence is a diagnostics regression,
+// not a shippability one.
 import fs from "node:fs";
 
-export const WASAPI_REQUIRED_EXPORTS = ["startExcludeProcessTree", "startIncludeProcessTree", "stopSession", "stopAll", "listAudioApps"] as const;
+export const WASAPI_REQUIRED_EXPORTS = ["startIncludeProcessTree", "startEndpointMinusSelf", "getSubtractionStatus", "getLastSubtractionStartError", "stopSession", "stopAll", "listAudioApps"] as const;
 
-export const WASAPI_DIAGNOSTIC_EXPORTS = ["listRenderEndpoints", "getCaptureStats"] as const;
+export const WASAPI_DIAGNOSTIC_EXPORTS = ["startExcludeProcessTree", "listRenderEndpoints", "getCaptureStats"] as const;
 
 export type WasapiExportName = (typeof WASAPI_REQUIRED_EXPORTS)[number] | (typeof WASAPI_DIAGNOSTIC_EXPORTS)[number];
 
@@ -100,7 +102,7 @@ export function validateWasapiAddon(options: ValidateWasapiAddonOptions): void {
 	const { missingRequired, missingDiagnostic } = checkWasapiExports(addon as Record<string, unknown>);
 
 	if (missingRequired.length > 0) {
-		throw new WasapiValidationError(`wasapi-loopback addon at ${addonPath} is missing required session API export(s): ${missingRequired.join(", ")}. This addon build is incompatible with src/modules/native/wasapiLoopback.ts and would silently fall back to the echoing capture path at runtime.`);
+		throw new WasapiValidationError(`wasapi-loopback addon at ${addonPath} is missing required session API export(s): ${missingRequired.join(", ")}. This addon build is incompatible with src/modules/native/wasapiLoopback.ts, which fails closed at runtime (screenshares without audio).`);
 	}
 
 	if (missingDiagnostic.length > 0) {

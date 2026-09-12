@@ -2,7 +2,8 @@ import path from "node:path";
 
 import { hasPipewirePulse, patchcordList, patchcordStartApp, patchcordStartSystem } from "@root/src/modules/native/patchcord.ts";
 // Windows WASAPI screenshare audio (the #46 fix). Additive 3-way audio gate:
-// Linux patchcord → win32 native capture (INCLUDE per app / EXCLUDE self) → "loopback" fallback.
+// Linux patchcord → win32 native capture (INCLUDE per app / endpoint minus self) → "loopback" only
+// off-Windows or with the explicit --no-wasapi override.
 import { currentWasapiCaptureId, isWasapiAvailable, listWasapiAudioApps, startWasapiCapture, stopWasapiLoopback } from "@root/src/modules/native/wasapiLoopback.ts";
 import { BrowserWindow, desktopCapturer, ipcMain, session } from "electron";
 import type { ShareableNode } from "patchcord";
@@ -41,8 +42,8 @@ async function fetchScreenshareData(isRefresh = false) {
 		audioNodes,
 		// Show the 3-mode audio UI (none / system / app) wherever per-app capture exists.
 		hasAdvancedAudio: hasPipewirePulse || isWasapiAvailable(),
-		// Only patchcord can do "system MINUS these apps". WASAPI's activation struct has a single
-		// TargetProcessId, spent excluding ourselves — so Windows must NOT offer an exclusion list.
+		// Only patchcord can do "system MINUS these apps". Windows system mode subtracts only our own
+		// tree (endpoint minus self) — so Windows must NOT offer an exclusion list.
 		supportsAudioExclude: hasPipewirePulse,
 	};
 }
@@ -100,8 +101,8 @@ export function registerScreenshareHandler() {
 					console.error("[Screenshare] Failed to start patchcord node:", err);
 				}
 			} else if (process.platform === "win32") {
-				// Windows native WASAPI capture: INCLUDE the selected app(s) in "app" mode, or
-				// EXCLUDE our own tree in "system" mode (the #46 echo fix).
+				// Windows native WASAPI capture: INCLUDE the selected app(s) in "app" mode, or the
+				// default endpoint minus our own tree in "system" mode (the #46 echo fix).
 				const outcome = await startWasapiCapture(audioConfig);
 
 				if (outcome === "started") {
@@ -114,13 +115,14 @@ export function registerScreenshareHandler() {
 					// reconstructed track to the (audio-less) stream — the addon is the sole capturer
 					// (and the seam discarded Chromium's loopback track anyway, so nothing is lost).
 				} else if (outcome === "failed-closed") {
-					// The user asked for specific apps and we could not capture them. Falling back to
-					// Chromium "loopback" would broadcast EVERY app plus the call itself — a privacy
-					// inversion, and exactly the echo we are fixing. Ship the share without audio.
-					console.warn(pc.cyan("[Screenshare]"), "Per-app WASAPI capture unavailable; sharing without audio rather than falling back to system capture");
+					// Native capture could not honour the request (wasapiLoopback.ts already told the
+					// user why). Falling back to Chromium "loopback" would broadcast the call itself and
+					// any VAC — for app mode EVERY app — a privacy inversion, and exactly the echo we are
+					// fixing. Ship the share without audio.
+					console.warn(pc.cyan("[Screenshare]"), `WASAPI ${audioConfig.mode} capture unavailable; sharing without audio rather than falling back to Chromium loopback`);
 				} else {
 					result.audio = "loopback";
-					console.log(pc.cyan("[Screenshare]"), "WASAPI process-loopback unsupported on this build, using loopback fallback");
+					console.log(pc.cyan("[Screenshare]"), "WASAPI capture disabled (--no-wasapi), using Chromium loopback");
 				}
 			} else {
 				result.audio = "loopback";

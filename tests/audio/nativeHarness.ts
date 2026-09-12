@@ -49,7 +49,7 @@ class FakeMessageChannelMain {
 // ── Fake addon ──
 export interface FakeSession {
 	id: number;
-	kind: "include" | "exclude";
+	kind: "include" | "exclude" | "subtract";
 	pid: number;
 	cb: (err: unknown, chunk?: Buffer) => void;
 }
@@ -59,37 +59,79 @@ export const addon = {
 	sessions: new Map<number, FakeSession>(),
 	calls: [] as string[],
 	failPids: new Set<number>(),
-	failExclude: false,
+	// Non-null ⇒ startEndpointMinusSelf refuses (returns 0) with this as its start error.
+	failSubtract: null as string | null,
+	lastStartError: null as string | null,
+	// Per-session native subtraction status; like the real addon it is gone after stopSession.
+	statuses: new Map<number, Record<string, any>>(),
 	apps: [] as { processId: number; displayName: string; binary: string }[],
 	// Record the order of native starts vs port transfers.
 	onStart: undefined as undefined | ((s: FakeSession) => void),
 
-	start(kind: "include" | "exclude", pid: number, cb: FakeSession["cb"]) {
-		this.calls.push(`${kind}:${pid}`);
-		if ((kind === "exclude" && this.failExclude) || this.failPids.has(pid)) return 0;
+	start(kind: FakeSession["kind"], pid: number, cb: FakeSession["cb"]) {
+		if (this.failPids.has(pid)) return 0;
 		const s: FakeSession = { id: this.nextId++, kind, pid, cb };
 		this.sessions.set(s.id, s);
 		this.onStart?.(s);
 		return s.id;
 	},
+	// Still present so tests can prove system mode never calls it.
 	startExcludeProcessTree(pid: number, cb: FakeSession["cb"]) {
+		this.calls.push(`exclude:${pid}`);
 		return this.start("exclude", pid, cb);
 	},
 	startIncludeProcessTree(pid: number, cb: FakeSession["cb"]) {
+		this.calls.push(`include:${pid}`);
 		return this.start("include", pid, cb);
+	},
+	startEndpointMinusSelf(pid: number, deviceId: string | null | undefined, cb: FakeSession["cb"]) {
+		this.calls.push(`subtract:${pid}:${deviceId}`);
+		if (this.failSubtract !== null) {
+			this.lastStartError = this.failSubtract;
+			return 0;
+		}
+		this.lastStartError = null;
+		const id = this.start("subtract", pid, cb);
+		if (id) this.statuses.set(id, { state: "aligning", reason: "waiting for own audio", offsetFrames: 0, locked: false, generation: 0, endpointId: "{fake-endpoint}" });
+		return id;
+	},
+	getSubtractionStatus(id: number) {
+		return this.sessions.get(id)?.kind === "subtract" ? (this.statuses.get(id) ?? null) : null;
+	},
+	getLastSubtractionStartError() {
+		return this.lastStartError;
 	},
 	stopSession(id: number) {
 		this.calls.push(`stop:${id}`);
 		this.sessions.delete(id);
+		this.statuses.delete(id);
 	},
 	stopAll() {
 		this.calls.push("stopAll");
 		this.sessions.clear();
+		this.statuses.clear();
 	},
 	listAudioApps() {
 		return this.apps;
 	},
 };
+
+/** Patch the fake native status of a live subtraction session. */
+export function setStatus(id: number, patch: Record<string, any>) {
+	addon.statuses.set(id, { ...addon.statuses.get(id), ...patch });
+}
+
+// Tests may delete exports to simulate an older addon build; reset() puts them back.
+const addonExports = { startEndpointMinusSelf: addon.startEndpointMinusSelf, getSubtractionStatus: addon.getSubtractionStatus, getLastSubtractionStartError: addon.getLastSubtractionStartError };
+
+// ── Fake Notification: records what the user would have been shown ──
+export const notifications: { title: string; body: string }[] = [];
+class FakeNotification {
+	constructor(private opts: { title: string; body: string }) {}
+	show() {
+		notifications.push({ title: this.opts.title, body: this.opts.body });
+	}
+}
 
 // ── Fake main window: records port transfers and (optionally) acks like the renderer would ──
 export interface Transfer {
@@ -170,6 +212,7 @@ export class FakeBrowserWindow extends EventEmitter {
 mock.module("electron", () => ({
 	app,
 	MessageChannelMain: FakeMessageChannelMain,
+	Notification: FakeNotification,
 	BrowserWindow: FakeBrowserWindow,
 	desktopCapturer: { getSources: async () => [] },
 	ipcMain: {
@@ -205,9 +248,13 @@ export async function reset() {
 	await wasapi.stopWasapiLoopback();
 	addon.sessions.clear();
 	addon.calls = [];
+	addon.statuses.clear();
 	addon.failPids.clear();
-	addon.failExclude = false;
+	addon.failSubtract = null;
+	addon.lastStartError = null;
+	Object.assign(addon, addonExports);
 	addon.apps = [];
+	notifications.length = 0;
 	addon.onStart = undefined;
 	renderer.transfers = [];
 	renderer.received.clear();
