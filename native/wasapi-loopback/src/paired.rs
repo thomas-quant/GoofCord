@@ -37,6 +37,12 @@ const ROUTE_GUARD_INTERVAL: Duration = Duration::from_millis(250);
 /// Upper bound on one wait for either leg's event; also bounds alignment-result pickup latency.
 const PAIR_WAIT_MS: u32 = 20;
 
+// The default process-loopback buffer measured only 480 frames (10 ms), less than
+// a route snapshot (up to 25 ms on hardware). Keep 200 ms capacity on BOTH paired
+// legs to survive that bounded scheduling stall. We still drain on every event;
+// this does not add a 200 ms playout delay or change engine alignment tolerances.
+const PAIR_BUFFER_100NS: i64 = 2_000_000;
+
 /// State shared between a paired session's owner thread and `getSubtractionStatus`.
 pub(crate) struct PairShared {
     status: Mutex<Status>,
@@ -274,11 +280,11 @@ unsafe fn open_pair(root_pid: u32, device_id: Option<&str>) -> Result<PairSetup,
         .map_err(|e| format!("cannot activate endpoint {endpoint_id}: {e}"))?;
     check_endpoint_format(&client)?;
     route_guard(&enumerator, &endpoint_id, root_pid, follow_default)?;
-    initialize_loopback_client(&client)
+    initialize_loopback_client_with_duration(&client, PAIR_BUFFER_100NS)
         .map_err(|e| format!("endpoint loopback Initialize failed: {e}"))?;
 
     let reference_client =
-        match activate_process_tree(PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE, root_pid) {
+        match activate_process_tree_with_duration(PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE, root_pid, PAIR_BUFFER_100NS) {
             ActivationResult::Activated(c) => c,
             ActivationResult::Unsupported => {
                 return Err("process-loopback INCLUDE of the own tree is unavailable here".into())
