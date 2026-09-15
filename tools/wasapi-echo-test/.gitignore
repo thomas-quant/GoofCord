@@ -3,3 +3,6 @@
 # Prebuilt addon copied here with `cp -L` (bun symlinks node_modules into its store,
 # which Windows node.exe cannot follow).
 addon-under-test.node
+*.f32
+subtract-run.json
+__pycache__/
