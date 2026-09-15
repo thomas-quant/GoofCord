@@ -10,6 +10,7 @@
 const { app, BrowserWindow } = require("electron");
 const fs = require("node:fs");
 const path = require("node:path");
+const { playbackDuration, selectSink } = require("./endpoint-minus-self-lifecycle.cjs");
 
 function argValue(flag) {
 	const i = process.argv.indexOf(flag);
@@ -26,6 +27,8 @@ if (!schedulePath || !outDir) {
 const schedule = JSON.parse(fs.readFileSync(schedulePath, "utf8"));
 const { sampleRate, other } = schedule;
 const frameCount = Math.round(other.seconds * sampleRate);
+const durationSeconds = playbackDuration(other);
+app.setPath("userData", path.join(outDir, "other-profile"));
 
 const manifest = { role: "other-audio", pid: process.pid, sampleRate, frameCount, seedL: other.seedL, seedR: other.seedR, peakAmplitude: other.peakAmplitude, startedAt: null, endedAt: null, error: null };
 
@@ -49,20 +52,30 @@ app.whenReady().then(async () => {
 		writeManifest();
 
 		win = new BrowserWindow({ show: false, webPreferences: { contextIsolation: false, nodeIntegration: true, backgroundThrottling: false } });
-		await win.loadURL("data:text/html,<html><body></body></html>");
+		if (schedule.sinkLabel) {
+			win.webContents.session.setPermissionCheckHandler((_wc, permission) => permission === "media" || permission === "speaker-selection");
+			const page = path.join(outDir, "other-playback.html");
+			fs.writeFileSync(page, "<html><body>Local output-only WASAPI test</body></html>", { flag: "wx" });
+			await win.loadFile(page);
+			manifest.outputRouting = await win.webContents.executeJavaScript(`(async () => {
+				const devices = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === "audiooutput").map(d => d.toJSON());
+				return { devices, sinkId: (${selectSink.toString()})(devices, ${JSON.stringify(schedule.sinkLabel)}) };
+			})()`);
+		} else await win.loadURL("data:text/html,<html><body></body></html>");
 		await win.webContents.executeJavaScript(SIGNAL_SOURCE);
 		await win.webContents.executeJavaScript(`
 			window.__endpointMinusSelfOther = { ended: false };
-			const ctx = new AudioContext({ sampleRate: ${sampleRate} });
+			const ctx = new AudioContext({ sampleRate: ${sampleRate}, ...${JSON.stringify(manifest.outputRouting ? { sinkId: manifest.outputRouting.sinkId } : {})} });
 			const stereo = generateBroadbandStereo(${other.seedL}, ${other.seedR}, ${frameCount}, ${other.peakAmplitude});
 			const buffer = ctx.createBuffer(2, ${frameCount}, ${sampleRate});
 			buffer.copyToChannel(stereo.left, 0);
 			buffer.copyToChannel(stereo.right, 1);
 			const source = ctx.createBufferSource();
 			source.buffer = buffer;
+			source.loop = ${(other.repeats ?? 1) > 1};
 			source.connect(ctx.destination);
 			source.onended = () => { window.__endpointMinusSelfOther.ended = true; };
-			window.__endpointMinusSelfStart = (whenCtxTime) => { source.start(whenCtxTime); return ctx.currentTime; };
+			window.__endpointMinusSelfStart = () => { const t = ctx.currentTime; source.start(t); source.stop(t + ${durationSeconds}); return t; };
 			window.__endpointMinusSelfCtx = ctx;
 			void 0;
 		`);
@@ -82,7 +95,7 @@ app.whenReady().then(async () => {
 		await win.webContents.executeJavaScript("window.__endpointMinusSelfStart(0)");
 
 		// Bounded wait: the buffer is finite (frameCount samples), so this always ends on its own.
-		const durationMs = (frameCount / sampleRate) * 1000;
+		const durationMs = durationSeconds * 1000;
 		await new Promise((resolve) => setTimeout(resolve, durationMs + 500));
 		manifest.endedAt = Date.now();
 		writeManifest();
@@ -101,7 +114,7 @@ setTimeout(
 		writeManifest();
 		app.exit(1);
 	},
-	(frameCount / sampleRate) * 1000 + 20000,
+	durationSeconds * 1000 + Math.max(20000, other.startAtEpochMs - Date.now() + 10000),
 ).unref();
 
 app.on("window-all-closed", () => {});

@@ -29,6 +29,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import lifecycle from "./endpoint-minus-self-lifecycle.cjs";
 import { scoreCapture } from "./endpoint-minus-self-report.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -66,6 +67,7 @@ const config = {
 	// These defaults give it real room instead of the harness itself becoming the bottleneck.
 	calibrationSeconds: argNumber("--calibration-seconds", 8),
 	holdoutSeconds: argNumber("--holdout-seconds", 4),
+	holdoutRepeats: argNumber("--holdout-repeats", 1),
 	otherMarginSeconds: argNumber("--other-margin-seconds", 1.5),
 	alignTimeoutSeconds: argNumber("--align-timeout-seconds", 30),
 	pollIntervalMs: argNumber("--poll-interval-ms", 50),
@@ -84,6 +86,9 @@ const config = {
 	},
 };
 
+const totalHoldoutSeconds = lifecycle.playbackDuration({ seconds: config.holdoutSeconds, repeats: config.holdoutRepeats });
+if (config.holdoutRepeats > 1 && !process.argv.includes("--diagnostic-raw")) throw new Error("repeated playback requires --diagnostic-raw; short scorer is not applicable");
+
 if (process.argv.includes("--diagnostic-raw") && ["schedule.json", "captured.f32", "raw-manifest.json", "raw-endpoint.f32", "raw-self.f32"].some((name) => existsSync(join(outDir, name)))) {
 	console.error(`diagnostic output directory already contains capture evidence: ${outDir}; choose a fresh --out`);
 	process.exit(2);
@@ -93,6 +98,7 @@ mkdirSync(outDir, { recursive: true });
 const startAtEpochMs = Date.now() + config.spawnLeadMs;
 const schedule = {
 	diagnosticRaw: process.argv.includes("--diagnostic-raw"),
+	sinkLabel: argValue("--sink-label", null),
 	sampleRate: config.sampleRate,
 	selfBarrierEpochMs: startAtEpochMs,
 	leadInSeconds: config.leadInSeconds,
@@ -100,12 +106,13 @@ const schedule = {
 	pollIntervalMs: config.pollIntervalMs,
 	watchdogSeconds: config.watchdogSeconds,
 	calibration: { seconds: config.calibrationSeconds, seedL: config.seeds.calibrationL, seedR: config.seeds.calibrationR, peakAmplitude: config.peakAmplitude },
-	holdout: { seconds: config.holdoutSeconds, seedL: config.seeds.holdoutL, seedR: config.seeds.holdoutR, peakAmplitude: config.peakAmplitude },
+	holdout: { seconds: config.holdoutSeconds, repeats: config.holdoutRepeats, seedL: config.seeds.holdoutL, seedR: config.seeds.holdoutR, peakAmplitude: config.peakAmplitude },
 	other: {
 		seedL: config.seeds.otherL,
 		seedR: config.seeds.otherR,
 		peakAmplitude: config.peakAmplitude,
 		seconds: config.holdoutSeconds + config.otherMarginSeconds,
+		repeats: config.holdoutRepeats,
 		// Deliberately aligned to when the SELF process's disjoint hold-out segment starts, so the
 		// "other app" only needs to be preserved during the window that is actually scored for it.
 		startAtEpochMs: startAtEpochMs + config.leadInSeconds * 1000 + config.calibrationSeconds * 1000,
@@ -153,7 +160,7 @@ console.log(`endpoint-minus-self-harness: addon=${addonPath} deviceId=${deviceId
 const other = spawnLeg("other", join(here, "endpoint-minus-self-other-audio.cjs"), ["--schedule", schedulePath, "--out", outDir]);
 const self_ = spawnLeg("self", join(here, "endpoint-minus-self-electron-main.cjs"), ["--addon", addonPath, "--device-id", deviceId, "--schedule", schedulePath, "--out", outDir]);
 
-const overallWatchdogMs = config.spawnLeadMs + (config.leadInSeconds + config.calibrationSeconds + config.holdoutSeconds + config.otherMarginSeconds) * 1000 + config.watchdogSeconds * 1000;
+const overallWatchdogMs = config.spawnLeadMs + (config.leadInSeconds + config.calibrationSeconds + totalHoldoutSeconds + config.otherMarginSeconds * config.holdoutRepeats) * 1000 + config.watchdogSeconds * 1000;
 const watchdog = setTimeout(() => {
 	console.error("endpoint-minus-self-harness: overall watchdog expired — killing both legs");
 	other.child.kill();
@@ -212,6 +219,13 @@ if (selfManifest.fatalError) {
 }
 if (!otherManifest || otherManifest.error) {
 	finish(`FAILED (other-audio leg: ${otherManifest?.error ?? "no manifest"})`, 1);
+}
+
+const completionFailures = lifecycle.validateCompletion(report);
+if (completionFailures.length) finish("INCOMPLETE", 1, completionFailures);
+
+if (config.holdoutRepeats > 1) {
+	finish("DIAGNOSTIC_RECORDED_NOT_SCORED", 0, ["Repeated-buffer soak: requires whole-session raw analysis; the short-window scorer was not run. This is not feature acceptance."]);
 }
 
 // ── Assemble the real capture and score it against the known references ─────────────────────

@@ -1,5 +1,9 @@
 # endpoint-minus-self integration validation harness
 
+**Experimental, not a verified shipping fix.** See [current evidence and limitations](SILENT-STALL-FINDINGS.md) and the [remaining validation plan](REMAINING-VALIDATION-PLAN.md). The interrupted soak is incomplete; the existing application ZIP contains an older addon.
+
+**This harness plays audible synthetic signals. Do not run it without explicit approval, especially while the user is gaming.** Offline analysis and the portable Rust tests do not play audio.
+
 Deterministic, real-Electron integration test for the addon's endpoint-minus-self API:
 
 ```
@@ -39,8 +43,9 @@ Everything a run produces — `schedule.json`, `self-manifest.json`, `other-mani
    under test. It loads the real addon from `--addon`, opens a real capture session via
    `startEndpointMinusSelf(process.pid, deviceId, onChunk)`, and plays its own deterministic
    audio in two back-to-back segments:
-   - **calibration** — while nothing else is playing, so a strict own-signal-only cancellation
-     check is possible, and so the addon has content to align against
+   - **calibration** — before the synthetic other-app signal starts, so the addon has content
+     to align against. This does not ensure that unrelated endpoint audio is absent; background
+     audio invalidates a strict own-signal-only energy check
      (`getSubtractionStatus` is polled until `state === "running"`, with a bounded deadline —
      never assumed);
    - **hold-out** — a disjoint segment (different seeds, never played before) that overlaps with
@@ -63,11 +68,11 @@ addon produced or to replace the native subtraction itself.
 ## Exit codes
 
 The harness (`endpoint-minus-self-harness.mjs`) exits:
-- `0` — every gate passed;
+- `0` — every gate passed, or a repeated diagnostic completed with `DIAGNOSTIC_RECORDED_NOT_SCORED` (not a validation PASS);
 - the self process's own code (see `endpoint-minus-self-electron-main.cjs` header) when the run
   was **skipped** for an environment reason (not Windows, addon missing/incompatible, etc) — this
   is reported as `SKIPPED`, never as a pass;
-- `1` — one or more gates failed, or a harness-level error occurred.
+- `1` — one or more gates failed, a child exited unsuccessfully, playback/lifecycle evidence is incomplete, or a harness-level error occurred. Terminated children cannot produce a successful diagnostic result.
 
 ## Concurrent raw diagnostics
 

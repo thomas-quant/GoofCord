@@ -28,6 +28,7 @@ const path = require("node:path");
 const { createRequire } = require("node:module");
 
 const { startRawDiagnostics } = require("./endpoint-minus-self-raw.cjs");
+const { playbackDuration, summarizeLifecycle, selectSink, waitForPlaybackEnd } = require("./endpoint-minus-self-lifecycle.cjs");
 let rawDiagnostics;
 
 const REQUIRED_EXPORTS = ["startEndpointMinusSelf", "getSubtractionStatus", "stopSession"];
@@ -50,6 +51,8 @@ if (!addonPath || !schedulePath || !outDir) {
 
 const schedule = JSON.parse(fs.readFileSync(schedulePath, "utf8"));
 const { sampleRate, leadInSeconds, calibration, holdout, alignTimeoutSeconds, pollIntervalMs } = schedule;
+const holdoutSeconds = playbackDuration(holdout);
+app.setPath("userData", path.join(outDir, "self-profile"));
 
 const manifest = {
 	role: "self",
@@ -195,7 +198,17 @@ async function run(addon) {
 	// ── Own-audio playback: hidden window, real Web Audio, deterministic + bounded ───────────
 	const { SIGNAL_SOURCE, generateBroadbandStereo } = await import("./endpoint-minus-self-signal.mjs");
 	const win = new BrowserWindow({ show: false, webPreferences: { contextIsolation: false, nodeIntegration: true, backgroundThrottling: false } });
-	await win.loadURL("data:text/html,<html><body></body></html>");
+	if (schedule.sinkLabel) {
+		// Local file is a secure context for enumerateDevices; never request microphone capture.
+		win.webContents.session.setPermissionCheckHandler((_wc, permission) => permission === "media" || permission === "speaker-selection");
+		const page = path.join(outDir, "self-playback.html");
+		fs.writeFileSync(page, "<html><body>Local output-only WASAPI test</body></html>", { flag: "wx" });
+		await win.loadFile(page);
+		manifest.outputRouting = await win.webContents.executeJavaScript(`(async () => {
+			const devices = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === "audiooutput").map(d => d.toJSON());
+			return { devices, sinkId: (${selectSink.toString()})(devices, ${JSON.stringify(schedule.sinkLabel)}) };
+		})()`);
+	} else await win.loadURL("data:text/html,<html><body></body></html>");
 	await win.webContents.executeJavaScript(SIGNAL_SOURCE);
 
 	const calibFrames = Math.round(calibration.seconds * sampleRate);
@@ -212,7 +225,7 @@ async function run(addon) {
 		}
 	}
 	await win.webContents.executeJavaScript(`
-		const ctx = new AudioContext({ sampleRate: ${sampleRate} });
+		const ctx = new AudioContext({ sampleRate: ${sampleRate}, ...${JSON.stringify(manifest.outputRouting ? { sinkId: manifest.outputRouting.sinkId } : {})} });
 		const calib = generateBroadbandStereo(${calibration.seedL}, ${calibration.seedR}, ${calibFrames}, ${calibration.peakAmplitude});
 		const held = generateBroadbandStereo(${holdout.seedL}, ${holdout.seedR}, ${holdoutFrames}, ${holdout.peakAmplitude});
 		const calibBuf = ctx.createBuffer(2, ${calibFrames}, ${sampleRate});
@@ -226,11 +239,14 @@ async function run(addon) {
 		calibSource.connect(ctx.destination);
 		const holdSource = ctx.createBufferSource();
 		holdSource.buffer = heldBuf;
+		holdSource.loop = ${(holdout.repeats ?? 1) > 1};
 		holdSource.connect(ctx.destination);
+		window.__testAudioContext = ctx;
 		window.__endpointMinusSelfArm = () => {
 			const t0 = ctx.currentTime;
 			calibSource.start(t0);
 			holdSource.start(t0 + ${calibration.seconds});
+			holdSource.stop(t0 + ${calibration.seconds + holdoutSeconds});
 			return t0;
 		};
 		void 0;
@@ -261,7 +277,7 @@ async function run(addon) {
 	await win.webContents.executeJavaScript("window.__endpointMinusSelfArm()");
 	manifest.timings.calibrationEndAtEpochMs = manifest.timings.selfAudioStartAtEpochMs + calibration.seconds * 1000;
 	manifest.timings.holdoutStartAtEpochMs = manifest.timings.calibrationEndAtEpochMs;
-	manifest.timings.holdoutEndAtEpochMs = manifest.timings.holdoutStartAtEpochMs + holdout.seconds * 1000;
+	manifest.timings.holdoutEndAtEpochMs = manifest.timings.holdoutStartAtEpochMs + holdoutSeconds * 1000;
 	writeManifest();
 
 	// Wait for alignment to be reached before the calibration segment is over, with a bounded
@@ -298,8 +314,7 @@ async function run(addon) {
 	writeManifest();
 
 	// Wait out the hold-out segment plus settle time to catch trailing packets.
-	const remainingMs = manifest.timings.holdoutEndAtEpochMs - Date.now() + 400;
-	if (remainingMs > 0) await new Promise((resolve) => setTimeout(resolve, remainingMs));
+	await waitForPlaybackEnd(manifest.timings.holdoutEndAtEpochMs + 400, () => sawFailure);
 
 	// Collect a final generation's worth of offset samples for scoreOffsetStability, restricted to
 	// samples from the SAME generation the run aligned in (a generation change is an expected
@@ -307,6 +322,9 @@ async function run(addon) {
 	const runningGeneration = statusSamples.find((s) => s.state === "running")?.generation;
 	manifest.offsetFramesSamples = statusSamples.filter((s) => s.state === "running" && s.generation === runningGeneration).map((s) => s.offsetFrames);
 	manifest.statusSampleCount = statusSamples.length;
+	manifest.lifecycle = summarizeLifecycle(statusSamples);
+	if (sawFailure) manifest.fatalError = `addon failed after initial lock: ${sawFailure}`;
+	else if (!manifest.lifecycle.healthy) manifest.fatalError = "capture did not finish in running state";
 
 	clearInterval(statusTimer);
 	rawDiagnostics?.close();
@@ -318,7 +336,7 @@ async function run(addon) {
 		manifest.stopSessionError = String(e);
 	}
 	writeManifest();
-	setTimeout(() => app.exit(0), 100);
+	setTimeout(() => app.exit(manifest.fatalError ? 7 : 0), 100);
 }
 
 const watchdogMs = (schedule.watchdogSeconds ?? 120) * 1000;
