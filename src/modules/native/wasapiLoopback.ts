@@ -327,7 +327,9 @@ function describeSubtraction(captureId: number, st: WasapiSubtractionStatus): st
 /** A system-audio session faulted: say why (status keeps the reason until stopSession), then stop. */
 function failSubtraction(cap: Capture, reason: string) {
 	if (cap.closed) return;
-	notifyAudioProblem("Screenshare audio stopped", `System audio subtraction failed: ${reason}. ${RETRY_HINT}`);
+	// The endpoint plays a processed copy of our audio, so subtracting would leak an echo of the call.
+	const hint = reason.includes("sample-identical") ? " Turning off Audio enhancements for this output device (Windows Settings → Sound) usually fixes this." : "";
+	notifyAudioProblem("Screenshare audio stopped", `System audio subtraction failed: ${reason}.${hint} ${RETRY_HINT}`);
 	stopCapture(cap, `subtraction failed: ${reason}`);
 }
 

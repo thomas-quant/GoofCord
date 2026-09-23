@@ -161,6 +161,16 @@ describe("system mode: endpoint minus self, never a fallback", () => {
 		noExclude();
 	});
 
+	test("a processed endpoint copy (lost exactness) tells the user to turn off audio enhancements", async () => {
+		await wasapi.startWasapiCapture({ mode: "system", pids: [] }, { statusPollMs: 5 });
+		const [session] = addon.sessions.values();
+		setStatus(session.id, { state: "failed", reason: "lost lock at offset 960: the endpoint no longer carries a sample-identical copy of the reference (worst residual +0.1500 at lag +4)" });
+		await new Promise((r) => setTimeout(r, 30));
+		expect(wasapi.currentWasapiCaptureId()).toBeUndefined();
+		expect(notifications).toHaveLength(1);
+		expect(notifications[0].body).toContain("Audio enhancements");
+	});
+
 	test("--no-wasapi keeps the explicit Chromium override without touching the addon", async () => {
 		process.argv.push("--no-wasapi");
 		try {
