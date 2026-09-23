@@ -8,8 +8,10 @@ import { mock } from "bun:test";
 const root = path.resolve(import.meta.dir, "../..");
 const abs = (p: string) => path.join(root, p);
 
-// wasapiLoopback.ts gates on process.platform; pretend to be Windows before it is imported.
+// wasapiLoopback.ts gates on process.platform and process.arch; pretend to be Windows x64 (the only
+// arch that ships an addon) before it is imported, whatever host runs the suite.
 Object.defineProperty(process, "platform", { value: "win32" });
+Object.defineProperty(process, "arch", { value: "x64", configurable: true });
 
 export const OWN_CHILD_PIDS = [process.pid + 101, process.pid + 102];
 

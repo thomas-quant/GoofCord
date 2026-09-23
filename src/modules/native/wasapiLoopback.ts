@@ -1,5 +1,3 @@
-// @ts-nocheck Bun won't install the wasapi-loopback addon on macOS/linux, so typescript can't compile with checks (mirror venbind.ts:1)
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Windows WASAPI screenshare audio (the #46 echo fix) — main-process capture wrapper.
 //
@@ -50,8 +48,9 @@
 // it; every addon entry point returns a falsy/0 result rather than throwing when the API is
 // unavailable on this build.
 //
-// On non-win32 / --no-wasapi, startWasapiCapture returns "unsupported" immediately so the normal
-// "loopback" path stays byte-identical to upstream. On win32 without a usable addon it fails closed.
+// On non-win32, win32 arches with no shipped addon (anything but x64), or --no-wasapi,
+// startWasapiCapture returns "unsupported" immediately so the normal "loopback" path stays
+// byte-identical to upstream. On win32/x64 without a usable addon it fails closed.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { existsSync } from "node:fs";
@@ -135,7 +134,7 @@ function lastSubtractionStartError(wasapi: WasapiAddon): string | undefined {
 	}
 }
 
-// The user has no console on Windows: a system-audio share that ends up silent must say so, and why.
+// The user has no console on Windows: a share that ends up silent must say so, and why.
 function notifyAudioProblem(title: string, body: string) {
 	console.warn(LOG_PREFIX, `${title}: ${body}`);
 	try {
@@ -146,6 +145,7 @@ function notifyAudioProblem(title: string, body: string) {
 }
 
 const RETRY_HINT = "The share continues without audio. Share again to retry, or pick specific apps under Audio.";
+const APP_RETRY_HINT = "The share continues without audio. Share again and re-pick the apps under Audio.";
 
 // ── Addon load (mirror obtainVenbind: load-once flag + --no-wasapi guard + null-on-failure) ──
 let addon: WasapiAddon | undefined;
@@ -183,9 +183,13 @@ export function __setWasapiAddonForTesting(fake: WasapiAddon | undefined) {
 	addonLoadAttempted = true;
 }
 
+// Only win32/x64 ships an addon (build.ts). Other Windows arches never had the echo fix, so they keep
+// upstream's Chromium loopback instead of failing closed on an addon that was never packaged.
+const WASAPI_ARCHES: readonly string[] = ["x64"];
+
 // Whether the native Windows capture path is usable at all.
 function wasapiAvailable(): boolean {
-	return process.platform === "win32" && !process.argv.includes("--no-wasapi");
+	return process.platform === "win32" && WASAPI_ARCHES.includes(process.arch) && !process.argv.includes("--no-wasapi");
 }
 
 /**
@@ -431,6 +435,7 @@ export async function startWasapiCapture(audioConfig: WasapiAudioConfig, options
 	const wasapi = obtainWasapiLoopback();
 	if (!wasapi) {
 		if (mode === "system") notifyAudioProblem("Screenshare audio unavailable", `GoofCord's Windows audio addon could not be loaded, so system audio can't be captured without echo. ${RETRY_HINT} Reinstalling GoofCord restores the addon.`);
+		else notifyAudioProblem("Screenshare audio unavailable", `GoofCord's Windows audio addon could not be loaded, so app audio can't be captured. ${APP_RETRY_HINT} Reinstalling GoofCord restores the addon.`);
 		return "failed-closed";
 	}
 
@@ -441,7 +446,10 @@ export async function startWasapiCapture(audioConfig: WasapiAudioConfig, options
 	// App mode with nothing (valid) selected has no meaning — treat it as "user asked for app
 	// audio and we have none", i.e. fail closed rather than silently broadcasting the whole system.
 	const targets = mode === "app" ? resolveIncludeTargets(audioConfig.pids, wasapi) : [];
-	if (mode === "app" && targets.length === 0) return "failed-closed";
+	if (mode === "app" && targets.length === 0) {
+		notifyAudioProblem("Screenshare audio unavailable", `None of the selected apps are playing audio any more (closed or restarted since you picked them). ${APP_RETRY_HINT}`);
+		return "failed-closed";
+	}
 
 	const cap: Capture = { captureId, sessionIds: [], live: new Set(), ready: false, closed: false };
 
@@ -457,7 +465,10 @@ export async function startWasapiCapture(audioConfig: WasapiAudioConfig, options
 			}
 			console.warn(LOG_PREFIX, `WASAPI source ${index} of capture ${captureId} ended:`, err);
 			cap.live.delete(index);
-			if (cap.live.size === 0) stopCapture(cap, "native stream ended");
+			if (cap.live.size === 0) {
+				notifyAudioProblem("Screenshare audio stopped", `Windows ended the audio capture of the shared app${cap.sessionIds.length === 1 ? "" : "s"} (${err instanceof Error ? err.message : String(err)}). ${APP_RETRY_HINT}`);
+				stopCapture(cap, "native stream ended");
+			}
 			return;
 		}
 		if (!cap.ready || !cap.port || !chunk) return;
@@ -492,19 +503,23 @@ export async function startWasapiCapture(audioConfig: WasapiAudioConfig, options
 		} else {
 			// Default render endpoint MINUS our own tree ("share whole screen" audio). The INCLUDE
 			// reference covers the separate "Audio Service" child, so our call playback is subtracted.
-			const id = wasapi.startEndpointMinusSelf(process.pid, null, sink(0));
+			// hasSubtractionApi was checked above; a missing export here reads as a refusal (0).
+			const id = wasapi.startEndpointMinusSelf?.(process.pid, null, sink(0)) ?? 0;
 			if (add(0, id)) cap.subtractionId = id;
 			else startError = lastSubtractionStartError(wasapi) ?? "the native addon refused to start without giving a reason";
 		}
 	} catch (e: unknown) {
 		console.error(LOG_PREFIX, "WASAPI capture failed to start:", e);
 		stopCapture(cap, "start threw");
-		if (mode === "system") notifyAudioProblem("Screenshare audio unavailable", `System audio failed to start: ${e instanceof Error ? e.message : String(e)}. ${RETRY_HINT}`);
+		const why = e instanceof Error ? e.message : String(e);
+		if (mode === "system") notifyAudioProblem("Screenshare audio unavailable", `System audio failed to start: ${why}. ${RETRY_HINT}`);
+		else notifyAudioProblem("Screenshare audio unavailable", `App audio failed to start: ${why}. ${APP_RETRY_HINT}`);
 		return "failed-closed";
 	}
 	if (cap.sessionIds.length === 0) {
 		cap.closed = true;
 		if (startError) notifyAudioProblem("Screenshare audio unavailable", `System audio could not start: ${startError}. ${RETRY_HINT}`);
+		else if (mode === "app") notifyAudioProblem("Screenshare audio unavailable", `Windows refused to capture audio from the selected app${targets.length === 1 ? "" : "s"}. ${APP_RETRY_HINT}`);
 		return "failed-closed";
 	}
 	if (cap.subtractionId !== undefined) watchSubtraction(cap, wasapi, options.statusPollMs ?? STATUS_POLL_MS);
@@ -555,7 +570,7 @@ export async function startWasapiCapture(audioConfig: WasapiAudioConfig, options
 			console.log(LOG_PREFIX, `WASAPI INCLUDE capture ${captureId} streaming (${cap.sessionIds.length}/${targets.length} app${targets.length === 1 ? "" : "s"})`);
 		} else {
 			// Never log a fresh subtraction as "streaming": until it locks, the share audio is muted.
-			const st = readSubtractionStatus(wasapi, cap.subtractionId);
+			const st = cap.subtractionId === undefined ? undefined : readSubtractionStatus(wasapi, cap.subtractionId);
 			cap.lastState = st?.state;
 			console.log(LOG_PREFIX, st ? describeSubtraction(captureId, st) : `WASAPI endpoint-minus-self capture ${captureId} started (status unavailable)`);
 		}
@@ -564,7 +579,7 @@ export async function startWasapiCapture(audioConfig: WasapiAudioConfig, options
 	if (outcome === "timeout") {
 		console.warn(LOG_PREFIX, `Renderer never acknowledged WASAPI capture ${captureId}`);
 		stopCapture(cap, "ready timeout");
-		if (mode === "system") notifyAudioProblem("Screenshare audio unavailable", `Discord's page did not accept the audio stream. ${RETRY_HINT} Reloading Discord (Ctrl+R) may help.`);
+		notifyAudioProblem("Screenshare audio unavailable", `Discord's page did not accept the audio stream. ${mode === "system" ? RETRY_HINT : APP_RETRY_HINT} Reloading Discord (Ctrl+R) may help.`);
 	}
 	// Superseded by a newer attempt (that one owns audio now) or failed: no fallback of any kind.
 	return "failed-closed";

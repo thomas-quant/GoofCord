@@ -82,6 +82,7 @@ describe("startWasapiCapture transport handshake", () => {
 		addon.apps = [{ processId: 5000, displayName: "a", binary: "a.exe" }];
 		expect(await wasapi.startWasapiCapture({ mode: "app", pids: [5000] }, FAST)).toBe("failed-closed");
 		expect(addon.sessions.size).toBe(0);
+		expect(notifications).toHaveLength(1);
 	});
 
 	test("a destroyed main window is a transport failure, not a started capture", async () => {
@@ -172,6 +173,24 @@ describe("system mode: endpoint minus self, never a fallback", () => {
 	});
 });
 
+describe("win32 arches without a shipped addon", () => {
+	for (const arch of ["arm64", "ia32"]) {
+		test(`${arch} keeps Chromium loopback: unsupported, no addon call, no notification`, async () => {
+			Object.defineProperty(process, "arch", { value: arch, configurable: true });
+			try {
+				expect(await wasapi.startWasapiCapture({ mode: "system", pids: [] })).toBe("unsupported");
+				expect(wasapi.isWasapiAvailable()).toBe(false);
+				expect(wasapi.shouldInjectWasapiTransport()).toBe(false);
+				expect(wasapi.listWasapiAudioApps()).toEqual([]);
+			} finally {
+				Object.defineProperty(process, "arch", { value: "x64", configurable: true });
+			}
+			expect(addon.calls).toEqual([]);
+			expect(notifications).toEqual([]);
+		});
+	}
+});
+
 describe("app-mode target validation", () => {
 	test("dedupes, drops invalid, own main/child/parent, and stale PIDs; fails closed when nothing is left", async () => {
 		addon.apps = [5000, 6000, ...OWN_CHILD_PIDS].map((processId) => ({ processId, displayName: "x", binary: "x.exe" }));
@@ -189,6 +208,8 @@ describe("app-mode target validation", () => {
 		expect(await wasapi.startWasapiCapture({ mode: "app", pids: [...OWN_CHILD_PIDS, 4242] })).toBe("failed-closed");
 		expect(addon.calls).toEqual([]);
 		expect(renderer.transfers).toHaveLength(0);
+		expect(notifications).toHaveLength(1);
+		expect(notifications[0].body).toContain("are playing audio any more");
 	});
 
 	test("every selected app failing to activate fails closed", async () => {
@@ -196,6 +217,15 @@ describe("app-mode target validation", () => {
 		addon.failPids.add(5000);
 		expect(await wasapi.startWasapiCapture({ mode: "app", pids: [5000] })).toBe("failed-closed");
 		expect(renderer.transfers).toHaveLength(0);
+		expect(notifications).toHaveLength(1);
+		expect(notifications[0].body).toContain("refused to capture audio from the selected app.");
+	});
+
+	test("a partial app start is a started share and does not notify", async () => {
+		addon.apps = [5000, 6000].map((processId) => ({ processId, displayName: "x", binary: "x.exe" }));
+		addon.failPids.add(5000);
+		expect(await wasapi.startWasapiCapture({ mode: "app", pids: [5000, 6000] })).toBe("started");
+		expect(notifications).toEqual([]);
 	});
 
 	test("listWasapiAudioApps hides our own main and child processes", () => {
@@ -267,8 +297,11 @@ describe("stop / restart isolation", () => {
 
 		a.cb(new Error("device invalidated"));
 		expect(wasapi.currentWasapiCaptureId()).toBe(id);
+		expect(notifications).toEqual([]);
 		b.cb(new Error("device invalidated"));
 		expect(wasapi.currentWasapiCaptureId()).toBeUndefined();
+		expect(notifications).toHaveLength(1);
+		expect(notifications[0].body).toContain("device invalidated");
 	});
 });
 
