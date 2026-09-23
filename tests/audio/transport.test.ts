@@ -364,6 +364,22 @@ describe("main-world transport", () => {
 		expect(env.stops).toEqual([1]);
 	});
 
+	test("a picker that saves getDisplayMedia after install and replaces it still attaches audio", async () => {
+		// Vencord's WebScreenShare plugin: bind the current getDisplayMedia at load, later replace it
+		// with its own picker that calls the saved one. Installed first, the seam is what it saves.
+		const env = makeEnv();
+		const md = (env.win.navigator as { mediaDevices: { getDisplayMedia: (o?: unknown) => Promise<FakeStream> } }).mediaDevices;
+		const saved = md.getDisplayMedia.bind(md);
+		md.getDisplayMedia = (o?: unknown) => saved(o);
+
+		const req = env.gdm();
+		env.port(1);
+		const { stream } = videoStream();
+		env.gdmCalls[0].resolve(stream);
+		await req;
+		expect(stream.getAudioTracks()).toEqual([env.generators[0]]);
+	});
+
 	test("fallback: no port ⇒ Chromium's audio is left in place", async () => {
 		const env = makeEnv();
 		const req = env.gdm();

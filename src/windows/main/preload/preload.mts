@@ -15,10 +15,13 @@ const preloadStart = performance.now();
 function init() {
 	if (!document.location.hostname.includes("discord") || document.location.href.includes("/popout")) return;
 
+	// Before loadScripts: executeJavaScript runs in call order, and anything that saves
+	// getDisplayMedia at load (Vencord's WebScreenShare plugin binds it, then replaces it with its own
+	// picker) must save our seam, or shares bypass it and carry no audio.
+	injectWasapiTransport();
+
 	loadScripts();
 	loadStyles();
-
-	injectWasapiTransport();
 
 	measureDiscordStartup();
 	injectFlashbar();
