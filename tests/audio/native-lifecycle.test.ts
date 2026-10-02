@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 
-import { addon, appEvents, chunk, flush, nextOrder, notifications, OWN_CHILD_PIDS, quitCalls, renderer, reset, startCapture, processes, identities, wasapi } from "./nativeHarness.ts";
+import { addon, appEvents, chunk, flush, mainWindow, nextOrder, notifications, OWN_CHILD_PIDS, quitCalls, renderer, reset, startCapture, processes, identities, wasapi } from "./nativeHarness.ts";
 
 const FAST = { readyTimeoutMs: 30 };
 const EXCLUDE_SELF = `exclude:${process.pid}`;
@@ -356,5 +356,65 @@ describe("request-bound identity and async lifecycle", () => {
 			Object.defineProperty(process, "arch", { value: "x64", configurable: true });
 		}
 		expect(addon.calls).toEqual([]);
+	});
+});
+
+describe("main renderer document lifecycle", () => {
+	const events = ["did-start-navigation", "render-process-gone", "destroyed"];
+	const expectDetached = () => {
+		for (const event of events) expect(mainWindow.webContents.listenerCount(event)).toBe(0);
+	};
+	for (const event of events) {
+		test(`${event} cancels pending identity lookup before a port exists`, async () => {
+			addon.apps = [{ processId: 5000, displayName: "a", binary: "a.exe" }];
+			let release!: (s: ReturnType<typeof identities>) => void;
+			processes.query = () =>
+				new Promise((resolve) => {
+					release = resolve;
+				});
+			const pending = startCapture({ mode: "app", pids: [5000] });
+			expect(mainWindow.webContents.listenerCount(event)).toBe(1);
+			mainWindow.webContents.emit(event, { isMainFrame: true, isSameDocument: false });
+			expect(wasapi.currentWasapiCaptureId()).toBeUndefined();
+			expectDetached();
+			release(identities());
+			expect(await pending).toBe("failed-closed");
+			expect(addon.sessions.size).toBe(0);
+			expect(renderer.transfers).toHaveLength(0);
+		});
+	}
+
+	test("iframe and same-document SPA navigation leave capture running", async () => {
+		await startCapture({ mode: "system", pids: [] });
+		const id = wasapi.currentWasapiCaptureId();
+		mainWindow.webContents.emit("did-start-navigation", { isMainFrame: false, isSameDocument: false });
+		mainWindow.webContents.emit("did-start-navigation", { isMainFrame: true, isSameDocument: true });
+		expect(wasapi.currentWasapiCaptureId()).toBe(id);
+		mainWindow.webContents.emit("did-start-navigation", { isMainFrame: true, isSameDocument: false });
+		expect(addon.sessions.size).toBe(0);
+		expectDetached();
+	});
+
+	test("replacement detaches old listeners; late old events do not kill the new capture", async () => {
+		await startCapture({ mode: "system", pids: [] });
+		const oldListeners = mainWindow.webContents.listeners("render-process-gone");
+		await startCapture({ mode: "system", pids: [] });
+		const id = wasapi.currentWasapiCaptureId();
+		for (const listener of oldListeners) listener();
+		expect(wasapi.currentWasapiCaptureId()).toBe(id);
+		for (const event of events) expect(mainWindow.webContents.listenerCount(event)).toBe(1);
+		await wasapi.stopWasapiLoopback();
+		await wasapi.stopWasapiLoopback();
+		expectDetached();
+	});
+
+	test("activation refusal and readiness timeout also detach listeners", async () => {
+		addon.failPids.add(process.pid);
+		expect(await startCapture({ mode: "system", pids: [] })).toBe("failed-closed");
+		expectDetached();
+		addon.failPids.clear();
+		renderer.autoAck = false;
+		expect(await startCapture({ mode: "system", pids: [] }, FAST)).toBe("failed-closed");
+		expectDetached();
 	});
 });

@@ -129,7 +129,7 @@ export const nextOrder = () => ++orderCounter;
 
 export const mainWindow = {
 	isDestroyed: () => renderer.destroyed,
-	webContents: {
+	webContents: Object.assign(new EventEmitter(), {
 		isDestroyed: () => renderer.destroyed,
 		postMessage(channel: string, message: any, ports: FakePort[]) {
 			const port = ports[0];
@@ -140,7 +140,7 @@ export const mainWindow = {
 			port.start();
 			if (renderer.autoAck) queueMicrotask(() => port.postMessage({ type: "ready", captureId: message.captureId }));
 		},
-	},
+	}),
 };
 
 // ── Fake electron ──

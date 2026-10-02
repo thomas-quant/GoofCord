@@ -190,6 +190,7 @@ interface Capture {
 	ready: boolean;
 	closed: boolean;
 	settle?: (why: "ready" | "closed") => void;
+	detachRendererListeners?: () => void;
 }
 
 let current: Capture | undefined;
@@ -230,6 +231,8 @@ function stopCapture(cap: Capture, reason: string, notifyRenderer = true) {
 	if (cap.closed) return;
 	cap.closed = true;
 	if (current === cap) current = undefined;
+	cap.detachRendererListeners?.();
+	cap.detachRendererListeners = undefined;
 
 	stopNativeSessions(cap.sessionIds);
 
@@ -280,6 +283,26 @@ export async function startWasapiCapture(audioConfig: WasapiAudioConfig, options
 	if (current) stopCapture(current, "replaced");
 	const cap: Capture = { captureId, sessionIds: [], live: new Set(), ready: false, closed: false };
 	current = cap;
+
+	const webContents = mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : undefined;
+	if (!webContents || webContents.isDestroyed()) {
+		stopCapture(cap, "no main window");
+		return "failed-closed";
+	}
+	// A reload/crash can happen during the identity query, before any port exists.
+	// Bind to this capture, not `current`, so a late old event cannot stop its replacement.
+	const onNavigation = (details: Electron.WebContentsDidStartNavigationEventParams) => {
+		if (details.isMainFrame && !details.isSameDocument) stopCapture(cap, "renderer document changed");
+	};
+	const onRendererGone = () => stopCapture(cap, "renderer gone", false);
+	webContents.on("did-start-navigation", onNavigation);
+	webContents.on("render-process-gone", onRendererGone);
+	webContents.on("destroyed", onRendererGone);
+	cap.detachRendererListeners = () => {
+		webContents.removeListener("did-start-navigation", onNavigation);
+		webContents.removeListener("render-process-gone", onRendererGone);
+		webContents.removeListener("destroyed", onRendererGone);
+	};
 
 	const wasapi = obtainWasapiLoopback();
 	if (!wasapi) {
@@ -370,9 +393,8 @@ export async function startWasapiCapture(audioConfig: WasapiAudioConfig, options
 
 	// Native capture is actually running — only now hand the renderer a port. MessageChannelMain
 	// is the canonical Electron zero-copy audio path — NEVER per-frame ipcRenderer.send of raw PCM.
-	const webContents = mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : undefined;
-	if (!webContents || webContents.isDestroyed()) {
-		stopCapture(cap, "no main window");
+	if (cap.closed || current !== cap || webContents.isDestroyed()) {
+		stopCapture(cap, "renderer unavailable");
 		return "failed-closed";
 	}
 
