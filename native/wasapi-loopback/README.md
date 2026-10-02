@@ -2,13 +2,16 @@
 
 A clean-room native Node addon (Rust + [napi-rs](https://napi.rs) + the
 [`windows`](https://crates.io/crates/windows) crate) that performs **WASAPI
-process-tree EXCLUDE loopback** on Windows: it captures the full default-endpoint
-audio mix **except** the process tree rooted at a caller-supplied PID.
+process-tree INCLUDE/EXCLUDE loopback** on Windows. Process capture is
+endpoint-independent; EXCLUDE captures render streams **except** the process tree
+rooted at a caller-supplied PID.
 
 In GoofCord this is the **#46 echo fix** (`ECHO-01`): excluding GoofCord's own
 Electron process tree removes the call audio GoofCord itself plays back, so a
-remote screenshare viewer hears shared desktop/app audio but **not** the call
-echoed back to them.
+remote screenshare viewer does not receive GoofCord's own rendered audio. An
+unrelated process re-rendering that audio (e.g. Sonar) can still be captured.
+See the [current product contract](../../docs/windows-screenshare-audio.md) for
+selection, identity limitations, packaging, parity and manual validation.
 
 ## Clean-room provenance (ECHO-04)
 
@@ -27,13 +30,12 @@ Microsoft MIT copyright notice is retained verbatim in [`NOTICE`](./NOTICE).
   via `AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM` (no Rust-side resampling).
 - Activates the WASAPI process loopback in
   `PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE` mode against the supplied
-  exclude-root PID.
+  exclude-root PID, or INCLUDE against an explicitly selected app tree.
 - Resolves `ActivateAudioInterfaceAsync` **dynamically** (`LoadLibraryW` +
   `GetProcAddress` on `mmdevapi.dll`), so the `.node` **loads** on every Windows
-  build and only **activates** where the API is present. Any non-`S_OK`
-  activation result (or a failed `GetProcAddress`) is reported as "unsupported"
-  (`start` resolves `false`) rather than thrown — the graceful-fallback
-  foundation for `ECHO-03`.
+  build with compatible dependencies and only **activates** where the API is
+  supported. Failed activation returns session ID `0`; the product wrapper fails
+  closed, rather than broadening the requested scope to Chromium loopback.
 - Runs an event-driven capture loop on a dedicated thread and pushes
   **480-frame** (3840-byte) interleaved-stereo f32 chunks to JS over a napi
   `ThreadsafeFunction` (`NonBlocking` + bounded queue → drop-oldest backpressure).
@@ -57,6 +59,7 @@ function listAudioApps(): { processId: number; displayName: string; binary: stri
 // chunks delivered); pair timingFrame with qpcPosition100Ns for rate. DevicePosition may never
 // advance on process loopback (devicePositionAdvances === 0) — don't rely on it.
 function getCaptureStats(id: number): CaptureStats | null;
+// Retained experimental API, NOT selected by GoofCord runtime:
 // Endpoint loopback of one render device MINUS process-loopback INCLUDE of rootPid's tree, at a
 // verified integer offset and unity gain; muted while unverified, never an EXCLUDE/raw fallback.
 // deviceId null/undefined/"default" = eConsole default. See SUBTRACTION.md.
@@ -66,7 +69,7 @@ function getLastSubtractionStartError(): string | null;
 ```
 
 The subtraction's timeline/alignment core is the dependency-free `subtract-core/` crate, testable
-on any OS: `cargo test --manifest-path subtract-core/Cargo.toml`.
+in CI. It is not the normal system-audio path.
 
 ## Building (Windows only)
 
@@ -78,13 +81,8 @@ prebuilt `.node`, per its "no new build tooling" constraint). It is built on a
 napi build --release --target x86_64-pc-windows-msvc
 ```
 
-which produces **`wasapi-loopback-win32-x64.node`**. GoofCord picks it up via the
-`GOOFCORD_WASAPI_LOOPBACK_PATH` env override (mirrors `GOOFCORD_VENBIND_PATH` /
-`GOOFCORD_PATCHCORD_PATH`); `copyNativeModules()` renames it into
-`assets/native/wasapi-loopback-win32-x64.node`.
-
-## Status
-
-In-repo during Phase 4 (`native/wasapi-loopback/`). It is slated to move to its
-own published, venbind-style prebuilt-`.node` repo (with `optionalDependencies`)
-in **Phase 5**.
+which produces **`wasapi-loopback-win32-x64.node`**. Product builds use the pinned
+`wasapi-loopback` optionalDependency prebuilt, not this in-tree source or an env
+override. `copyNativeModules()` stages the target's binary and emits it into
+`ts-out/native/`; packaging validates the actual ASAR/unpacked files. The in-tree
+crate and subtraction harness remain historical/diagnostic development material.

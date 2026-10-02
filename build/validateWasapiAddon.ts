@@ -7,19 +7,16 @@
 // share silently loses its audio. This module makes that failure happen loudly, at build time,
 // only for the one target that ships a prebuild at all.
 //
-// "Required" vs "diagnostic" exports are split by actual product usage (grepped from src/):
-// listAudioApps backs the per-app include picker, startIncludeProcessTree backs app mode,
-// startEndpointMinusSelf/getSubtractionStatus/getLastSubtractionStartError back system mode
-// (start, aligning/running status, refusal reason) and stopSession/stopAll back stop — all
-// product-required. startExcludeProcessTree (no longer used by src/ — system mode never falls
-// back to EXCLUDE), listRenderEndpoints and getCaptureStats are only called from
-// tools/wasapi-echo-test and research harnesses, so their absence is a diagnostics regression,
-// not a shippability one.
+// Product requires INCLUDE/EXCLUDE process trees. Subtraction remains an unused experiment.
 import fs from "node:fs";
 
-export const WASAPI_REQUIRED_EXPORTS = ["startIncludeProcessTree", "startEndpointMinusSelf", "getSubtractionStatus", "getLastSubtractionStartError", "stopSession", "stopAll", "listAudioApps"] as const;
+export const WASAPI_REQUIRED_EXPORTS = ["startIncludeProcessTree", "startExcludeProcessTree", "stopSession", "stopAll", "listAudioApps"] as const;
 
-export const WASAPI_DIAGNOSTIC_EXPORTS = ["startExcludeProcessTree", "listRenderEndpoints", "getCaptureStats"] as const;
+export const WASAPI_DIAGNOSTIC_EXPORTS = ["listRenderEndpoints", "getCaptureStats"] as const;
+
+export function wasapiTargetFilename(platform: string, arch: string): string | undefined {
+	return platform === "win32" && arch === "x64" ? "wasapi-loopback-win32-x64.node" : undefined;
+}
 
 export type WasapiExportName = (typeof WASAPI_REQUIRED_EXPORTS)[number] | (typeof WASAPI_DIAGNOSTIC_EXPORTS)[number];
 

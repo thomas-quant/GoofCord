@@ -8,7 +8,7 @@ import pc from "picocolors";
 import { genIpcHandlers } from "./genIpcHandlers.ts";
 import { genSettingsLangFile } from "./genSettingsLangFile.ts";
 import { globImporterPlugin } from "./globbyGlob.ts";
-import { removeStaleAddonFile, validateWasapiAddon } from "./validateWasapiAddon.ts";
+import { removeStaleAddonFile, validateWasapiAddon, wasapiTargetFilename } from "./validateWasapiAddon.ts";
 
 const ROOT_DIR = process.cwd();
 const OUT_DIR = path.join(ROOT_DIR, "ts-out");
@@ -190,16 +190,18 @@ async function copyNativeModules() {
 	};
 
 	const tasks = modules.flatMap((mod) => {
-		return mod.prebuilds.map((prebuild) => {
-			const src = path.join(ROOT_DIR, "node_modules", ...prebuild.src);
-			const ext = path.extname(src);
-			const dest = path.join(nativeDir, `${mod.name}-${prebuild.platform}-${prebuild.arch}${ext}`);
+		return mod.prebuilds
+			.filter((prebuild) => prebuild.platform === TARGET_PLATFORM && prebuild.arch === TARGET_ARCH)
+			.map((prebuild) => {
+				const src = path.join(ROOT_DIR, "node_modules", ...prebuild.src);
+				const ext = path.extname(src);
+				const dest = path.join(nativeDir, `${mod.name}-${prebuild.platform}-${prebuild.arch}${ext}`);
 
-			// A failed copy must not leave behind a stale addon staged by a PREVIOUS build (this
-			// directory is never cleaned): copyNativeAddonsToOutDir() would otherwise happily ship
-			// an old .node as if it were the current build's.
-			return copyFile(src, dest).catch(() => removeStaleAddonFile(dest));
-		});
+				// A failed copy must not leave behind a stale addon staged by a PREVIOUS build (this
+				// directory is never cleaned): copyNativeAddonsToOutDir() would otherwise happily ship
+				// an old .node as if it were the current build's.
+				return copyFile(src, dest).catch(() => removeStaleAddonFile(dest));
+			});
 	});
 
 	await Promise.all(tasks);
@@ -233,15 +235,9 @@ async function copyNativeAddonsToOutDir() {
 	const srcDir = path.join(ASSETS_DIR, "native");
 	const destDir = path.join(OUT_DIR, "native");
 
-	let entries: string[];
-	try {
-		entries = await fs.promises.readdir(srcDir);
-	} catch {
-		return; // nothing staged for this platform → nothing to copy
-	}
-
-	const addons = entries.filter((name) => /^wasapi-loopback-.*\.node$/.test(name));
-	if (addons.length === 0) return;
+	const filename = wasapiTargetFilename(TARGET_PLATFORM, TARGET_ARCH);
+	if (!filename) return;
+	const addons = [filename];
 
 	await fs.promises.mkdir(destDir, { recursive: true });
 	await Promise.all(

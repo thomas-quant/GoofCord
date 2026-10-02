@@ -2,9 +2,10 @@ import path from "node:path";
 
 import { hasPipewirePulse, patchcordList, patchcordStartApp, patchcordStartSystem } from "@root/src/modules/native/patchcord.ts";
 // Windows WASAPI screenshare audio (the #46 fix). Additive 3-way audio gate:
-// Linux patchcord → win32 native capture (INCLUDE per app / endpoint minus self) → "loopback" only
+// Linux patchcord → win32 native capture (INCLUDE per app / EXCLUDE own tree) → "loopback" only
 // off-Windows or with the explicit --no-wasapi override.
-import { currentWasapiCaptureId, isWasapiAvailable, listWasapiAudioApps, startWasapiCapture, stopWasapiLoopback } from "@root/src/modules/native/wasapiLoopback.ts";
+import { currentWasapiCaptureId, isWasapiAvailable, listWasapiPickerApps, startWasapiCapture, stopWasapiLoopback } from "@root/src/modules/native/wasapiLoopback.ts";
+import type { WasapiProcessSnapshot } from "@root/src/modules/native/wasapiProcesses.ts";
 import { BrowserWindow, desktopCapturer, ipcMain, session } from "electron";
 import type { ShareableNode } from "patchcord";
 import pc from "picocolors";
@@ -20,17 +21,23 @@ interface ActiveRequest {
 	// The Windows native capture that was live when this picker opened. A share this request
 	// creates replaces it; a capture started after the request opened belongs to someone else.
 	wasapiCaptureAtOpen?: number;
+	audioSelectionId: number;
+	audioIdentities?: WasapiProcessSnapshot;
 }
 
 const activeRequests = new Map<number, ActiveRequest>();
 
-async function fetchScreenshareData(isRefresh = false) {
+async function fetchScreenshareData(req: ActiveRequest, isRefresh = false) {
+	const audioSelectionId = ++req.audioSelectionId;
+	req.audioIdentities = undefined;
 	// If it's a manual refresh AND we are on Wayland, skip fetching video sources to prevent re-triggering the OS portal.
 	const skipSources = isRefresh && isWayland;
 
 	// Per-app audio sources: patchcord on Linux, WASAPI audio-session enumeration on Windows.
 	// Both yield { processId, displayName } so the picker renders them identically.
-	const [rawSources, audioNodes] = await Promise.all([skipSources ? null : desktopCapturer.getSources({ types: ["screen", "window"], thumbnailSize: { width: 320, height: 180 } }), process.platform === "linux" ? patchcordList().catch(() => [] as ShareableNode[]) : listWasapiAudioApps()]);
+	const [rawSources, audio] = await Promise.all([skipSources ? null : desktopCapturer.getSources({ types: ["screen", "window"], thumbnailSize: { width: 320, height: 180 } }), process.platform === "linux" ? patchcordList().catch(() => [] as ShareableNode[]) : listWasapiPickerApps()]);
+	const audioNodes = Array.isArray(audio) ? audio : audio.apps;
+	if (req.audioSelectionId === audioSelectionId && !Array.isArray(audio)) req.audioIdentities = audio.identities;
 
 	return {
 		sources:
@@ -40,10 +47,12 @@ async function fetchScreenshareData(isRefresh = false) {
 				thumbnail: s.thumbnail.toDataURL(),
 			})) ?? null,
 		audioNodes,
+		audioSelectionId,
+		resetAudioSelection: process.platform === "win32",
 		// Show the 3-mode audio UI (none / system / app) wherever per-app capture exists.
 		hasAdvancedAudio: hasPipewirePulse || isWasapiAvailable(),
-		// Only patchcord can do "system MINUS these apps". Windows system mode subtracts only our own
-		// tree (endpoint minus self) — so Windows must NOT offer an exclusion list.
+		// Only patchcord can do "system MINUS these apps". Windows system mode excludes only our own
+		// process tree — so Windows must NOT offer an exclusion list.
 		supportsAudioExclude: hasPipewirePulse,
 	};
 }
@@ -62,10 +71,11 @@ export function registerScreenshareHandler() {
 			return res;
 		}
 
-		return fetchScreenshareData(true);
+		if (!req) return;
+		return fetchScreenshareData(req, true);
 	});
 
-	ipcMain.handle("selectScreenshareSource", async (event, id, name, audioConfig, contentHint, resolution, framerate) => {
+	ipcMain.handle("selectScreenshareSource", async (event, id, name, audioConfig, contentHint, resolution, framerate, audioSelectionId) => {
 		const req = activeRequests.get(event.sender.id);
 		if (!req) return;
 
@@ -106,8 +116,8 @@ export function registerScreenshareHandler() {
 				}
 			} else if (process.platform === "win32") {
 				// Windows native WASAPI capture: INCLUDE the selected app(s) in "app" mode, or the
-				// default endpoint minus our own tree in "system" mode (the #46 echo fix).
-				const outcome = await startWasapiCapture(audioConfig);
+				// EXCLUDE our own main process tree in "system" mode.
+				const outcome = await startWasapiCapture(audioConfig, { identities: audioSelectionId === req.audioSelectionId ? req.audioIdentities : undefined });
 
 				if (outcome === "started") {
 					// Do NOT also request Chromium "loopback" here. The addon is already running its OWN
@@ -126,7 +136,7 @@ export function registerScreenshareHandler() {
 					console.warn(pc.cyan("[Screenshare]"), `WASAPI ${audioConfig.mode} capture unavailable; sharing without audio rather than falling back to Chromium loopback`);
 				} else {
 					result.audio = "loopback";
-					console.log(pc.cyan("[Screenshare]"), "WASAPI capture disabled (--no-wasapi), using Chromium loopback");
+					console.log(pc.cyan("[Screenshare]"), "WASAPI system capture unsupported or explicitly disabled, using Chromium loopback");
 				}
 			} else {
 				result.audio = "loopback";
@@ -164,13 +174,15 @@ export function registerScreenshareHandler() {
 
 		const wcId = capturerWindow.webContents.id;
 
-		const initialPromise = fetchScreenshareData(false);
+		const req: ActiveRequest = { callback, window: capturerWindow, frame: request.frame, audioSelectionId: 0, wasapiCaptureAtOpen: currentWasapiCaptureId() };
+		activeRequests.set(wcId, req);
+		const initialPromise = fetchScreenshareData(req, false);
 		initialPromise.catch(() => {
 			// Close and clean up if getSources errors
 			if (!capturerWindow.isDestroyed()) capturerWindow.close();
 		});
 
-		activeRequests.set(wcId, { callback, window: capturerWindow, frame: request.frame, initialPromise, wasapiCaptureAtOpen: currentWasapiCaptureId() });
+		req.initialPromise = initialPromise;
 
 		capturerWindow.once("closed", () => {
 			if (activeRequests.has(wcId)) {

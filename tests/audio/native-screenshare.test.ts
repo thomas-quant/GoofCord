@@ -17,7 +17,8 @@ function openRequest() {
 	const wcId = createdWindows.at(-1)!.webContents.id;
 	return {
 		select: async (id: string, audioConfig: { mode: string; pids: number[] }) => {
-			await ipcHandlers.get("selectScreenshareSource")!({ sender: { id: wcId } }, id, "name", audioConfig, "motion", 720, 30);
+			const payload = await ipcHandlers.get("refreshScreenshareSources")!({ sender: { id: wcId } });
+			await ipcHandlers.get("selectScreenshareSource")!({ sender: { id: wcId } }, id, "name", audioConfig, "motion", 720, 30, payload.audioSelectionId);
 			return result;
 		},
 	};
@@ -31,16 +32,16 @@ describe("selectScreenshareSource ↔ WASAPI ownership", () => {
 		expect(wasapi.currentWasapiCaptureId()).toBeDefined();
 	});
 
-	test("a refused subtraction ships the share without audio, never Chromium loopback", async () => {
-		addon.failSubtract = "process-loopback INCLUDE unavailable";
+	test("a refused EXCLUDE activation ships the share without audio, never Chromium loopback", async () => {
+		addon.failPids.add(process.pid);
 		const res = await openRequest().select("screen:0", { mode: "system", pids: [] });
 		expect(res.video.id).toBe("screen:0");
 		expect(res.audio).toBeUndefined();
-		expect(addon.calls.some((c) => c.startsWith("exclude:"))).toBe(false);
+		expect(addon.calls.some((c) => c.startsWith("subtract:"))).toBe(false);
 	});
 
-	test("an addon without the subtraction API ships the share without audio", async () => {
-		(addon as any).startEndpointMinusSelf = undefined;
+	test("an addon without the EXCLUDE API ships the share without audio", async () => {
+		(addon as any).startExcludeProcessTree = undefined;
 		const res = await openRequest().select("screen:0", { mode: "system", pids: [] });
 		expect(res.audio).toBeUndefined();
 		expect(wasapi.currentWasapiCaptureId()).toBeUndefined();
@@ -112,5 +113,51 @@ describe("selectScreenshareSource ↔ WASAPI ownership", () => {
 		const res = await openRequest().select("", { mode: "none", pids: [] });
 		expect(res).toEqual({});
 		expect(wasapi.currentWasapiCaptureId()).toBe(live);
+	});
+});
+
+describe("picker-local Windows identity snapshots", () => {
+	function picker() {
+		harness.displayMediaHandler!({ frame: null }, () => {});
+		const event = { sender: { id: createdWindows.at(-1)!.webContents.id } };
+		return {
+			refresh: () => ipcHandlers.get("refreshScreenshareSources")!(event),
+			select: (audioSelectionId: number, pids = [5000]) => ipcHandlers.get("selectScreenshareSource")!(event, "screen:0", "name", { mode: "app", pids }, "motion", 720, 30, audioSelectionId),
+		};
+	}
+	beforeEach(() => {
+		addon.apps = [{ processId: 5000, displayName: "a", binary: "a.exe" }];
+	});
+
+	test("binds offered identities to each picker, not the most recently opened one", async () => {
+		const first = picker();
+		const a = await first.refresh();
+		harness.processes.query = async () => {
+			const s = harness.identities();
+			s.get(5000)!.created = "200";
+			return s;
+		};
+		const second = picker();
+		const b = await second.refresh();
+		expect(b.audioNodes).toHaveLength(1);
+		expect(b.resetAudioSelection).toBe(true);
+		await first.select(a.audioSelectionId);
+		expect(addon.sessions.size).toBe(0); // same PID in another picker does not replace first's identity
+		await second.select(b.audioSelectionId);
+		expect(addon.calls).toContain("include:5000");
+	});
+
+	test("refresh invalidates old selection generation; forged PID cannot enter a trusted list", async () => {
+		const first = picker();
+		const a = await first.refresh();
+		const b = await first.refresh();
+		expect(b.audioSelectionId).toBeGreaterThan(a.audioSelectionId);
+		await first.select(a.audioSelectionId);
+		expect(addon.calls).toEqual([]);
+		const second = picker();
+		const c = await second.refresh();
+		addon.apps.push({ processId: 6000, displayName: "new", binary: "new.exe" });
+		await second.select(c.audioSelectionId, [6000]);
+		expect(addon.calls).toEqual([]);
 	});
 });

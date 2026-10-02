@@ -1,10 +1,10 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 
-import { addon, appEvents, chunk, flush, nextOrder, notifications, OWN_CHILD_PIDS, quitCalls, renderer, reset, setStatus, wasapi } from "./nativeHarness.ts";
+import { addon, appEvents, chunk, flush, nextOrder, notifications, OWN_CHILD_PIDS, quitCalls, renderer, reset, startCapture, processes, identities, wasapi } from "./nativeHarness.ts";
 
 const FAST = { readyTimeoutMs: 30 };
-const SUBTRACT_SELF = `subtract:${process.pid}:null`;
-const noExclude = () => expect(addon.calls.filter((c) => c.startsWith("exclude:"))).toEqual([]);
+const EXCLUDE_SELF = `exclude:${process.pid}`;
+const noSubtraction = () => expect(addon.calls.filter((c) => c.startsWith("subtract:"))).toEqual([]);
 
 beforeEach(reset);
 
@@ -15,10 +15,10 @@ describe("startWasapiCapture transport handshake", () => {
 			startOrder = nextOrder();
 		};
 
-		const outcome = await wasapi.startWasapiCapture({ mode: "system", pids: [] });
+		const outcome = await startCapture({ mode: "system", pids: [] });
 
 		expect(outcome).toBe("started");
-		expect(addon.calls).toEqual([SUBTRACT_SELF]);
+		expect(addon.calls).toEqual([EXCLUDE_SELF]);
 		expect(renderer.transfers).toHaveLength(1);
 		const [t] = renderer.transfers;
 		expect(t.channel).toBe("wasapi:pcm-port");
@@ -28,15 +28,15 @@ describe("startWasapiCapture transport handshake", () => {
 	});
 
 	test("captureIds increase monotonically per attempt", async () => {
-		await wasapi.startWasapiCapture({ mode: "system", pids: [] });
-		await wasapi.startWasapiCapture({ mode: "system", pids: [] });
+		await startCapture({ mode: "system", pids: [] });
+		await startCapture({ mode: "system", pids: [] });
 		const [a, b] = renderer.transfers.map((t) => t.message.captureId);
 		expect(b).toBeGreaterThan(a);
 	});
 
 	test("PCM before the ready ack is dropped; after it, forwarded as {index, pcm}", async () => {
 		renderer.autoAck = false;
-		const pending = wasapi.startWasapiCapture({ mode: "system", pids: [] }, { readyTimeoutMs: 1000 });
+		const pending = startCapture({ mode: "system", pids: [] }, { readyTimeoutMs: 1000 });
 		const [session] = addon.sessions.values();
 		const [t] = renderer.transfers;
 
@@ -58,7 +58,7 @@ describe("startWasapiCapture transport handshake", () => {
 
 	test("a ready ack for a different captureId does not count", async () => {
 		renderer.autoAck = false;
-		const pending = wasapi.startWasapiCapture({ mode: "system", pids: [] }, FAST);
+		const pending = startCapture({ mode: "system", pids: [] }, FAST);
 		const [t] = renderer.transfers;
 		t.port.postMessage({ type: "ready", captureId: t.message.captureId + 1000 });
 		expect(await pending).toBe("failed-closed");
@@ -66,7 +66,7 @@ describe("startWasapiCapture transport handshake", () => {
 
 	test("ready timeout stops native capture and fails closed in system mode too", async () => {
 		renderer.autoAck = false;
-		const outcome = await wasapi.startWasapiCapture({ mode: "system", pids: [] }, FAST);
+		const outcome = await startCapture({ mode: "system", pids: [] }, FAST);
 		expect(outcome).toBe("failed-closed");
 		expect(addon.sessions.size).toBe(0);
 		expect(wasapi.currentWasapiCaptureId()).toBeUndefined();
@@ -74,25 +74,25 @@ describe("startWasapiCapture transport handshake", () => {
 		await flush();
 		expect(renderer.received.get(t.message.captureId)).toContainEqual({ type: "stopped", captureId: t.message.captureId });
 		expect(notifications).toHaveLength(1);
-		noExclude();
+		noSubtraction();
 	});
 
 	test("ready timeout in app mode fails closed", async () => {
 		renderer.autoAck = false;
 		addon.apps = [{ processId: 5000, displayName: "a", binary: "a.exe" }];
-		expect(await wasapi.startWasapiCapture({ mode: "app", pids: [5000] }, FAST)).toBe("failed-closed");
+		expect(await startCapture({ mode: "app", pids: [5000] }, FAST)).toBe("failed-closed");
 		expect(addon.sessions.size).toBe(0);
 		expect(notifications).toHaveLength(1);
 	});
 
 	test("a destroyed main window is a transport failure, not a started capture", async () => {
 		renderer.destroyed = true;
-		expect(await wasapi.startWasapiCapture({ mode: "system", pids: [] })).toBe("failed-closed");
+		expect(await startCapture({ mode: "system", pids: [] })).toBe("failed-closed");
 		expect(addon.sessions.size).toBe(0);
 	});
 
 	test("renderer page going away (port close) stops the capture", async () => {
-		await wasapi.startWasapiCapture({ mode: "system", pids: [] });
+		await startCapture({ mode: "system", pids: [] });
 		renderer.transfers[0].port.close();
 		await flush();
 		expect(addon.sessions.size).toBe(0);
@@ -100,81 +100,44 @@ describe("startWasapiCapture transport handshake", () => {
 	});
 });
 
-describe("system mode: endpoint minus self, never a fallback", () => {
-	test("starts startEndpointMinusSelf for our own pid on the default endpoint, never EXCLUDE", async () => {
-		expect(await wasapi.startWasapiCapture({ mode: "system", pids: [] })).toBe("started");
-		expect(addon.calls).toEqual([SUBTRACT_SELF]);
-		expect([...addon.sessions.values()].map((s) => s.kind)).toEqual(["subtract"]);
+describe("system mode: EXCLUDE own main tree, never subtraction", () => {
+	test("starts one EXCLUDE session for the main PID", async () => {
+		expect(await startCapture({ mode: "system", pids: [] })).toBe("started");
+		expect(addon.calls).toEqual([EXCLUDE_SELF]);
+		expect([...addon.sessions.values()].map((s) => s.kind)).toEqual(["exclude"]);
 		expect(notifications).toEqual([]);
 	});
 
-	test("a refused start fails closed with the addon's own reason and transfers no port", async () => {
-		addon.failSubtract = "endpoint mix format is 44100 Hz / 2 ch, need native 48 kHz stereo";
-		expect(await wasapi.startWasapiCapture({ mode: "system", pids: [] })).toBe("failed-closed");
-		expect(addon.calls).toEqual([SUBTRACT_SELF]);
+	test("refused activation fails closed with a visible reason", async () => {
+		addon.failPids.add(process.pid);
+		expect(await startCapture({ mode: "system", pids: [] })).toBe("failed-closed");
+		expect(addon.calls).toEqual([EXCLUDE_SELF]);
 		expect(renderer.transfers).toHaveLength(0);
-		expect(notifications).toHaveLength(1);
-		expect(notifications[0].body).toContain("44100 Hz");
+		expect(notifications[0].body).toContain("Windows refused");
 	});
 
-	test("an addon without the subtraction API fails closed, never falling back to EXCLUDE", async () => {
-		(addon as any).startEndpointMinusSelf = undefined;
-		expect(await wasapi.startWasapiCapture({ mode: "system", pids: [] })).toBe("failed-closed");
+	test("missing EXCLUDE fails closed", async () => {
+		(addon as any).startExcludeProcessTree = undefined;
+		expect(await startCapture({ mode: "system", pids: [] })).toBe("failed-closed");
 		expect(addon.calls).toEqual([]);
-		expect(renderer.transfers).toHaveLength(0);
-		expect(notifications[0].body).toContain("startEndpointMinusSelf");
+		expect(notifications[0].body).toContain("startExcludeProcessTree");
 	});
 
-	test("a fresh session is reported as aligning (muted), and running only once the native lock says so", async () => {
-		await wasapi.startWasapiCapture({ mode: "system", pids: [] });
+	test("native fault stops system audio and notifies once", async () => {
+		await startCapture({ mode: "system", pids: [] });
 		const [session] = addon.sessions.values();
-		expect(wasapi.currentWasapiSubtractionStatus()?.state).toBe("aligning");
-		expect(wasapi.currentWasapiSubtractionStatus()?.locked).toBe(false);
-
-		setStatus(session.id, { state: "running", reason: "", locked: true, offsetFrames: 1024, coarseOffsetFrames: 0, generation: 1 });
-		expect(wasapi.currentWasapiSubtractionStatus()).toMatchObject({ state: "running", locked: true, offsetFrames: 1024 });
-	});
-
-	test("a native fault ends the capture with the status reason and does not fall back", async () => {
-		await wasapi.startWasapiCapture({ mode: "system", pids: [] });
-		const [session] = addon.sessions.values();
-		setStatus(session.id, { state: "failed", reason: "lost lock: held-out gain rejected twice" });
-
-		session.cb(new Error("subtraction session ended"));
+		session.cb(new Error("device invalidated"));
+		session.cb(new Error("late"));
 		expect(wasapi.currentWasapiCaptureId()).toBeUndefined();
 		expect(addon.sessions.size).toBe(0);
 		expect(notifications).toHaveLength(1);
-		expect(notifications[0].body).toContain("lost lock");
-		expect(addon.calls).toEqual([SUBTRACT_SELF, `stop:${session.id}`]);
-	});
-
-	test("the status poll ends a capture whose native state failed, even before the callback error", async () => {
-		await wasapi.startWasapiCapture({ mode: "system", pids: [] }, { statusPollMs: 5 });
-		const [session] = addon.sessions.values();
-		setStatus(session.id, { state: "failed", reason: "overflow: reference leg stalled" });
-		await new Promise((r) => setTimeout(r, 30));
-
-		expect(wasapi.currentWasapiCaptureId()).toBeUndefined();
-		expect(notifications[0].body).toContain("overflow");
-		session.cb(new Error("late")); // the callback error arriving afterwards must not notify twice
-		expect(notifications).toHaveLength(1);
-		noExclude();
-	});
-
-	test("a processed endpoint copy (lost exactness) tells the user to turn off audio enhancements", async () => {
-		await wasapi.startWasapiCapture({ mode: "system", pids: [] }, { statusPollMs: 5 });
-		const [session] = addon.sessions.values();
-		setStatus(session.id, { state: "failed", reason: "lost lock at offset 960: the endpoint no longer carries a sample-identical copy of the reference (worst residual +0.1500 at lag +4)" });
-		await new Promise((r) => setTimeout(r, 30));
-		expect(wasapi.currentWasapiCaptureId()).toBeUndefined();
-		expect(notifications).toHaveLength(1);
-		expect(notifications[0].body).toContain("Audio enhancements");
+		expect(notifications[0].body).toContain("device invalidated");
 	});
 
 	test("--no-wasapi keeps the explicit Chromium override without touching the addon", async () => {
 		process.argv.push("--no-wasapi");
 		try {
-			expect(await wasapi.startWasapiCapture({ mode: "system", pids: [] })).toBe("unsupported");
+			expect(await startCapture({ mode: "system", pids: [] })).toBe("unsupported");
 		} finally {
 			process.argv.splice(process.argv.indexOf("--no-wasapi"), 1);
 		}
@@ -188,7 +151,7 @@ describe("win32 arches without a shipped addon", () => {
 		test(`${arch} keeps Chromium loopback: unsupported, no addon call, no notification`, async () => {
 			Object.defineProperty(process, "arch", { value: arch, configurable: true });
 			try {
-				expect(await wasapi.startWasapiCapture({ mode: "system", pids: [] })).toBe("unsupported");
+				expect(await startCapture({ mode: "system", pids: [] })).toBe("unsupported");
 				expect(wasapi.isWasapiAvailable()).toBe(false);
 				expect(wasapi.shouldInjectWasapiTransport()).toBe(false);
 				expect(wasapi.listWasapiAudioApps()).toEqual([]);
@@ -202,40 +165,35 @@ describe("win32 arches without a shipped addon", () => {
 });
 
 describe("app-mode target validation", () => {
-	test("dedupes, drops invalid, own main/child/parent, and stale PIDs; fails closed when nothing is left", async () => {
-		addon.apps = [5000, 6000, ...OWN_CHILD_PIDS].map((processId) => ({ processId, displayName: "x", binary: "x.exe" }));
-		const outcome = await wasapi.startWasapiCapture({
-			mode: "app",
-			pids: [5000, 5000, -1, 0, 1.5, Number.NaN, "6000" as any, process.pid, process.ppid, ...OWN_CHILD_PIDS, 7777 /* not listed any more */, 6000],
-		});
-		expect(outcome).toBe("started");
+	test("dedupes selected identities without adding roots", async () => {
+		addon.apps = [5000, 6000].map((processId) => ({ processId, displayName: "x", binary: "x.exe" }));
+		expect(await startCapture({ mode: "app", pids: [5000, 5000, 6000] })).toBe("started");
 		expect(addon.calls).toEqual(["include:5000", "include:6000"]);
-		expect(wasapi.currentWasapiSubtractionStatus()).toBeUndefined();
 	});
 
 	test("only own/stale targets → failed-closed without touching native capture", async () => {
 		addon.apps = OWN_CHILD_PIDS.map((processId) => ({ processId, displayName: "x", binary: "x.exe" }));
-		expect(await wasapi.startWasapiCapture({ mode: "app", pids: [...OWN_CHILD_PIDS, 4242] })).toBe("failed-closed");
+		expect(await startCapture({ mode: "app", pids: [...OWN_CHILD_PIDS, 4242] })).toBe("failed-closed");
 		expect(addon.calls).toEqual([]);
 		expect(renderer.transfers).toHaveLength(0);
 		expect(notifications).toHaveLength(1);
-		expect(notifications[0].body).toContain("are playing audio any more");
+		expect(notifications[0].body).toContain("re-pick");
 	});
 
 	test("every selected app failing to activate fails closed", async () => {
 		addon.apps = [{ processId: 5000, displayName: "a", binary: "a.exe" }];
 		addon.failPids.add(5000);
-		expect(await wasapi.startWasapiCapture({ mode: "app", pids: [5000] })).toBe("failed-closed");
+		expect(await startCapture({ mode: "app", pids: [5000] })).toBe("failed-closed");
 		expect(renderer.transfers).toHaveLength(0);
 		expect(notifications).toHaveLength(1);
 		expect(notifications[0].body).toContain("refused to capture audio from the selected app.");
 	});
 
-	test("a partial app start is a started share and does not notify", async () => {
+	test("a partial app start keeps successful apps and notifies", async () => {
 		addon.apps = [5000, 6000].map((processId) => ({ processId, displayName: "x", binary: "x.exe" }));
 		addon.failPids.add(5000);
-		expect(await wasapi.startWasapiCapture({ mode: "app", pids: [5000, 6000] })).toBe("started");
-		expect(notifications).toEqual([]);
+		expect(await startCapture({ mode: "app", pids: [5000, 6000] })).toBe("started");
+		expect(notifications).toHaveLength(1);
 	});
 
 	test("listWasapiAudioApps hides our own main and child processes", () => {
@@ -246,11 +204,11 @@ describe("app-mode target validation", () => {
 
 describe("stop / restart isolation", () => {
 	test("a new start replaces the old capture; late PCM from the old sessions never reaches a port", async () => {
-		await wasapi.startWasapiCapture({ mode: "system", pids: [] });
+		await startCapture({ mode: "system", pids: [] });
 		const [oldSession] = addon.sessions.values();
 		const oldT = renderer.transfers[0];
 
-		await wasapi.startWasapiCapture({ mode: "system", pids: [] });
+		await startCapture({ mode: "system", pids: [] });
 		const newT = renderer.transfers[1];
 
 		expect(addon.calls).toContain(`stop:${oldSession.id}`);
@@ -264,9 +222,9 @@ describe("stop / restart isolation", () => {
 	});
 
 	test("a stale captureId stop does not touch the newer capture", async () => {
-		await wasapi.startWasapiCapture({ mode: "system", pids: [] });
+		await startCapture({ mode: "system", pids: [] });
 		const oldId = renderer.transfers[0].message.captureId;
-		await wasapi.startWasapiCapture({ mode: "system", pids: [] });
+		await startCapture({ mode: "system", pids: [] });
 		const newId = renderer.transfers[1].message.captureId;
 		addon.calls = [];
 
@@ -281,7 +239,7 @@ describe("stop / restart isolation", () => {
 	});
 
 	test("unscoped stop is a full shutdown", async () => {
-		await wasapi.startWasapiCapture({ mode: "system", pids: [] });
+		await startCapture({ mode: "system", pids: [] });
 		await wasapi.stopWasapiLoopback();
 		expect(addon.calls).toContain("stopAll");
 		expect(wasapi.currentWasapiCaptureId()).toBeUndefined();
@@ -289,9 +247,9 @@ describe("stop / restart isolation", () => {
 
 	test("an attempt superseded while waiting for ready fails closed and leaves the newer capture alone", async () => {
 		renderer.autoAck = false;
-		const first = wasapi.startWasapiCapture({ mode: "system", pids: [] }, { readyTimeoutMs: 1000 });
+		const first = startCapture({ mode: "system", pids: [] }, { readyTimeoutMs: 1000 });
 		renderer.autoAck = true;
-		const second = await wasapi.startWasapiCapture({ mode: "system", pids: [] });
+		const second = await startCapture({ mode: "system", pids: [] });
 
 		expect(await first).toBe("failed-closed");
 		expect(second).toBe("started");
@@ -301,23 +259,23 @@ describe("stop / restart isolation", () => {
 
 	test("a native device error on every session ends the capture", async () => {
 		addon.apps = [5000, 6000].map((processId) => ({ processId, displayName: "x", binary: "x.exe" }));
-		await wasapi.startWasapiCapture({ mode: "app", pids: [5000, 6000] });
+		await startCapture({ mode: "app", pids: [5000, 6000] });
 		const [a, b] = addon.sessions.values();
 		const id = renderer.transfers[0].message.captureId;
 
 		a.cb(new Error("device invalidated"));
 		expect(wasapi.currentWasapiCaptureId()).toBe(id);
-		expect(notifications).toEqual([]);
+		expect(notifications).toHaveLength(1);
 		b.cb(new Error("device invalidated"));
 		expect(wasapi.currentWasapiCaptureId()).toBeUndefined();
-		expect(notifications).toHaveLength(1);
+		expect(notifications).toHaveLength(2);
 		expect(notifications[0].body).toContain("device invalidated");
 	});
 });
 
 describe("before-quit", () => {
 	test("stops a live capture once and does not recurse after app.quit()", async () => {
-		await wasapi.startWasapiCapture({ mode: "system", pids: [] });
+		await startCapture({ mode: "system", pids: [] });
 
 		let prevented = 0;
 		const event = { preventDefault: () => prevented++ };
@@ -336,5 +294,67 @@ describe("before-quit", () => {
 		let prevented = 0;
 		appEvents.emit("before-quit", { preventDefault: () => prevented++ });
 		expect(prevented).toBe(0);
+	});
+});
+
+describe("request-bound identity and async lifecycle", () => {
+	beforeEach(() => {
+		addon.apps = [{ processId: 5000, displayName: "a", binary: "a.exe" }];
+	});
+
+	test("a recycled PID between picker and activation fails closed", async () => {
+		const trusted = identities();
+		processes.query = async () => {
+			const s = identities();
+			s.get(5000)!.created = "200";
+			return s;
+		};
+		expect(await wasapi.startWasapiCapture({ mode: "app", pids: [5000] }, { identities: trusted })).toBe("failed-closed");
+		expect(addon.calls).toEqual([]);
+	});
+
+	test("no trusted picker snapshot, failed OS lookup, or missing session enumeration never captures", async () => {
+		expect(await wasapi.startWasapiCapture({ mode: "app", pids: [5000] })).toBe("failed-closed");
+		processes.query = async () => {
+			throw new Error("CIM denied");
+		};
+		expect(await startCapture({ mode: "app", pids: [5000] })).toBe("failed-closed");
+		processes.query = async () => identities();
+		(addon as any).listAudioApps = undefined;
+		expect(await startCapture({ mode: "app", pids: [5000] })).toBe("failed-closed");
+		expect(addon.calls).toEqual([]);
+	});
+
+	for (const action of ["replace", "stop"] as const) {
+		test(`${action} during identity lookup cannot revive the old attempt`, async () => {
+			let release!: (s: ReturnType<typeof identities>) => void;
+			processes.query = () =>
+				new Promise((resolve) => {
+					release = resolve;
+				});
+			const first = startCapture({ mode: "app", pids: [5000] });
+			if (action === "replace") await startCapture({ mode: "system", pids: [] });
+			else await wasapi.stopWasapiLoopback();
+			release(identities());
+			expect(await first).toBe("failed-closed");
+			expect(addon.calls).not.toContain("include:5000");
+			expect(addon.sessions.size).toBe(action === "replace" ? 1 : 0);
+		});
+	}
+
+	test("explicit override and unsupported arch do not broaden app-only requests", async () => {
+		process.argv.push("--no-wasapi");
+		try {
+			expect(await startCapture({ mode: "app", pids: [5000] })).toBe("failed-closed");
+		} finally {
+			process.argv.splice(process.argv.indexOf("--no-wasapi"), 1);
+		}
+		Object.defineProperty(process, "arch", { value: "arm64", configurable: true });
+		try {
+			expect(await startCapture({ mode: "app", pids: [5000] })).toBe("failed-closed");
+		} finally {
+			Object.defineProperty(process, "arch", { value: "x64", configurable: true });
+		}
+		expect(addon.calls).toEqual([]);
 	});
 });

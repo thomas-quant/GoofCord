@@ -1,9 +1,8 @@
+import { mock } from "bun:test";
 // Shared mocks for the main-process WASAPI lifecycle tests. Bun's module mocks are process-wide,
 // so every native*.test.ts imports this one harness (evaluated once) instead of mocking twice.
 import { EventEmitter } from "node:events";
 import path from "node:path";
-
-import { mock } from "bun:test";
 
 const root = path.resolve(import.meta.dir, "../..");
 const abs = (p: string) => path.join(root, p);
@@ -51,7 +50,7 @@ class FakeMessageChannelMain {
 // ── Fake addon ──
 export interface FakeSession {
 	id: number;
-	kind: "include" | "exclude" | "subtract";
+	kind: "include" | "exclude";
 	pid: number;
 	cb: (err: unknown, chunk?: Buffer) => void;
 }
@@ -61,11 +60,6 @@ export const addon = {
 	sessions: new Map<number, FakeSession>(),
 	calls: [] as string[],
 	failPids: new Set<number>(),
-	// Non-null ⇒ startEndpointMinusSelf refuses (returns 0) with this as its start error.
-	failSubtract: null as string | null,
-	lastStartError: null as string | null,
-	// Per-session native subtraction status; like the real addon it is gone after stopSession.
-	statuses: new Map<number, Record<string, any>>(),
 	apps: [] as { processId: number; displayName: string; binary: string }[],
 	// Record the order of native starts vs port transfers.
 	onStart: undefined as undefined | ((s: FakeSession) => void),
@@ -77,7 +71,7 @@ export const addon = {
 		this.onStart?.(s);
 		return s.id;
 	},
-	// Still present so tests can prove system mode never calls it.
+	// Normal system capture primitive.
 	startExcludeProcessTree(pid: number, cb: FakeSession["cb"]) {
 		this.calls.push(`exclude:${pid}`);
 		return this.start("exclude", pid, cb);
@@ -86,45 +80,24 @@ export const addon = {
 		this.calls.push(`include:${pid}`);
 		return this.start("include", pid, cb);
 	},
-	startEndpointMinusSelf(pid: number, deviceId: string | null | undefined, cb: FakeSession["cb"]) {
-		this.calls.push(`subtract:${pid}:${deviceId}`);
-		if (this.failSubtract !== null) {
-			this.lastStartError = this.failSubtract;
-			return 0;
-		}
-		this.lastStartError = null;
-		const id = this.start("subtract", pid, cb);
-		if (id) this.statuses.set(id, { state: "aligning", reason: "waiting for own audio", offsetFrames: 0, locked: false, generation: 0, endpointId: "{fake-endpoint}" });
-		return id;
-	},
-	getSubtractionStatus(id: number) {
-		return this.sessions.get(id)?.kind === "subtract" ? (this.statuses.get(id) ?? null) : null;
-	},
-	getLastSubtractionStartError() {
-		return this.lastStartError;
+	startEndpointMinusSelf() {
+		throw new Error("Subtraction must not run");
 	},
 	stopSession(id: number) {
 		this.calls.push(`stop:${id}`);
 		this.sessions.delete(id);
-		this.statuses.delete(id);
 	},
 	stopAll() {
 		this.calls.push("stopAll");
 		this.sessions.clear();
-		this.statuses.clear();
 	},
 	listAudioApps() {
 		return this.apps;
 	},
 };
 
-/** Patch the fake native status of a live subtraction session. */
-export function setStatus(id: number, patch: Record<string, any>) {
-	addon.statuses.set(id, { ...addon.statuses.get(id), ...patch });
-}
-
-// Tests may delete exports to simulate an older addon build; reset() puts them back.
-const addonExports = { startEndpointMinusSelf: addon.startEndpointMinusSelf, getSubtractionStatus: addon.getSubtractionStatus, getLastSubtractionStartError: addon.getLastSubtractionStartError };
+// Tests may delete exports; reset restores them.
+const addonExports = { startExcludeProcessTree: addon.startExcludeProcessTree, listAudioApps: addon.listAudioApps };
 
 // ── Fake Notification: records what the user would have been shown ──
 export const notifications: { title: string; body: string }[] = [];
@@ -247,6 +220,14 @@ mock.module(abs("src/modules/native/patchcord.ts"), () => ({
 export const wasapi = await import("../../src/modules/native/wasapiLoopback.ts");
 wasapi.__setWasapiAddonForTesting(addon);
 
+export function processSnapshot() {
+	return new Map([process.pid, process.ppid, ...OWN_CHILD_PIDS, ...addon.apps.map((a) => a.processId)].map((pid) => [pid, { pid, parentPid: OWN_CHILD_PIDS.includes(pid) ? process.pid : 0, created: "100", executable: `C:\\app-${pid}.exe` }]));
+}
+export const processes = { query: async () => processSnapshot() };
+wasapi.__setWasapiProcessQueryForTesting(() => processes.query());
+export const identities = () => processSnapshot();
+export const startCapture: typeof wasapi.startWasapiCapture = (config, options) => wasapi.startWasapiCapture(config, { identities: identities(), ...options });
+
 export const screenshare = await import("../../src/windows/screenshare/screenshare.ts");
 
 /** Stop everything and forget recorded calls so each test starts from a clean slate. */
@@ -255,10 +236,8 @@ export async function reset() {
 	desktopCapturer.getSources = async () => [];
 	addon.sessions.clear();
 	addon.calls = [];
-	addon.statuses.clear();
 	addon.failPids.clear();
-	addon.failSubtract = null;
-	addon.lastStartError = null;
+	processes.query = async () => processSnapshot();
 	Object.assign(addon, addonExports);
 	addon.apps = [];
 	notifications.length = 0;

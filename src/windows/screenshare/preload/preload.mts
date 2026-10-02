@@ -32,6 +32,8 @@ interface ScreensharePayload {
 	// "system MINUS these apps" is supported (patchcord only). WASAPI has a single
 	// TargetProcessId, spent excluding GoofCord itself, so Windows cannot honour an exclude list.
 	supportsAudioExclude: boolean;
+	audioSelectionId: number;
+	resetAudioSelection: boolean;
 }
 
 const DISPLAY_MODES = {
@@ -51,6 +53,7 @@ const CONTROL_ICONS: Record<string, string> = {
 let hasAdvancedAudio = false;
 let supportsAudioExclude = false;
 let isRefreshing = false;
+let audioSelectionId = 0;
 
 const escapeMap: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
 const escapeHtml = (text: string) => String(text ?? "").replace(/[&<>"']/g, (m) => escapeMap[m]);
@@ -135,13 +138,15 @@ function getFormSettings(): ScreenshareSettings | null {
 }
 
 async function selectSource(id: string | null, title: string | null): Promise<void> {
+	if (isRefreshing) return;
 	const settings = getFormSettings();
+	const selectedAudioGeneration = audioSelectionId;
 	if (!settings) return;
 
 	try {
 		await invoke("flashTitlebar", "#5865F2");
 		await setConfig("screensharePreviousSettings", settings);
-		await ipcRenderer.invoke("selectScreenshareSource", id ?? "", title ?? "", settings.audioConfig, settings.contentHint, settings.resolution, settings.framerate);
+		await ipcRenderer.invoke("selectScreenshareSource", id ?? "", title ?? "", settings.audioConfig, settings.contentHint, settings.resolution, settings.framerate, selectedAudioGeneration);
 	} catch (err) {
 		console.error("[selectSource] IPC error:", err);
 	}
@@ -155,15 +160,16 @@ async function refreshData() {
 	btn.classList.add("spinning");
 
 	try {
-		const { sources, audioNodes } = (await ipcRenderer.invoke("refreshScreenshareSources")) as ScreensharePayload;
+		const { sources, audioNodes, audioSelectionId: selectionId, resetAudioSelection } = (await ipcRenderer.invoke("refreshScreenshareSources")) as ScreensharePayload;
 
+		audioSelectionId = selectionId;
 		if (sources) {
 			$("sources-list").innerHTML = sources.map(createSourceItemHtml).join("");
 		}
 
 		if (hasAdvancedAudio) {
 			const selectedPids = Array.from(document.querySelectorAll<HTMLInputElement>("#audio-apps-list input:checked")).map((el) => Number(el.value));
-			$("audio-apps-list").innerHTML = renderAudioApps(audioNodes, selectedPids);
+			$("audio-apps-list").innerHTML = renderAudioApps(audioNodes, resetAudioSelection ? [] : selectedPids);
 		}
 	} catch (err) {
 		console.error("[Screenshare] Failed to refresh sources:", err);
@@ -181,6 +187,7 @@ async function init() {
 	s.audioConfig ??= { mode: "none", pids: [] };
 
 	const payload = (await ipcRenderer.invoke("refreshScreenshareSources")) as ScreensharePayload;
+	audioSelectionId = payload.audioSelectionId;
 	hasAdvancedAudio = payload.hasAdvancedAudio;
 	supportsAudioExclude = payload.supportsAudioExclude;
 
@@ -248,12 +255,12 @@ async function init() {
 		});
 
 		updateAppListVisibility();
-		$("audio-apps-list").innerHTML = renderAudioApps(payload.audioNodes, s.audioConfig.pids);
+		$("audio-apps-list").innerHTML = renderAudioApps(payload.audioNodes, payload.resetAudioSelection ? [] : s.audioConfig.pids);
 	} else {
 		$("standard-audio-section").style.display = "block";
 		$("audio-toggle-label").textContent = i("screenshare-audio-capture");
 		$("audio-toggle-desc").textContent = i("screenshare-audio-capture-desc");
-		$<HTMLInputElement>("audio-share-checkbox").checked = s.audioConfig.mode !== "none";
+		$<HTMLInputElement>("audio-share-checkbox").checked = s.audioConfig.mode !== "none" && (!payload.resetAudioSelection || s.audioConfig.mode === "system");
 	}
 
 	if (payload.sources) {

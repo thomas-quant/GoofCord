@@ -2,6 +2,8 @@ import { execSync } from "node:child_process";
 
 import { Arch, Configuration, Platform } from "electron-builder";
 
+import { validateWasapiPackaged } from "./build/validateWasapiPackaged.ts";
+
 const files = ["!*", "!node_modules/**/*", "ts-out", "package.json", "LICENSE"];
 
 export const config: Configuration = {
@@ -96,6 +98,9 @@ export const config: Configuration = {
 			filter: ["**/*"],
 		},
 	],
+	afterPack: async (context) => {
+		validateWasapiPackaged(context.appOutDir, getPlatformString(context.packager.platform), getArchString(context.arch));
+	},
 	beforePack: async (context) => {
 		const currentArch = getArchString(context.arch);
 		const currentPlatform = getPlatformString(context.packager.platform);

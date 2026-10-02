@@ -3,8 +3,8 @@
 //
 // The main process (wasapiLoopback.ts) captures the PCM and forwards it over a MessagePort. This file
 // is the renderer half: a MessagePort-fed MediaStreamTrackGenerator feeder that reconstructs a live
-// audio track and swaps it into Discord's getDisplayMedia stream, so the viewer hears shared desktop
-// audio but NOT the Discord call echoed back.
+// audio track and swaps it into Discord's getDisplayMedia stream, with the process scope selected in the picker. Unrelated processes re-rendering
+// call audio can still be audible.
 //
 // CI-PACKAGING NOTE: this file lives in the main preload bundle (ts-out/**, which electron-builder
 // packages). preload.mts injects installWasapiTransport into the Discord page MAIN WORLD via
@@ -78,7 +78,7 @@ export function installWasapiTransport(): void {
 	const GenCtor = win.MediaStreamTrackGenerator;
 	const AudioDataCtor = win.AudioData;
 	// No bridge ⇒ no teardown channel; no Insertable Streams ⇒ cannot feed. Either way leave the page
-	// untouched and never post readiness, so main's ack wait times out and it falls back.
+	// untouched and never post readiness, so main's ack wait times out and it fails closed.
 	if (!bridge || typeof GenCtor !== "function" || typeof AudioDataCtor !== "function") return;
 
 	const SAMPLE_RATE = 48000;
@@ -248,7 +248,7 @@ export function installWasapiTransport(): void {
 			gen = new GenCtor!({ kind: "audio" });
 			writer = gen.writable.getWriter();
 		} catch {
-			// No ack ⇒ main's readiness wait fails and it keeps the original audio path.
+			// No ack ⇒ main's readiness wait fails and it leaves the share without audio.
 			try {
 				port.close();
 			} catch {

@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { checkWasapiExports, removeStaleAddonFile, validateWasapiAddon, WasapiValidationError } from "../../build/validateWasapiAddon.ts";
+import { checkWasapiExports, removeStaleAddonFile, validateWasapiAddon, WasapiValidationError, wasapiTargetFilename } from "../../build/validateWasapiAddon.ts";
 
 // A fully-shaped fake addon matching src/modules/native/wasapiLoopback.ts's WasapiAddon contract.
 function fakeAddon(overrides: Record<string, unknown> = {}) {
@@ -43,12 +43,18 @@ describe("checkWasapiExports", () => {
 		expect(result.missingDiagnostic.length).toBeGreaterThan(0);
 	});
 
-	test("the endpoint-minus-self API is required; EXCLUDE is diagnostics-only now", () => {
-		const addon = fakeAddon({ startEndpointMinusSelf: undefined, getSubtractionStatus: undefined, getLastSubtractionStartError: undefined, startExcludeProcessTree: undefined });
-		expect(checkWasapiExports(addon)).toEqual({
-			missingRequired: ["startEndpointMinusSelf", "getSubtractionStatus", "getLastSubtractionStartError"],
-			missingDiagnostic: ["startExcludeProcessTree"],
-		});
+	test("EXCLUDE is product required; subtraction is not", () => {
+		expect(checkWasapiExports(fakeAddon({ startExcludeProcessTree: undefined, startEndpointMinusSelf: undefined, getSubtractionStatus: undefined, getLastSubtractionStartError: undefined }))).toEqual({ missingRequired: ["startExcludeProcessTree"], missingDiagnostic: [] });
+	});
+
+	test("emits WASAPI only for Windows x64", () => {
+		expect(wasapiTargetFilename("win32", "x64")).toBe("wasapi-loopback-win32-x64.node");
+		for (const [platform, arch] of [
+			["win32", "arm64"],
+			["linux", "x64"],
+			["darwin", "arm64"],
+		])
+			expect(wasapiTargetFilename(platform, arch)).toBeUndefined();
 	});
 
 	test("does not accept a non-function property with the right name", () => {
@@ -138,17 +144,17 @@ describe("validateWasapiAddon", () => {
 		).toThrow(/startIncludeProcessTree/);
 	});
 
-	test("fails for a staged addon that predates endpoint-minus-self (system audio would be silent)", () => {
+	test("fails for a staged addon that lacks EXCLUDE (system audio would be silent)", () => {
 		expect(() =>
 			validateWasapiAddon({
 				...winX64,
 				addonPath: "/staged/wasapi-loopback-win32-x64.node",
 				fileExists: () => true,
 				hostPlatform: "win32",
-				loadAddon: () => fakeAddon({ startEndpointMinusSelf: undefined }),
+				loadAddon: () => fakeAddon({ startExcludeProcessTree: undefined }),
 				log: noopLog,
 			}),
-		).toThrow(/startEndpointMinusSelf/);
+		).toThrow(/startExcludeProcessTree/);
 	});
 
 	test("warns but does not fail when only diagnostics-only exports are missing", () => {

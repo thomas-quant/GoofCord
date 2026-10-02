@@ -150,6 +150,9 @@ jobs:
       - name: Type check
         run: bun run check
 
+      - name: Windows process snapshot smoke test
+        run: bun tests/audio/windows-process-snapshot.ts
+
       - name: Audio regression tests
         run: bun test tests/audio
 
@@ -164,7 +167,7 @@ jobs:
         run: bunx --no-install electron-builder --x64 --win zip --publish=never
 
       - name: Verify packaged addon (asar.unpacked, real API load)
-        run: bun build/validateWasapiPackaged.ts
+        run: bun build/validateWasapiPackaged.ts dist/win-unpacked
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
