@@ -71,7 +71,9 @@ export const config: Configuration = {
 	// inside an asar archive. electron-builder does NOT auto-unpack app-source .node files (only
 	// node_modules native deps), so ts-out/native/*.node (wasapi) would otherwise be packed
 	// unloadable. Unpack all .node to app.asar.unpacked.
-	asarUnpack: ["**/*.node"],
+	asar: {
+		unpack: ["**/*.node"],
+	},
 	electronFuses: {
 		runAsNode: false,
 		onlyLoadAppFromAsar: true,
