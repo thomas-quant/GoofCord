@@ -57,14 +57,15 @@ jobs:
       - name: Install Node dependencies
         run: bun install --frozen-lockfile
 
-      - name: Install electron-builder globally
-        run: bun add electron-builder -g
+      - name: Verify local electron-builder version
+        run: |
+          bun -e "const expected = (await Bun.file('package.json').json()).devDependencies['electron-builder']; const actual = (await Bun.file('node_modules/electron-builder/package.json').json()).version; console.log('Local electron-builder version=' + actual); if (actual !== expected) throw new Error('Expected electron-builder ' + expected);"
 
       - name: Build GoofCord
         run: bun run build
 
       - name: Package GoofCord
-        run: electron-builder ${{ matrix.arch }} --${{ matrix.name }} ${{ matrix.targets }} --publish=never
+        run: bunx --no-install electron-builder ${{ matrix.arch }} --${{ matrix.name }} ${{ matrix.targets }} --publish=never
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
@@ -152,14 +153,15 @@ jobs:
       - name: Audio regression tests
         run: bun test tests/audio
 
-      - name: Install electron-builder globally
-        run: bun add electron-builder -g
+      - name: Verify local electron-builder version
+        run: |
+          bun -e "const expected = (await Bun.file('package.json').json()).devDependencies['electron-builder']; const actual = (await Bun.file('node_modules/electron-builder/package.json').json()).version; console.log('Local electron-builder version=' + actual); if (actual !== expected) throw new Error('Expected electron-builder ' + expected);"
 
       - name: Build GoofCord
         run: bun run build --skipTypecheck
 
       - name: Package GoofCord (win32 x64 only)
-        run: electron-builder --x64 --win zip --publish=never
+        run: bunx --no-install electron-builder --x64 --win zip --publish=never
 
       - name: Verify packaged addon (asar.unpacked, real API load)
         run: bun build/validateWasapiPackaged.ts
