@@ -75,6 +75,36 @@ describe("selectScreenshareSource ↔ WASAPI ownership", () => {
 		expect(wasapi.currentWasapiCaptureId()).toBe(newer);
 	});
 
+	test("cancelling closes the picker even if Electron rejects the empty callback", async () => {
+		await openRequest().select("screen:0", { mode: "system", pids: [] });
+		const live = wasapi.currentWasapiCaptureId();
+		harness.displayMediaHandler!({ frame: null }, () => {
+			throw new Error("missing video");
+		});
+		const picker = createdWindows.at(-1)!;
+		await ipcHandlers.get("selectScreenshareSource")!({ sender: { id: picker.webContents.id } }, "", "name", { mode: "none", pids: [] });
+		expect(picker.isDestroyed()).toBe(true);
+		expect(wasapi.currentWasapiCaptureId()).toBe(live);
+	});
+
+	test("a source enumeration failure closes the picker without stopping the running capture", async () => {
+		await openRequest().select("screen:0", { mode: "system", pids: [] });
+		const live = wasapi.currentWasapiCaptureId();
+		harness.desktopCapturer.getSources = async () => {
+			throw new Error("portal dismissed");
+		};
+		let cancellations = 0;
+		harness.displayMediaHandler!({ frame: null }, () => {
+			cancellations++;
+			throw new Error("missing video");
+		});
+		const picker = createdWindows.at(-1)!;
+		await harness.flush();
+		expect(picker.isDestroyed()).toBe(true);
+		expect(cancellations).toBe(1);
+		expect(wasapi.currentWasapiCaptureId()).toBe(live);
+	});
+
 	test("cancelling the picker leaves a running share's audio alone", async () => {
 		await openRequest().select("screen:0", { mode: "system", pids: [] });
 		const live = wasapi.currentWasapiCaptureId();

@@ -75,7 +75,11 @@ export function registerScreenshareHandler() {
 		// Cancel: no new stream replaces the running one (e.g. an aborted "change source"), so its
 		// audio is left alone.
 		if (!id) {
-			callback({});
+			try {
+				callback({});
+			} catch {
+				/* Ignore missing video error */
+			}
 			if (!window.isDestroyed()) window.close();
 			return;
 		}
@@ -144,7 +148,7 @@ export function registerScreenshareHandler() {
 	session.defaultSession.setDisplayMediaRequestHandler((request, callback) => {
 		const capturerWindow = new BrowserWindow({
 			width: 800,
-			height: 650,
+			height: 800,
 			minWidth: 600,
 			minHeight: 500,
 			resizable: true,
@@ -160,12 +164,22 @@ export function registerScreenshareHandler() {
 
 		const wcId = capturerWindow.webContents.id;
 
-		activeRequests.set(wcId, { callback, window: capturerWindow, frame: request.frame, initialPromise: fetchScreenshareData(false), wasapiCaptureAtOpen: currentWasapiCaptureId() });
+		const initialPromise = fetchScreenshareData(false);
+		initialPromise.catch(() => {
+			// Close and clean up if getSources errors
+			if (!capturerWindow.isDestroyed()) capturerWindow.close();
+		});
+
+		activeRequests.set(wcId, { callback, window: capturerWindow, frame: request.frame, initialPromise, wasapiCaptureAtOpen: currentWasapiCaptureId() });
 
 		capturerWindow.once("closed", () => {
 			if (activeRequests.has(wcId)) {
 				activeRequests.delete(wcId);
-				callback({});
+				try {
+					callback({});
+				} catch {
+					/* Ignore missing video error */
+				}
 			}
 		});
 

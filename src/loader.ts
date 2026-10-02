@@ -1,5 +1,6 @@
 import { runMigrations } from "@root/src/migration.ts";
 import { setContextMenu } from "@root/src/modules/menus/contextMenu.ts";
+import { initGoofbind } from "@root/src/modules/native/goofbind.ts";
 import { app, net, session, systemPreferences } from "electron";
 import pc from "picocolors";
 

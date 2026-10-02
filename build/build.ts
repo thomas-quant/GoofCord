@@ -8,7 +8,6 @@ import pc from "picocolors";
 import { genIpcHandlers } from "./genIpcHandlers.ts";
 import { genSettingsLangFile } from "./genSettingsLangFile.ts";
 import { globImporterPlugin } from "./globbyGlob.ts";
-import { nativeModulePlugin } from "./nativeImport";
 import { removeStaleAddonFile, validateWasapiAddon } from "./validateWasapiAddon.ts";
 
 const ROOT_DIR = process.cwd();
@@ -100,7 +99,7 @@ function buildMain() {
 		outdir: OUT_DIR,
 		target: "node",
 		external: ["electron"],
-		plugins: [globImporterPlugin, nativeModulePlugin({ targetPlatform: TARGET_PLATFORM, targetArch: TARGET_ARCH })],
+		plugins: [globImporterPlugin],
 		splitting: true,
 	});
 }
@@ -172,39 +171,9 @@ async function copyNativeModules() {
 	const nativeDir = path.join(ASSETS_DIR, "native");
 	await fs.promises.mkdir(nativeDir, { recursive: true });
 
-	const platform = TARGET_PLATFORM === "win32" ? "win32" : "linux";
-
+	// Patchcord and goofbind are packaged directly from node_modules upstream. WASAPI still
+	// needs host-independent staging and export validation before packaging.
 	const modules = [
-		{
-			name: "patchcord",
-			envPath: process.env.GOOFCORD_PATCHCORD_PATH,
-			prebuilds: [
-				{ src: ["patchcord", "dist", "patchcord-linux-x64"], platform: "linux", arch: "x64" },
-				{ src: ["patchcord", "dist", "patchcord-linux-arm64"], platform: "linux", arch: "arm64" },
-			],
-		},
-		{
-			name: "venbind",
-			envPath: process.env.GOOFCORD_VENBIND_PATH,
-			prebuilds: [
-				{ src: ["venbind", "prebuilds", "windows-x86_64", "venbind-windows-x86_64.node"], platform: "win32", arch: "x64" },
-				{ src: ["venbind", "prebuilds", "windows-aarch64", "venbind-windows-aarch64.node"], platform: "win32", arch: "arm64" },
-				{ src: ["venbind", "prebuilds", "linux-x86_64", "venbind-linux-x86_64.node"], platform: "linux", arch: "x64" },
-				{ src: ["venbind", "prebuilds", "linux-aarch64", "venbind-linux-aarch64.node"], platform: "linux", arch: "arm64" },
-			],
-		},
-		// Phase 5 — Windows WASAPI EXCLUDE-tree echo-fix addon, consumed as a published
-		// optionalDependency (github:thomas-quant/wasapi-loopback), mirroring patchcord/venbind.
-		// Phase 5: env override removed; prebuild-only (host-agnostic copy stays — Bun's file-loader
-		// emits zero .node on a Windows build host). bun clones the github ref and the committed
-		// prebuild lands at node_modules/wasapi-loopback/prebuilds/windows-x86_64/wasapi-loopback-win32-x64.node.
-		// CRITICAL (Pitfall 3): with name "wasapi-loopback" the prebuild dest is
-		// `wasapi-loopback-win32-x64.node` on a win32/x64 build — containing BOTH "win32" AND "x64",
-		// exactly what nativeImport.ts's glob substring match needs. A name lacking either substring
-		// would silently emit `export default null` → silent "loopback" fallback (looks like the fix
-		// doesn't work, with no error). The prebuild copy is best-effort (.catch in the prebuild
-		// branch), so a missing prebuild off-Windows (bun skips the win32-only optionalDependency)
-		// never fails the local build.
 		{
 			name: "wasapi-loopback",
 			prebuilds: [{ src: ["wasapi-loopback", "prebuilds", "windows-x86_64", "wasapi-loopback-win32-x64.node"], platform: "win32", arch: "x64" }],
@@ -221,22 +190,6 @@ async function copyNativeModules() {
 	};
 
 	const tasks = modules.flatMap((mod) => {
-		if (mod.envPath) {
-			const ext = path.extname(mod.envPath);
-			const dest = path.join(nativeDir, `${mod.name}-${platform}-${TARGET_ARCH}${ext}`);
-
-			console.log(pc.cyan(`Using env override for ${mod.name}:`));
-			console.log(pc.gray(`  Input:  ${mod.envPath}`));
-			console.log(pc.gray(`  Output: ${path.basename(dest)}`));
-
-			return [
-				copyFile(mod.envPath, dest).catch((e) => {
-					console.error(pc.red(`❌ Provided ENV path for ${mod.name} is invalid or unreadable.`));
-					throw e;
-				}),
-			];
-		}
-
 		return mod.prebuilds.map((prebuild) => {
 			const src = path.join(ROOT_DIR, "node_modules", ...prebuild.src);
 			const ext = path.extname(src);
@@ -273,7 +226,7 @@ async function copyNativeModules() {
 // A plain fs copy is deterministic across Linux/macOS/Windows build hosts. wasapiLoopback.ts loads
 // the addon from this ts-out/native/ path at runtime (NOT via the file-loader). electron-builder's
 // per-platform `files` filters already key off `ts-out/native/*-<plat>-*.node`, so packaging needs
-// no change. Scoped to wasapi-loopback only; venbind keeps the `native-module:` loader for now.
+// no change. Scoped to wasapi-loopback only; upstream goofbind is a separate executable.
 // Phase 5: the env override is gone, but this host-agnostic copy STAYS — it is the permanent fix
 // for Bun's Windows-host file-loader bug (zero .node emitted), NOT env-override scaffolding.
 async function copyNativeAddonsToOutDir() {

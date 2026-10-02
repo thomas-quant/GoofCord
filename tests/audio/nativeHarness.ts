@@ -211,12 +211,16 @@ export class FakeBrowserWindow extends EventEmitter {
 	}
 }
 
+export const desktopCapturer = {
+	getSources: async (): Promise<never[]> => [],
+};
+
 mock.module("electron", () => ({
 	app,
 	MessageChannelMain: FakeMessageChannelMain,
 	Notification: FakeNotification,
 	BrowserWindow: FakeBrowserWindow,
-	desktopCapturer: { getSources: async () => [] },
+	desktopCapturer,
 	ipcMain: {
 		handle: (channel: string, fn: (...args: any[]) => any) => ipcHandlers.set(channel, fn),
 		removeHandler: (channel: string) => ipcHandlers.delete(channel),
@@ -248,6 +252,7 @@ export const screenshare = await import("../../src/windows/screenshare/screensha
 /** Stop everything and forget recorded calls so each test starts from a clean slate. */
 export async function reset() {
 	await wasapi.stopWasapiLoopback();
+	desktopCapturer.getSources = async () => [];
 	addon.sessions.clear();
 	addon.calls = [];
 	addon.statuses.clear();

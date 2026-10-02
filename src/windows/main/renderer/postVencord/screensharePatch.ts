@@ -24,6 +24,7 @@ export function patchScreenshare() {
 		console.log("Setting stream's content hint and audio device");
 
 		const settings = window.screenshareSettings;
+		if (!settings) return stream;
 		settings.width = Math.round(settings.resolution * (screen.width / screen.height));
 
 		const videoTrack = stream.getVideoTracks()[0];

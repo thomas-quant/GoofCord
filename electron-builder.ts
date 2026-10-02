@@ -20,7 +20,7 @@ export const config: Configuration = {
 		target: [
 			{
 				target: "AppImage",
-				arch: ["x64", "arm64", "armv7l"],
+				arch: ["x64", "arm64"],
 			},
 		],
 		desktop: {
@@ -39,12 +39,17 @@ export const config: Configuration = {
 		target: [
 			{
 				target: "NSIS",
-				arch: ["x64", "ia32", "arm64"],
+				arch: ["x64", "arm64"],
 			},
 		],
 		files: [...files, "!ts-out/native/*-linux-*.node"],
 	},
 	mac: {
+		sign: {
+			identity: "",
+			entitlements: "build/entitlements.mac.plist",
+			entitlementsInherit: "build/entitlements.mac.plist",
+		},
 		category: "public.app-category.social-networking",
 		target: [
 			{
@@ -54,9 +59,6 @@ export const config: Configuration = {
 		],
 		icon: "assets/gf_icon.icns",
 		darkModeSupport: true,
-		identity: "",
-		entitlements: "build/entitlements.mac.plist",
-		entitlementsInherit: "build/entitlements.mac.plist",
 		extendInfo: {
 			NSMicrophoneUsageDescription: "This app needs access to the microphone",
 			NSCameraUsageDescription: "This app needs access to the camera",
@@ -67,9 +69,8 @@ export const config: Configuration = {
 	},
 	// Native addons must live OUTSIDE app.asar — `require()`/`dlopen` cannot load a .node from
 	// inside an asar archive. electron-builder does NOT auto-unpack app-source .node files (only
-	// node_modules native deps), so ts-out/native/*.node (wasapi) and the loader-emitted
-	// ts-out/*.node (venbind) would otherwise be packed unloadable. Unpack all .node to
-	// app.asar.unpacked. (Also fixes venbind's latent Windows packaging gap.)
+	// node_modules native deps), so ts-out/native/*.node (wasapi) would otherwise be packed
+	// unloadable. Unpack all .node to app.asar.unpacked.
 	asarUnpack: ["**/*.node"],
 	electronFuses: {
 		runAsNode: false,
@@ -78,8 +79,18 @@ export const config: Configuration = {
 	electronLanguages: ["en-US"],
 	extraResources: [
 		{
-			from: "assets/native/patchcord-linux-${arch}",
+			from: "node_modules/patchcord/dist/patchcord-${os}-${arch}",
 			to: "patchcord",
+			filter: ["**/*"],
+		},
+		{
+			from: "node_modules/goofbind/dist/goofbind-${os}-${arch}",
+			to: "goofbind",
+			filter: ["**/*"],
+		},
+		{
+			from: "node_modules/goofbind/dist/goofbind-${os}-${arch}.exe",
+			to: "goofbind.exe",
 			filter: ["**/*"],
 		},
 	],
