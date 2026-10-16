@@ -20,7 +20,7 @@
 //                      once the page has posted "goofcord:wasapi-ready"
 //   page   → main      port.postMessage({ type: "ready", captureId }) once a fresh generator + handlers
 //                      exist; main waits for this before resolving the display-media request
-//   main   → page      { index, pcm: ArrayBuffer } chunks, then { type: "stopped", captureId } before
+//   main   → page      { type: "sources", indices }, { index, pcm: ArrayBuffer } chunks, then { type: "stopped", captureId } before
 //                      closing the port on stop/failure/replacement
 //   page   → main      goofcord.stopWasapiLoopback(captureId) when the page ends the session itself
 // ─────────────────────────────────────────────────────────────────────────────
@@ -45,12 +45,14 @@ export function installWasapiTransport(): void {
 		Event: typeof Event;
 		location: { origin: string };
 		navigator: { mediaDevices: MediaDevices };
-		setInterval(fn: () => void, ms: number): number;
-		clearInterval(id: number): void;
 		setTimeout(fn: () => void, ms: number): number;
 		clearTimeout(id: number): void;
 		addEventListener(type: string, listener: (e: MessageEvent) => void): void;
 		postMessage(message: unknown, targetOrigin: string): void;
+	}
+	interface Source {
+		queue: ArrayBuffer[];
+		missed: number;
 	}
 	interface Session {
 		captureId: number;
@@ -58,8 +60,7 @@ export function installWasapiTransport(): void {
 		gen: GenTrack;
 		stopGen: () => void; // the generator's own stop(), from before we intercepted it
 		writer: WritableStreamDefaultWriter<unknown>;
-		rings: Map<number, ArrayBuffer[]>;
-		timer?: number;
+		sources: Map<number, Source>;
 		claimTimer?: number;
 		tsUs: number;
 		inflight: number;
@@ -86,12 +87,11 @@ export function installWasapiTransport(): void {
 	const FRAMES = 480; // 10ms @ 48k → ~100 chunks/sec
 	const MIX_LEN = CHANNELS * FRAMES;
 	const FRAME_US = Math.round((FRAMES / SAMPLE_RATE) * 1e6);
-	const INTERVAL_MS = (FRAMES / SAMPLE_RATE) * 1000;
-	// Bounded ring per source, latency-first: ~40ms absorbs post-cadence jitter without creep.
-	const RING_DEPTH = 4;
-	// Writes allowed in flight before the drain loop stops consuming. While it waits, the rings keep
-	// dropping their oldest chunk, so a stalled writer can never grow an unbounded queue.
+	// Clocked by PCM arrival, never a page timer: hidden pages throttle timers and a second clock drops or pads audio.
+	const LEAD_FRAMES = 3;
+	const IDLE_FRAMES = 50;
 	const MAX_INFLIGHT = 2;
+	const MAX_QUEUE = 20;
 	// A session nothing has claimed by now (and no request is pending to claim it) is an orphan.
 	const CLAIM_TIMEOUT_MS = 10000;
 
@@ -135,9 +135,8 @@ export function installWasapiTransport(): void {
 		if (s.ended) return;
 		s.ended = true;
 		if (current === s) current = undefined;
-		if (s.timer !== undefined) win.clearInterval(s.timer);
 		if (s.claimTimer !== undefined) win.clearTimeout(s.claimTimer);
-		s.rings.clear();
+		s.sources.clear();
 		s.port.onmessage = null;
 		try {
 			s.port.close();
@@ -169,37 +168,52 @@ export function installWasapiTransport(): void {
 		}
 	}
 
-	function pushChunk(s: Session, index: number, ab: ArrayBuffer): void {
-		let ring = s.rings.get(index);
-		if (ring === undefined) {
-			ring = [];
-			s.rings.set(index, ring);
+	function source(s: Session, index: number): Source {
+		let src = s.sources.get(index);
+		if (src === undefined) {
+			src = { queue: [], missed: 0 };
+			s.sources.set(index, src);
 		}
-		if (ring.length >= RING_DEPTH) ring.shift(); // drop-oldest on overflow
-		ring.push(ab);
+		return src;
 	}
 
-	// Drain: one chunk per source per ~10ms, SUMMED into one frame. A source with nothing queued
-	// contributes silence, so the generator timeline stays monotonic with 0, 1, or N sources.
-	function tick(s: Session): void {
-		if (s.ended || s.inflight >= MAX_INFLIGHT) return;
+	function pushChunk(s: Session, index: number, ab: ArrayBuffer): void {
+		if (ab.byteLength !== MIX_LEN * 4) return; // defensive: ignore a malformed chunk
+		const src = source(s, index);
+		src.missed = 0;
+		if (src.queue.length >= MAX_QUEUE) src.queue.shift();
+		src.queue.push(ab);
+		pump(s);
+	}
 
+	function pump(s: Session): void {
+		while (!s.ended && s.inflight < MAX_INFLIGHT) {
+			let lead = 0;
+			let waiting = false;
+			for (const src of s.sources.values()) {
+				if (src.queue.length > lead) lead = src.queue.length;
+				else if (src.queue.length === 0 && src.missed < IDLE_FRAMES) waiting = true;
+			}
+			if (lead === 0 || (waiting && lead < LEAD_FRAMES)) return;
+			emit(s);
+		}
+	}
+
+	function emit(s: Session): void {
 		const mixed = new Float32Array(MIX_LEN);
-		let contributors = 0;
-		for (const ring of s.rings.values()) {
-			const ab = ring.shift();
-			if (ab === undefined) continue;
-			const src = new Float32Array(ab);
-			if (src.length !== MIX_LEN) continue; // defensive: ignore a malformed chunk
-			for (let i = 0; i < MIX_LEN; i++) mixed[i] += src[i];
-			contributors++;
+		for (const src of s.sources.values()) {
+			const ab = src.queue.shift();
+			if (ab === undefined) {
+				src.missed++;
+				continue;
+			}
+			const pcm = new Float32Array(ab);
+			for (let i = 0; i < MIX_LEN; i++) mixed[i] += pcm[i];
 		}
 		// Hard-clamp rather than normalise: a moving gain would pump audibly as apps start/stop.
-		if (contributors > 1) {
-			for (let i = 0; i < MIX_LEN; i++) {
-				const v = mixed[i];
-				mixed[i] = v > 1 ? 1 : v < -1 ? -1 : v;
-			}
+		for (let i = 0; i < MIX_LEN; i++) {
+			const v = mixed[i];
+			mixed[i] = v > 1 ? 1 : v < -1 ? -1 : v;
 		}
 
 		let ad: { close?: () => void };
@@ -229,6 +243,7 @@ export function installWasapiTransport(): void {
 			() => {
 				s.inflight--;
 				closeAudioData(ad);
+				pump(s);
 			},
 			() => {
 				s.inflight--;
@@ -263,7 +278,7 @@ export function installWasapiTransport(): void {
 			gen,
 			stopGen: gen.stop.bind(gen),
 			writer,
-			rings: new Map(),
+			sources: new Map(),
 			tsUs: 0,
 			inflight: 0,
 			arrival: ++arrivals,
@@ -279,10 +294,14 @@ export function installWasapiTransport(): void {
 
 		port.onmessage = (msg: MessageEvent) => {
 			if (s.ended) return;
-			const data = msg.data as { type?: unknown; captureId?: unknown; index?: unknown; pcm?: unknown } | null;
+			const data = msg.data as { type?: unknown; captureId?: unknown; index?: unknown; indices?: unknown; pcm?: unknown } | null;
 			if (data == null || typeof data !== "object") return;
 			if (data.type === "stopped") {
 				if (data.captureId === s.captureId) endSession(s, false);
+				return;
+			}
+			if (data.type === "sources") {
+				if (Array.isArray(data.indices)) for (const index of data.indices) if (typeof index === "number") source(s, index);
 				return;
 			}
 			if (!isArrayBuffer(data.pcm)) return;
@@ -292,7 +311,6 @@ export function installWasapiTransport(): void {
 		port.start();
 
 		current = s;
-		s.timer = win.setInterval(() => tick(s), INTERVAL_MS);
 		s.claimTimer = win.setTimeout(() => {
 			if (!s.claimed && pendingRequests === 0) endSession(s, true);
 		}, CLAIM_TIMEOUT_MS);

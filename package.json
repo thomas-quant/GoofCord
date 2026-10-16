@@ -49,7 +49,7 @@
 	"optionalDependencies": {
 		"goofbind": "github:Milkshiift/goofbind",
 		"patchcord": "github:Milkshiift/patchcord",
-		"wasapi-loopback": "github:thomas-quant/wasapi-loopback#0b7c34fb4cb17db336976d29a384256c11fe57a3"
+		"wasapi-loopback": "github:thomas-quant/wasapi-loopback#29b24a1eaa04a60d79d1c89a80a8574e7ca3887f"
 	},
 	"trustedDependencies": [
 		"electron"

@@ -72,26 +72,26 @@ export const addon = {
 		return s.id;
 	},
 	// Normal system capture primitive.
-	startExcludeProcessTree(pid: number, cb: FakeSession["cb"]) {
+	async startExcludeProcessTree(pid: number, cb: FakeSession["cb"]) {
 		this.calls.push(`exclude:${pid}`);
 		return this.start("exclude", pid, cb);
 	},
-	startIncludeProcessTree(pid: number, cb: FakeSession["cb"]) {
+	async startIncludeProcessTree(pid: number, cb: FakeSession["cb"]) {
 		this.calls.push(`include:${pid}`);
 		return this.start("include", pid, cb);
 	},
 	startEndpointMinusSelf() {
 		throw new Error("Subtraction must not run");
 	},
-	stopSession(id: number) {
+	async stopSession(id: number) {
 		this.calls.push(`stop:${id}`);
 		this.sessions.delete(id);
 	},
-	stopAll() {
+	async stopAll() {
 		this.calls.push("stopAll");
 		this.sessions.clear();
 	},
-	listAudioApps() {
+	async listAudioApps() {
 		return this.apps;
 	},
 };

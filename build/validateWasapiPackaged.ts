@@ -1,10 +1,9 @@
 // Validate each fresh target output, including ASAR contents, not stale files elsewhere in dist.
-import { createHash } from "node:crypto";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 
-import { validateWasapiAddon, wasapiTargetFilename, WASAPI_REQUIRED_EXPORTS } from "./validateWasapiAddon.ts";
+import { validateWasapiAddon, wasapiTargetFilename, WASAPI_ADDON_SHA256, WASAPI_REQUIRED_EXPORTS } from "./validateWasapiAddon.ts";
 
 const require = createRequire(import.meta.url);
 
@@ -29,12 +28,8 @@ export function validateWasapiPackaged(appOutDir: string, platform: string, arch
 	}
 	if (entries.length !== 1 || entries[0].replaceAll("\\", "/") !== `/ts-out/native/${expected}`) throw new Error(`Wrong WASAPI entries in ${asar}: ${entries.join(", ")}`);
 	const addonPath = path.resolve(`${asar}.unpacked`, "ts-out", "native", expected);
-	const dependencyPath = path.resolve("node_modules/wasapi-loopback/prebuilds/windows-x86_64", expected);
-	const sha256 = (file: string) => createHash("sha256").update(readFileSync(file)).digest("hex");
-	const hash = sha256(addonPath);
-	if (hash !== sha256(dependencyPath)) throw new Error("Packaged WASAPI addon differs from the installed optionalDependency");
 	validateWasapiAddon({ targetPlatform: platform, targetArch: arch, addonPath, loadAddon: require });
-	console.log(`[WASAPI packaged] ${platform}/${arch}: ${addonPath}; SHA256=${hash}; required=${WASAPI_REQUIRED_EXPORTS.join(",")}`);
+	console.log(`[WASAPI packaged] ${platform}/${arch}: ${addonPath}; SHA256=${WASAPI_ADDON_SHA256}; required=${WASAPI_REQUIRED_EXPORTS.join(",")}`);
 }
 
 if (import.meta.main) {

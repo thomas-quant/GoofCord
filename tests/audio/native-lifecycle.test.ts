@@ -37,19 +37,20 @@ describe("startWasapiCapture transport handshake", () => {
 	test("PCM before the ready ack is dropped; after it, forwarded as {index, pcm}", async () => {
 		renderer.autoAck = false;
 		const pending = startCapture({ mode: "system", pids: [] }, { readyTimeoutMs: 1000 });
+		await flush();
 		const [session] = addon.sessions.values();
 		const [t] = renderer.transfers;
 
 		session.cb(null, chunk());
 		await flush();
-		expect(renderer.received.get(t.message.captureId)).toEqual([]);
+		expect(renderer.received.get(t.message.captureId)!.filter((m) => m.pcm)).toEqual([]);
 
 		t.port.postMessage({ type: "ready", captureId: t.message.captureId });
 		expect(await pending).toBe("started");
 
 		session.cb(null, chunk(0.25));
 		await flush();
-		const got = renderer.received.get(t.message.captureId)!;
+		const got = renderer.received.get(t.message.captureId)!.filter((m) => m.pcm);
 		expect(got).toHaveLength(1);
 		expect(got[0].index).toBe(0);
 		expect(got[0].pcm).toBeInstanceOf(ArrayBuffer);
@@ -59,6 +60,7 @@ describe("startWasapiCapture transport handshake", () => {
 	test("a ready ack for a different captureId does not count", async () => {
 		renderer.autoAck = false;
 		const pending = startCapture({ mode: "system", pids: [] }, FAST);
+		await flush();
 		const [t] = renderer.transfers;
 		t.port.postMessage({ type: "ready", captureId: t.message.captureId + 1000 });
 		expect(await pending).toBe("failed-closed");
@@ -154,7 +156,7 @@ describe("win32 arches without a shipped addon", () => {
 				expect(await startCapture({ mode: "system", pids: [] })).toBe("unsupported");
 				expect(wasapi.isWasapiAvailable()).toBe(false);
 				expect(wasapi.shouldInjectWasapiTransport()).toBe(false);
-				expect(wasapi.listWasapiAudioApps()).toEqual([]);
+				expect(await wasapi.listWasapiAudioApps()).toEqual([]);
 			} finally {
 				Object.defineProperty(process, "arch", { value: "x64", configurable: true });
 			}
@@ -196,9 +198,9 @@ describe("app-mode target validation", () => {
 		expect(notifications).toHaveLength(1);
 	});
 
-	test("listWasapiAudioApps hides our own main and child processes", () => {
+	test("listWasapiAudioApps hides our own main and child processes", async () => {
 		addon.apps = [5000, process.pid, ...OWN_CHILD_PIDS].map((processId) => ({ processId, displayName: "x", binary: "x.exe" }));
-		expect(wasapi.listWasapiAudioApps().map((a) => a.processId)).toEqual([5000]);
+		expect((await wasapi.listWasapiAudioApps()).map((a) => a.processId)).toEqual([5000]);
 	});
 });
 
@@ -248,6 +250,7 @@ describe("stop / restart isolation", () => {
 	test("an attempt superseded while waiting for ready fails closed and leaves the newer capture alone", async () => {
 		renderer.autoAck = false;
 		const first = startCapture({ mode: "system", pids: [] }, { readyTimeoutMs: 1000 });
+		await flush();
 		renderer.autoAck = true;
 		const second = await startCapture({ mode: "system", pids: [] });
 
@@ -360,7 +363,7 @@ describe("request-bound identity and async lifecycle", () => {
 });
 
 describe("main renderer document lifecycle", () => {
-	const events = ["did-start-navigation", "render-process-gone", "destroyed"];
+	const events = ["did-navigate", "render-process-gone", "destroyed"];
 	const expectDetached = () => {
 		for (const event of events) expect(mainWindow.webContents.listenerCount(event)).toBe(0);
 	};
@@ -374,7 +377,7 @@ describe("main renderer document lifecycle", () => {
 				});
 			const pending = startCapture({ mode: "app", pids: [5000] });
 			expect(mainWindow.webContents.listenerCount(event)).toBe(1);
-			mainWindow.webContents.emit(event, { isMainFrame: true, isSameDocument: false });
+			mainWindow.webContents.emit(event);
 			expect(wasapi.currentWasapiCaptureId()).toBeUndefined();
 			expectDetached();
 			release(identities());
@@ -383,17 +386,6 @@ describe("main renderer document lifecycle", () => {
 			expect(renderer.transfers).toHaveLength(0);
 		});
 	}
-
-	test("iframe and same-document SPA navigation leave capture running", async () => {
-		await startCapture({ mode: "system", pids: [] });
-		const id = wasapi.currentWasapiCaptureId();
-		mainWindow.webContents.emit("did-start-navigation", { isMainFrame: false, isSameDocument: false });
-		mainWindow.webContents.emit("did-start-navigation", { isMainFrame: true, isSameDocument: true });
-		expect(wasapi.currentWasapiCaptureId()).toBe(id);
-		mainWindow.webContents.emit("did-start-navigation", { isMainFrame: true, isSameDocument: false });
-		expect(addon.sessions.size).toBe(0);
-		expectDetached();
-	});
 
 	test("replacement detaches old listeners; late old events do not kill the new capture", async () => {
 		await startCapture({ mode: "system", pids: [] });

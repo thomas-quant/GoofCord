@@ -18,10 +18,11 @@
 // ThreadsafeFunction NonBlocking push of 480-frame (3840-byte) f32 chunks (drop-oldest
 // backpressure) + an idempotent `stop` that signals the thread and joins with a timeout.
 //
-// Startup contract: a start* call returns a session id only once the stream is RUNNING
-// (activation, Initialize, SetEventHandle, GetService and Start all succeeded), and it never
-// blocks longer than STARTUP_TIMEOUT_MS. A stream that dies later (device invalidated, …) ends
-// its thread and reports one error through the chunk callback instead of spinning forever.
+// Startup contract: a start* call returns a promise that resolves to a session id only once the
+// stream is RUNNING (activation, Initialize, SetEventHandle, GetService and Start all succeeded),
+// within STARTUP_TIMEOUT_MS. Start, stop and app enumeration wait on their own threads, never on
+// the JS thread. A stream that dies later (device invalidated, …) ends its thread and reports one
+// error through the chunk callback instead of spinning forever.
 
 #![cfg(windows)]
 
@@ -33,8 +34,9 @@ use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use napi::bindgen_prelude::Buffer;
+use napi::bindgen_prelude::{Buffer, Object, ToNapiValue};
 use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
+use napi::Env;
 use napi_derive::napi;
 
 // The `#[implement]` macro emits absolute `::windows_core::` paths, so windows-core is a
@@ -138,6 +140,9 @@ const ACTIVATION_TIMEOUT_MS: u32 = 3000;
 // Bounded wait in `spawn_session` for the capture thread's verdict (activation + Initialize +
 // stream start). Longer than the activation timeout so a slow-but-finishing activation still wins.
 const STARTUP_TIMEOUT_MS: u64 = ACTIVATION_TIMEOUT_MS as u64 + 2000;
+
+// Bounded wait for audio-session enumeration; a wedged audio service rejects instead of hanging.
+const LIST_TIMEOUT_MS: u64 = 5000;
 
 /// Build the hardcoded 48k/stereo/f32 WAVEFORMATEXTENSIBLE.
 fn build_wave_format() -> WAVEFORMATEXTENSIBLE {
@@ -785,6 +790,27 @@ where
 
 // ─── napi surface ───────────────────────────────────────────────────────────────────
 
+/// Run `work` on its own thread and settle a JS promise with the result, so a slow or wedged
+/// audio service delays only that promise, never the JS thread that called in.
+fn spawn_promise<T, W>(env: &Env, work: W) -> napi::Result<Object<'_>>
+where
+    T: ToNapiValue + Send + 'static,
+    W: FnOnce() -> napi::Result<T> + Send + 'static,
+{
+    let (deferred, promise) = env.create_deferred()?;
+    std::thread::spawn(move || {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(work)) {
+            Ok(Ok(value)) => deferred.resolve(move |_| Ok(value)),
+            Ok(Err(e)) => deferred.reject(e),
+            Err(_) => deferred.reject(napi::Error::new(
+                napi::Status::GenericFailure,
+                "wasapi-loopback worker panicked",
+            )),
+        }
+    });
+    Ok(promise)
+}
+
 /// Begin process-tree EXCLUDE loopback capture, excluding the tree rooted at
 /// `exclude_root_pid` (pass the Electron MAIN process PID — EXCLUDE_TARGET_PROCESS_TREE
 /// covers the whole tree incl. the separate "Audio Service" utility child). `on_chunk`
@@ -793,20 +819,26 @@ where
 /// This is the "share a whole screen" mode, and it is mechanically what Discord does for a
 /// `screen:*` source (its renderer sends the sentinel `soundsharePid = 1`).
 ///
-/// Returns the session id, or `0` when process-loopback is unavailable on this build OR
-/// activation failed — the caller then falls back to Electron "loopback". Never throws.
-#[napi(js_name = "startExcludeProcessTree")]
-pub fn start_exclude_process_tree(exclude_root_pid: u32, on_chunk: ChunkTsfn) -> napi::Result<u32> {
-    Ok(spawn_session(
-        move || unsafe {
-            activate_process_tree(
-                PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE,
-                exclude_root_pid,
-            )
-        },
-        on_chunk,
-    )
-    .unwrap_or(0))
+/// Resolves to the session id, or `0` when process-loopback is unavailable on this build OR
+/// activation failed. Never rejects.
+#[napi(js_name = "startExcludeProcessTree", ts_return_type = "Promise<number>")]
+pub fn start_exclude_process_tree(
+    env: &Env,
+    exclude_root_pid: u32,
+    on_chunk: ChunkTsfn,
+) -> napi::Result<Object<'_>> {
+    spawn_promise(env, move || {
+        Ok(spawn_session(
+            move || unsafe {
+                activate_process_tree(
+                    PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE,
+                    exclude_root_pid,
+                )
+            },
+            on_chunk,
+        )
+        .unwrap_or(0))
+    })
 }
 
 /// Begin app-exclusive INCLUDE loopback capture of the process tree rooted at `target_pid`
@@ -820,30 +852,39 @@ pub fn start_exclude_process_tree(exclude_root_pid: u32, on_chunk: ChunkTsfn) ->
 /// Call it once per selected app — sessions are independent and run concurrently, so N apps
 /// means N sessions mixed downstream.
 ///
-/// Returns the session id, or `0` on failure. Never throws.
-#[napi(js_name = "startIncludeProcessTree")]
-pub fn start_include_process_tree(target_pid: u32, on_chunk: ChunkTsfn) -> napi::Result<u32> {
-    Ok(spawn_session(
-        move || unsafe {
-            activate_process_tree(PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE, target_pid)
-        },
-        on_chunk,
-    )
-    .unwrap_or(0))
+/// Resolves to the session id, or `0` on failure. Never rejects.
+#[napi(js_name = "startIncludeProcessTree", ts_return_type = "Promise<number>")]
+pub fn start_include_process_tree(
+    env: &Env,
+    target_pid: u32,
+    on_chunk: ChunkTsfn,
+) -> napi::Result<Object<'_>> {
+    spawn_promise(env, move || {
+        Ok(spawn_session(
+            move || unsafe {
+                activate_process_tree(PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE, target_pid)
+            },
+            on_chunk,
+        )
+        .unwrap_or(0))
+    })
 }
 
-/// Stop ONE capture session by id. Signals its capture thread to exit, then joins with a
-/// bounded timeout so a hung native teardown can't wedge the caller (composes with the JS
-/// wrapper's before-quit Promise.race). Idempotent — an unknown id is a no-op.
-#[napi(js_name = "stopSession")]
-pub fn stop_session(id: u32) {
+/// Stop ONE capture session by id. The session is unregistered immediately; its capture thread
+/// is signalled and joined (bounded) off the JS thread, and the promise resolves once that is
+/// done. Idempotent — an unknown id is a no-op.
+#[napi(js_name = "stopSession", ts_return_type = "Promise<void>")]
+pub fn stop_session(env: &Env, id: u32) -> napi::Result<Object<'_>> {
     let session = SESSIONS
         .lock()
         .unwrap_or_else(|p| p.into_inner())
         .remove(&id);
-    if let Some(session) = session {
-        teardown_session(session);
-    }
+    spawn_promise(env, move || {
+        if let Some(session) = session {
+            teardown_session(session);
+        }
+        Ok(())
+    })
 }
 
 /// Engine-reported timing for a session — one coherent snapshot (see `TimingSnapshot`).
@@ -975,17 +1016,21 @@ unsafe fn activate_render_endpoint_loopback(device_id: Option<&str>) -> Activati
     ActivationResult::Activated(audio_client)
 }
 
-/// Stop every live capture session. Used for share teardown and the before-quit path.
+/// Stop every live capture session. Used for share teardown and the before-quit path. Like
+/// `stopSession`, sessions are unregistered immediately and torn down off the JS thread.
 /// Idempotent — a no-op when nothing is running.
-#[napi(js_name = "stopAll")]
-pub fn stop_all() {
+#[napi(js_name = "stopAll", ts_return_type = "Promise<void>")]
+pub fn stop_all(env: &Env) -> napi::Result<Object<'_>> {
     let sessions: Vec<CaptureSession> = {
         let mut guard = SESSIONS.lock().unwrap_or_else(|p| p.into_inner());
         guard.drain().map(|(_, s)| s).collect()
     };
-    for session in sessions {
-        teardown_session(session);
-    }
+    spawn_promise(env, move || {
+        for session in sessions {
+            teardown_session(session);
+        }
+        Ok(())
+    })
 }
 
 /// Signal + bounded join for one session.
@@ -1053,21 +1098,31 @@ pub struct AudioAppInfo {
 }
 
 /// Enumerate audio-emitting apps (one entry per PID). Deduped by PID; the system-sounds
-/// pseudo-session and GoofCord's OWN process id are dropped. Fail-closed: returns an empty
-/// vec on any failure — never throws.
+/// pseudo-session and GoofCord's OWN process id are dropped. Fail-closed: resolves to an empty
+/// vec on any enumeration failure; rejects only when enumeration exceeds LIST_TIMEOUT_MS.
 ///
 /// The Electron "Audio Service" utility CHILD pid is dropped on the TS side in Plan 02
 /// (only the main process can resolve it via `app.getAppMetrics()`); this addon drops only
 /// its own process id here — the split is intentional.
-#[napi(js_name = "listAudioApps")]
-pub fn list_audio_apps() -> napi::Result<Vec<AudioAppInfo>> {
+#[napi(js_name = "listAudioApps", ts_return_type = "Promise<AudioAppInfo[]>")]
+pub fn list_audio_apps(env: &Env) -> napi::Result<Object<'_>> {
     // Session enumeration is COM-apartment-affine: run it on a dedicated MTA thread (the
     // same apartment discipline as the capture thread) so it never depends on — or
     // disturbs — the caller's apartment. A panic on that thread collapses to an empty vec.
-    let apps = std::thread::spawn(|| unsafe { enumerate_audio_apps() })
-        .join()
-        .unwrap_or_default();
-    Ok(apps)
+    spawn_promise(env, || {
+        let (tx, rx) = channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(unsafe { enumerate_audio_apps() });
+        });
+        match rx.recv_timeout(Duration::from_millis(LIST_TIMEOUT_MS)) {
+            Ok(apps) => Ok(apps),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Ok(Vec::new()),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(napi::Error::new(
+                napi::Status::GenericFailure,
+                "audio session enumeration timed out",
+            )),
+        }
+    })
 }
 
 /// MTA-apartment bracket around the enumeration: CoInitialize the dedicated thread, collect,

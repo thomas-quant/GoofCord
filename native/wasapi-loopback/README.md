@@ -50,11 +50,12 @@ Microsoft MIT copyright notice is retained verbatim in [`NOTICE`](./NOTICE).
 
 ```ts
 type OnChunk = (err: unknown, chunk?: Buffer) => void; // 3840-byte f32 Buffer per ~10 ms; err ⇒ session ended
-function startExcludeProcessTree(excludeRootPid: number, onChunk: OnChunk): number; // session id, 0 ⇒ unsupported/failed
-function startIncludeProcessTree(targetPid: number, onChunk: OnChunk): number;
-function stopSession(id: number): void; // idempotent; bounded join
-function stopAll(): void;
-function listAudioApps(): { processId: number; displayName: string; binary: string }[];
+// Start, stop and listAudioApps settle on their own threads and never block the JS thread.
+function startExcludeProcessTree(excludeRootPid: number, onChunk: OnChunk): Promise<number>; // session id, 0 ⇒ unsupported/failed
+function startIncludeProcessTree(targetPid: number, onChunk: OnChunk): Promise<number>;
+function stopSession(id: number): Promise<void>; // idempotent; unregisters at once, bounded join
+function stopAll(): Promise<void>;
+function listAudioApps(): Promise<{ processId: number; displayName: string; binary: string }[]>; // rejects after 5 s
 // Diagnostics only: one coherent timing snapshot. capturedFrames counts engine frames read (not
 // chunks delivered); pair timingFrame with qpcPosition100Ns for rate. DevicePosition may never
 // advance on process loopback (devicePositionAdvances === 0) — don't rely on it.

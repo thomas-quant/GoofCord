@@ -8,11 +8,18 @@
 // only for the one target that ships a prebuild at all.
 //
 // Product requires INCLUDE/EXCLUDE process trees. Subtraction remains an unused experiment.
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 
 export const WASAPI_REQUIRED_EXPORTS = ["startIncludeProcessTree", "startExcludeProcessTree", "stopSession", "stopAll", "listAudioApps"] as const;
 
 export const WASAPI_DIAGNOSTIC_EXPORTS = ["listRenderEndpoints", "getCaptureStats"] as const;
+
+export const WASAPI_ADDON_SHA256 = "e2ba4f1bbd0baa2fc2f75fdaace6c0571016832d4bf345871ff3f767296a4165";
+
+export function sha256File(file: string): string {
+	return createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+}
 
 export function wasapiTargetFilename(platform: string, arch: string): string | undefined {
 	return platform === "win32" && arch === "x64" ? "wasapi-loopback-win32-x64.node" : undefined;
@@ -59,6 +66,7 @@ export interface ValidateWasapiAddonOptions {
 	/** The host actually running this build step. Defaults to process.platform; overridable for tests. */
 	hostPlatform?: string;
 	fileExists?: (path: string) => boolean;
+	hashFile?: (path: string) => string;
 	/** require()-like loader, overridable so tests can inject fake exports without a real .node. */
 	loadAddon?: (path: string) => unknown;
 	log?: Pick<Console, "warn">;
@@ -66,13 +74,13 @@ export interface ValidateWasapiAddonOptions {
 
 /**
  * Throws WasapiValidationError for anything a real GoofCord build must not ship silently:
- * a win32/x64 build target with no staged addon, or a staged addon missing product-required
- * exports. Missing diagnostic-only exports are logged, not fatal. Any other build target
+ * a win32/x64 build target with no staged addon, an addon that is not the pinned binary, or a
+ * staged addon missing product-required exports. Missing diagnostic-only exports are logged, not fatal. Any other build target
  * (non-Windows, or Windows on an arch with no committed prebuild) is a no-op: no prebuild is
  * expected there, so its absence is normal.
  */
 export function validateWasapiAddon(options: ValidateWasapiAddonOptions): void {
-	const { targetPlatform, targetArch, addonPath, hostPlatform = process.platform, fileExists = fs.existsSync, loadAddon, log = console } = options;
+	const { targetPlatform, targetArch, addonPath, hostPlatform = process.platform, fileExists = fs.existsSync, hashFile = sha256File, loadAddon, log = console } = options;
 
 	if (targetPlatform !== "win32" || targetArch !== "x64") return;
 
@@ -80,8 +88,13 @@ export function validateWasapiAddon(options: ValidateWasapiAddonOptions): void {
 		throw new WasapiValidationError(`wasapi-loopback addon is required for a win32/x64 build but is missing at ${addonPath}. Check that the "wasapi-loopback" optionalDependency installed its win32-x64 prebuild (bun install on a clean node_modules may be needed).`);
 	}
 
+	const hash = hashFile(addonPath);
+	if (hash !== WASAPI_ADDON_SHA256) {
+		throw new WasapiValidationError(`wasapi-loopback addon at ${addonPath} has SHA-256 ${hash}, not the pinned ${WASAPI_ADDON_SHA256}. Run bun install so node_modules matches bun.lock; when bumping the wasapi-loopback pin, update WASAPI_ADDON_SHA256 to the new prebuilt's hash.`);
+	}
+
 	if (hostPlatform !== "win32") {
-		log.warn(`[validateWasapiAddon] Staged ${addonPath} for a win32/x64 target, but this build is running on ${hostPlatform} which cannot load a Windows .node. Skipping export validation — only a Windows build host can verify the addon is loadable.`);
+		log.warn(`[validateWasapiAddon] Staged ${addonPath} matches the pinned SHA-256, but this build is running on ${hostPlatform} which cannot load a Windows .node. Skipping the export load check.`);
 		return;
 	}
 

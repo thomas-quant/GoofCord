@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { checkWasapiExports, removeStaleAddonFile, validateWasapiAddon, WasapiValidationError, wasapiTargetFilename } from "../../build/validateWasapiAddon.ts";
+import { checkWasapiExports, removeStaleAddonFile, validateWasapiAddon, WASAPI_ADDON_SHA256, WasapiValidationError, wasapiTargetFilename } from "../../build/validateWasapiAddon.ts";
 
 // A fully-shaped fake addon matching src/modules/native/wasapiLoopback.ts's WasapiAddon contract.
 function fakeAddon(overrides: Record<string, unknown> = {}) {
@@ -64,7 +64,7 @@ describe("checkWasapiExports", () => {
 });
 
 describe("validateWasapiAddon", () => {
-	const winX64 = { targetPlatform: "win32", targetArch: "x64" };
+	const winX64 = { targetPlatform: "win32", targetArch: "x64", hashFile: () => WASAPI_ADDON_SHA256 };
 
 	test("is a no-op for a non-win32/x64 target even when the addon file is absent", () => {
 		expect(() =>

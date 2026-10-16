@@ -27,7 +27,7 @@
       "optionalDependencies": {
         "goofbind": "github:Milkshiift/goofbind",
         "patchcord": "github:Milkshiift/patchcord",
-        "wasapi-loopback": "github:thomas-quant/wasapi-loopback#0b7c34fb4cb17db336976d29a384256c11fe57a3",
+        "wasapi-loopback": "github:thomas-quant/wasapi-loopback#29b24a1eaa04a60d79d1c89a80a8574e7ca3887f",
       },
     },
   },
@@ -677,7 +677,7 @@
 
     "util-deprecate": ["util-deprecate@1.0.2", "", {}, "sha512-EPD5q1uXyFxJpCrLnCc1nHnq3gOa6DZBocAIiI2TaSCA7VCJ1UJDMagCzIkXNsUYfD1daK//LTEQ8xiIbrHtcw=="],
 
-    "wasapi-loopback": ["wasapi-loopback@github:thomas-quant/wasapi-loopback#0b7c34f", {}, "thomas-quant-wasapi-loopback-0b7c34f", "sha512-X/k26PKHKLIFGX8lpT1xphLrKxYVDSq9Dd2UVteVy5hY2+wlB7LykE/AltkITkwp+q4sSdgV+CSNlvXRCERMjA=="],
+    "wasapi-loopback": ["wasapi-loopback@github:thomas-quant/wasapi-loopback#29b24a1", {}, "thomas-quant-wasapi-loopback-29b24a1", "sha512-547zAOizj9HiZhdpDGWeomFSJtLOZIBaH6Hh2DPl2QAwjZ7qDAq8HuqcXS1Kz0wAliIQo3XXcmHdnl0FQkmCxw=="],
 
     "webcrypto-core": ["webcrypto-core@1.9.2", "", { "dependencies": { "@peculiar/asn1-schema": "^2.7.0", "@peculiar/json-schema": "^1.1.12", "@peculiar/utils": "^2.0.2", "asn1js": "^3.0.10", "tslib": "^2.8.1" } }, "sha512-gsXecm82UQNlTBURJGuqOWy1Ww08S3kZUcr3aOJS02Pk0xLtkfeUAVC0u0xhgdonFme80edSJUIJyuvL/7250Q=="],
 

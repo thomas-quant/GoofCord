@@ -129,7 +129,6 @@ function makeEnv(opts: { generator?: boolean; bridge?: boolean } = {}) {
 	const generators: FakeGenerator[] = [];
 	const stops: (number | undefined)[] = [];
 	const gdmCalls: Deferred[] = [];
-	const intervals = new Map<number, () => void>();
 	const timeouts = new Map<number, () => void>();
 	let nextTimer = 1;
 
@@ -143,8 +142,6 @@ function makeEnv(opts: { generator?: boolean; bridge?: boolean } = {}) {
 		};
 		win.AudioData = FakeAudioData;
 	}
-	win.setInterval = (fn: () => void) => (intervals.set(nextTimer, fn), nextTimer++);
-	win.clearInterval = (id: number) => intervals.delete(id);
 	win.setTimeout = (fn: () => void) => (timeouts.set(nextTimer, fn), nextTimer++);
 	win.clearTimeout = (id: number) => timeouts.delete(id);
 	win.navigator = {
@@ -160,16 +157,8 @@ function makeEnv(opts: { generator?: boolean; bridge?: boolean } = {}) {
 		generators,
 		stops,
 		gdmCalls,
-		intervals,
 		timeouts,
 		gdm: () => (win.navigator as { mediaDevices: { getDisplayMedia: () => Promise<FakeStream> } }).mediaDevices.getDisplayMedia(),
-		// real ticks are ~10ms apart, so settled writes resolve between them
-		async drain(n = 1) {
-			for (let i = 0; i < n; i++) {
-				for (const fn of Array.from(intervals.values())) fn(); // snapshot: ticks add/clear timers
-				await flush();
-			}
-		},
 		fireTimeouts() {
 			for (const [id, fn] of Array.from(timeouts)) {
 				timeouts.delete(id);
@@ -209,7 +198,6 @@ describe("main-world transport", () => {
 		const env = makeEnv();
 		expect(env.win.posted).toEqual(["goofcord:wasapi-ready"]);
 		expect(env.generators.length).toBe(0);
-		expect(env.intervals.size).toBe(0);
 		expect(env.timeouts.size).toBe(0);
 	});
 
@@ -217,11 +205,10 @@ describe("main-world transport", () => {
 		const env = makeEnv();
 		const port = env.port(1);
 		expect(env.generators.length).toBe(1);
-		expect(env.intervals.size).toBe(1);
 		expect(port.sent).toEqual([{ type: "ready", captureId: 1 }]);
 		// handlers were installed before the ack: the first chunk after it is fed
 		port.deliver({ index: 0, pcm: pcm(0.5) });
-		await env.drain();
+		await flush();
 		const init = env.generators[0].writer.written[0].init;
 		expect((init.data as Float32Array)[0]).toBe(0.5);
 		expect(init.timestamp).toBe(0);
@@ -232,13 +219,13 @@ describe("main-world transport", () => {
 
 		const one = await audioShare(env, 1);
 		expect(one.stream.getAudioTracks()).toEqual([one.gen]);
-		await env.drain(3);
+		for (let i = 0; i < 3; i++) one.port.deliver({ index: 0, pcm: pcm(0) });
+		await flush();
 		expect(one.gen.writer.written.map((a) => a.init.timestamp)).toEqual([0, 10000, 20000]);
 
 		// Discord's normal stop: stop() every track, no "ended" events
 		for (const t of one.stream.getTracks()) t.stop();
 		expect(env.stops).toEqual([1]);
-		expect(env.intervals.size).toBe(0);
 		expect(one.port.closed).toBe(true);
 		// video stopped first, so the audio source ended under the track: exactly one real "ended",
 		// and the gen.stop() that follows is a no-op
@@ -248,7 +235,8 @@ describe("main-world transport", () => {
 		const two = await audioShare(env, 2);
 		expect(two.gen).not.toBe(one.gen);
 		expect(two.stream.getAudioTracks()).toEqual([two.gen]);
-		await env.drain(2);
+		for (let i = 0; i < 2; i++) two.port.deliver({ index: 0, pcm: pcm(0) });
+		await flush();
 		expect(two.gen.writer.written.map((a) => a.init.timestamp)).toEqual([0, 10000]);
 		expect(one.gen.writer.written.length).toBe(3);
 	});
@@ -271,9 +259,9 @@ describe("main-world transport", () => {
 
 		expect(env.stops).toEqual([1]);
 		expect(two.gen.readyState).toBe("live");
-		expect(env.intervals.size).toBe(1);
-		await env.drain();
-		expect((two.gen.writer.written[0].init.data as Float32Array)[0]).toBe(0);
+		two.port.deliver({ index: 0, pcm: pcm(0.25) });
+		await flush();
+		expect(two.gen.writer.written.map((a) => (a.init.data as Float32Array)[0])).toEqual([0.25]);
 
 		// an older or malformed port is closed and ignored
 		const stale = env.port(1);
@@ -290,7 +278,6 @@ describe("main-world transport", () => {
 		expect(gen.readyState).toBe("ended");
 		expect(gen.endedEvents).toBe(1);
 		expect(env.stops).toEqual([]);
-		expect(env.intervals.size).toBe(0);
 		expect(port.closed).toBe(true);
 	});
 
@@ -301,7 +288,6 @@ describe("main-world transport", () => {
 		expect(one.gen.readyState).toBe("ended");
 		expect(one.gen.endedEvents).toBe(1);
 		expect(env.stops).toEqual([]);
-		expect(env.intervals.size).toBe(1);
 	});
 
 	test("an audio-none share never inherits a live or orphaned session", async () => {
@@ -333,7 +319,6 @@ describe("main-world transport", () => {
 		env.fireTimeouts();
 		expect(port.closed).toBe(true);
 		expect(env.stops).toEqual([1]);
-		expect(env.intervals.size).toBe(0);
 	});
 
 	test("rejected requests clean up and overlapping requests cannot steal a capture", async () => {
@@ -413,46 +398,43 @@ describe("main-world transport", () => {
 		const env = makeEnv();
 		const { gen, port } = await audioShare(env, 1);
 		gen.writer.mode = "reject";
-		await env.drain();
+		port.deliver({ index: 0, pcm: pcm(0) });
 		await flush();
 		expect(gen.writer.written[0].closed).toBe(true);
 		expect(gen.readyState).toBe("ended");
 		expect(gen.endedEvents).toBe(1);
 		expect(port.closed).toBe(true);
 		expect(env.stops).toEqual([1]);
-		expect(env.intervals.size).toBe(0);
 		expect(unhandled).toEqual([]);
 	});
 
-	test("backpressure: stalled writes cap in-flight frames and rings stay bounded", async () => {
+	test("backpressure: stalled writes cap in-flight frames, queues stay bounded, and drain in order", async () => {
 		const env = makeEnv();
 		const { gen, port } = await audioShare(env, 1);
 		gen.writer.mode = "manual";
-		port.deliver({ index: 0, pcm: pcm(0) });
-		port.deliver({ index: 0, pcm: pcm(0.1) });
-		await env.drain(2); // two writes now in flight and unresolved
-		for (let i = 2; i < 10; i++) port.deliver({ index: 0, pcm: pcm(i / 10) });
-		await env.drain(10);
-		expect(gen.writer.written.length).toBe(2);
-
-		for (const w of gen.writer.manual.splice(0)) w.resolve();
+		for (let i = 0; i < 27; i++) port.deliver({ index: 0, pcm: pcm(i / 100) });
 		await flush();
-		expect(gen.writer.written.every((a) => a.closed)).toBe(true);
+		expect(gen.writer.written.length).toBe(2); // two writes in flight and unresolved
+
 		gen.writer.mode = "resolve";
-		await env.drain(10);
-		// 2 consumed before the stall, then only the newest 4 (ring depth) survived it
-		const firstSample = gen.writer.written.map((a) => Math.round((a.init.data as Float32Array)[0] * 10));
-		expect(firstSample).toEqual([0, 1, 6, 7, 8, 9, 0, 0, 0, 0, 0, 0]);
+		for (const w of gen.writer.manual.splice(0)) w.resolve();
+		for (let i = 0; i < 25; i++) await flush();
+		expect(gen.writer.written.every((a) => a.closed)).toBe(true);
+		// 2 consumed before the stall, then only the newest 20 (queue bound) survived it, in order
+		const firstSample = gen.writer.written.map((a) => Math.round((a.init.data as Float32Array)[0] * 100));
+		expect(firstSample).toEqual([0, 1, ...Array.from({ length: 20 }, (_, i) => i + 7)]);
+		expect(gen.writer.written.map((a) => a.init.timestamp)).toEqual(Array.from({ length: 22 }, (_, i) => i * 10000));
 	});
 
 	test("app mode: independent sources are summed and clamped", async () => {
 		const env = makeEnv();
 		const { gen, port } = await audioShare(env, 1);
+		port.deliver({ type: "sources", indices: [0, 1, 2] });
 		port.deliver({ index: 0, pcm: pcm(0.75) });
 		port.deliver({ index: 1, pcm: pcm(0.75) });
 		port.deliver({ index: 2, pcm: pcm(0.25) });
-		await env.drain();
-		expect((gen.writer.written[0].init.data as Float32Array)[0]).toBe(1);
+		await flush();
+		expect(gen.writer.written.map((a) => (a.init.data as Float32Array)[0])).toEqual([1]);
 	});
 
 	test("pagehide ends the current capture", async () => {
